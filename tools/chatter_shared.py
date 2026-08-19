@@ -17,7 +17,7 @@ import time
 from typing import Optional, Dict, List, Tuple, Any
 
 from chatter_constants import (
-    ZONE_LEVELS, ZONE_NAMES,
+    ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU,
     CLASS_NAMES, RACE_NAMES,
     RACE_SPEECH_PROFILES, CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
@@ -277,12 +277,33 @@ def pick_random_max_tokens(config: dict) -> int:
 
 
 # =============================================================================
+# Maps a WoW client locale code (see _LANGUAGE_LOCALE_CODES
+# above) to the corresponding Blizzard-localized zone-name
+# dict, extracted from that locale's AreaTable.dbc. Add
+# further locales here (mirroring _LANGUAGE_LOCALE_CODES)
+# as more locale-specific zone-name data becomes available.
+_ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
+    "ruRU": ZONE_NAMES_RU,
+}
+
+
 def get_zone_name(zone_id: int) -> Optional[str]:
     """Get human-readable zone name from zone ID.
+
+    Prefers the Blizzard-localized name for the configured
+    LLMChatter.Language (via _ZONE_NAME_LOCALE_MAPS) when
+    available, falling back to the static English ZONE_NAMES
+    entry, mirroring the same fallback-safe pattern used for
+    creature/item/quest name localization.
 
     Returns None when the zone ID is unknown to avoid
     injecting 'zone 123' placeholder text into prompts.
     """
+    locale = get_language_locale_code()
+    if locale:
+        localized_map = _ZONE_NAME_LOCALE_MAPS.get(locale)
+        if localized_map and zone_id in localized_map:
+            return localized_map[zone_id]
     if zone_id in ZONE_NAMES:
         return ZONE_NAMES[zone_id]
     return None
