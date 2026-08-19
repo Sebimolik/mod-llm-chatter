@@ -282,6 +282,15 @@ def pick_random_max_tokens(config: dict) -> int:
 # dict, extracted from that locale's AreaTable.dbc. Add
 # further locales here (mirroring _LANGUAGE_LOCALE_CODES)
 # as more locale-specific zone-name data becomes available.
+#
+# Deliberately Russian-only for now: zone names come from
+# the client's AreaTable.dbc (not from acore_world tables),
+# and we only have the ruRU AreaTable.dbc extracted so far.
+# frFR/deDE/esES/koKR creature/item/quest names above are
+# already live (sourced from acore_world.*_locale, which
+# does carry those locales) -- but wiring up frFR/deDE/esES/
+# koKR zone names here requires extracting the matching
+# client AreaTable.dbc for each locale first.
 _ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
     "ruRU": ZONE_NAMES_RU,
 }
@@ -1356,6 +1365,10 @@ def get_language_rule() -> str:
 # English name they already have in hand.
 _LANGUAGE_LOCALE_CODES = {
     "Russian": "ruRU",
+    "French": "frFR",
+    "German": "deDE",
+    "Spanish": "esES",
+    "Korean": "koKR",
 }
 
 
