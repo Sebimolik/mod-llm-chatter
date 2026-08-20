@@ -227,6 +227,18 @@ ZONE_NAMES_RU = {
 # Hyjal, Alterac Mountains, Hrothgar's Landing have no entry
 # in either language because they aren't present in
 # ZONE_NAMES at all).
+#
+# Update: 8 Northrend zone names were added to ZONE_NAMES_FR
+# below (Borean Tundra, Howling Fjord, Dragonblight, Grizzly
+# Hills, Zul'Drak, Sholazar Basin, The Storm Peaks,
+# Icecrown), closing most of the French Northrend gap noted
+# above. Unlike the wiki-sourced rest of this dict, these 8
+# come from an official Blizzard press source
+# (news.blizzard.com/fr-fr "Guide des zones de Wrath of the
+# Lich King Classic" article series) and are genuinely
+# higher-confidence -- same tier as the flagged es-es
+# entries in ZONE_NAMES_ES below. Flagged inline on each
+# entry.
 ZONE_NAMES_FR = {
     1: "Dun Morogh", 3: "Terres Ingrates", 4: "Terres Foudroyées",
     8: "Marais des chagrins", 10: "Bois de la pénombre", 11: "Les Paluns",
@@ -248,6 +260,14 @@ ZONE_NAMES_FR = {
     3519: "Forêt de Terokkar", 3520: "Vallée d'Ombrelune",
     3521: "Marécage de Zangar", 3522: "Les Tranchantes",
     3523: "Raz-de-néant", 3703: "Shattrath",
+    65: "Désolation des Dragons",  # verified: official Blizzard fr-fr news source
+    66: "Zul'Drak",  # verified: official Blizzard fr-fr news source
+    67: "Pics Foudroyés",  # verified: official Blizzard fr-fr news source
+    210: "Couronne de Glace",  # verified: official Blizzard fr-fr news source
+    394: "Les Grisonnes",  # verified: official Blizzard fr-fr news source
+    495: "Fjord Hurlant",  # verified: official Blizzard fr-fr news source
+    3537: "Toundra Boréenne",  # verified: official Blizzard fr-fr news source
+    3711: "Bassin de Sholazar",  # verified: official Blizzard fr-fr news source
 }
 
 ZONE_NAMES_DE = {
@@ -285,11 +305,13 @@ ZONE_NAMES_DE = {
 # classic-era zones only -- community-sourced, similar
 # confidence tier to the wiki-sourced FR/DE data above, NOT
 # independently verified against official client data.
-# Three entries -- Borean Tundra, Howling Fjord, Hellfire
-# Peninsula (flagged inline below) -- come from an actual
-# official Blizzard press source (news.blizzard.com/es-es)
-# instead, and are genuinely higher-confidence than the
-# rest. A handful of source entries had typos or missing
+# Nine entries -- Borean Tundra, Howling Fjord, Hellfire
+# Peninsula, Dragonblight, Grizzly Hills, Zul'Drak, Sholazar
+# Basin, The Storm Peaks, Icecrown (flagged inline below) --
+# come from an actual official Blizzard press source
+# (news.blizzard.com/es-es) instead, and are genuinely
+# higher-confidence than the rest. A handful of source
+# entries had typos or missing
 # accents (e.g. "Dun Mor ogh" -> "Dun Morogh", "Paramos de
 # Poniente" -> "Páramos de Poniente"); corrected to standard
 # Spanish orthography where the intended word was
@@ -324,6 +346,36 @@ ZONE_NAMES_ES = {
     1638: "Cima del Trueno", 1657: "Darnassus",
     3483: "Península del Fuego Infernal",  # verified: official Blizzard es-es news source
     3537: "Tundra Boreal",  # verified: official Blizzard es-es news source
+    65: "Cementerio de Dragones",  # verified: official Blizzard es-es news source
+    66: "Zul'Drak",  # verified: official Blizzard es-es news source
+    67: "Cumbres Tormentosas",  # verified: official Blizzard es-es news source
+    210: "Corona de Hielo",  # verified: official Blizzard es-es news source
+    394: "Colinas Pardas",  # verified: official Blizzard es-es news source
+    3711: "Cuenca de Sholazar",  # verified: official Blizzard es-es news source
+}
+
+# Korean (koKR) zone names -- a brand-new locale, not
+# present before this addition. Unlike the wiki-sourced
+# FR/DE data or the mixed-provenance ES data above, all 8
+# entries here come directly from an official Blizzard press
+# source (news.blizzard.com/ko-kr, the "리치 왕의 분노 클래식
+# 지역 가이드" Wrath Classic zone guide article series) --
+# same official-source confidence tier as the flagged es-es
+# entries in ZONE_NAMES_ES above. Coverage is intentionally
+# partial: only the 8 Northrend zones covered by that
+# article series are included; every other zone falls back
+# to English via get_zone_name(), the same fallback-safe
+# pattern used for the other locales. Keyed identically to
+# ZONE_NAMES above.
+ZONE_NAMES_KO = {
+    65: "용의 안식처",  # verified: official Blizzard ko-kr news source
+    66: "줄드락",  # verified: official Blizzard ko-kr news source
+    67: "폭풍우 봉우리",  # verified: official Blizzard ko-kr news source
+    210: "얼음왕관",  # verified: official Blizzard ko-kr news source
+    394: "회색 구릉지",  # verified: official Blizzard ko-kr news source
+    495: "울부짖는 협만",  # verified: official Blizzard ko-kr news source
+    3537: "북풍의 땅",  # verified: official Blizzard ko-kr news source
+    3711: "숄라자르 분지",  # verified: official Blizzard ko-kr news source
 }
 
 # Capital cities - no hostile creatures to list

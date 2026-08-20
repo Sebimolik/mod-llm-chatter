@@ -18,7 +18,7 @@ from typing import Optional, Dict, List, Tuple, Any
 
 from chatter_constants import (
     ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
-    ZONE_NAMES_ES,
+    ZONE_NAMES_ES, ZONE_NAMES_KO,
     CLASS_NAMES, RACE_NAMES,
     RACE_SPEECH_PROFILES, CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
@@ -302,21 +302,36 @@ def pick_random_max_tokens(config: dict) -> int:
 #   - esES (ZONE_NAMES_ES): mixed provenance -- most entries
 #     sourced from an old (2007) Spanish WoW fan blog
 #     (worldofwarcraftesp.blogspot.com), community-sourced
-#     and unverified like frFR/deDE above, but three entries
-#     (Borean Tundra, Howling Fjord, Hellfire Peninsula) come
-#     from an official Blizzard press source instead
-#     (news.blizzard.com/es-es) and are genuinely
-#     higher-confidence -- see the inline comments on those
-#     three entries in ZONE_NAMES_ES above for details.
-# koKR creature/item/quest names above are already live
-# (sourced from acore_world.*_locale, which does carry that
-# locale) -- but wiring up koKR zone names here still
-# requires sourcing that locale's zone-name data first.
+#     and unverified like frFR/deDE above, but nine entries
+#     (Borean Tundra, Howling Fjord, Hellfire Peninsula,
+#     Dragonblight, Grizzly Hills, Zul'Drak, Sholazar Basin,
+#     The Storm Peaks, Icecrown) come from an official
+#     Blizzard press source instead (news.blizzard.com/es-es)
+#     and are genuinely higher-confidence -- see the inline
+#     comments on those nine entries in ZONE_NAMES_ES above
+#     for details.
+#   - frFR (ZONE_NAMES_FR) also has 8 Northrend entries
+#     (Borean Tundra, Howling Fjord, Dragonblight, Grizzly
+#     Hills, Zul'Drak, Sholazar Basin, The Storm Peaks,
+#     Icecrown) sourced the same official way
+#     (news.blizzard.com/fr-fr), layered on top of the rest
+#     of the wiki-sourced frFR data described above.
+#   - koKR (ZONE_NAMES_KO): a brand-new locale, covering only
+#     8 Northrend zones (the same set as the frFR/esES
+#     official-source additions above), sourced entirely from
+#     official Blizzard ko-kr press articles
+#     (news.blizzard.com/ko-kr). koKR creature/item/quest
+#     names above were already live (sourced from
+#     acore_world.*_locale, which does carry that locale);
+#     this is the first koKR zone-name data. Every zone
+#     outside those 8 falls back to English via
+#     get_zone_name(), same as the other locales.
 _ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
     "ruRU": ZONE_NAMES_RU,
     "frFR": ZONE_NAMES_FR,
     "deDE": ZONE_NAMES_DE,
     "esES": ZONE_NAMES_ES,
+    "koKR": ZONE_NAMES_KO,
 }
 
 
