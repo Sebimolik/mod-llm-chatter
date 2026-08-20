@@ -18,6 +18,7 @@ from typing import Optional, Dict, List, Tuple, Any
 
 from chatter_constants import (
     ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
+    ZONE_NAMES_ES,
     CLASS_NAMES, RACE_NAMES,
     RACE_SPEECH_PROFILES, CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
@@ -298,14 +299,24 @@ def pick_random_max_tokens(config: dict) -> int:
 #     all of Northrend and a handful of other zones. Missing
 #     entries simply fall back to English below rather than
 #     being guessed at.
-# esES/koKR creature/item/quest names above are already live
-# (sourced from acore_world.*_locale, which does carry those
-# locales) -- but wiring up esES/koKR zone names here still
+#   - esES (ZONE_NAMES_ES): mixed provenance -- most entries
+#     sourced from an old (2007) Spanish WoW fan blog
+#     (worldofwarcraftesp.blogspot.com), community-sourced
+#     and unverified like frFR/deDE above, but three entries
+#     (Borean Tundra, Howling Fjord, Hellfire Peninsula) come
+#     from an official Blizzard press source instead
+#     (news.blizzard.com/es-es) and are genuinely
+#     higher-confidence -- see the inline comments on those
+#     three entries in ZONE_NAMES_ES above for details.
+# koKR creature/item/quest names above are already live
+# (sourced from acore_world.*_locale, which does carry that
+# locale) -- but wiring up koKR zone names here still
 # requires sourcing that locale's zone-name data first.
 _ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
     "ruRU": ZONE_NAMES_RU,
     "frFR": ZONE_NAMES_FR,
     "deDE": ZONE_NAMES_DE,
+    "esES": ZONE_NAMES_ES,
 }
 
 

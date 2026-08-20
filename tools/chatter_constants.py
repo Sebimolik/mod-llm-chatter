@@ -276,6 +276,56 @@ ZONE_NAMES_DE = {
     4080: "Insel von Quel'Danas", 4197: "Tausendwintersee", 4395: "Dalaran",
 }
 
+# Spanish (esES) zone names -- mixed provenance, unlike
+# ZONE_NAMES_RU above (DBC-extracted, 100% authoritative)
+# and closer in spirit to ZONE_NAMES_FR / ZONE_NAMES_DE
+# (community-sourced, not verified against official client
+# data). Most entries below come from an old (2007) Spanish
+# WoW fan blog (worldofwarcraftesp.blogspot.com) covering
+# classic-era zones only -- community-sourced, similar
+# confidence tier to the wiki-sourced FR/DE data above, NOT
+# independently verified against official client data.
+# Three entries -- Borean Tundra, Howling Fjord, Hellfire
+# Peninsula (flagged inline below) -- come from an actual
+# official Blizzard press source (news.blizzard.com/es-es)
+# instead, and are genuinely higher-confidence than the
+# rest. A handful of source entries had typos or missing
+# accents (e.g. "Dun Mor ogh" -> "Dun Morogh", "Paramos de
+# Poniente" -> "Páramos de Poniente"); corrected to standard
+# Spanish orthography where the intended word was
+# unambiguous. Zone IDs were cross-referenced against
+# ZONE_NAMES above and every source entry matched a real
+# zone_id: "Stormwind" from the source (predating the
+# "City" suffix) maps to zone_id 1519 ("Stormwind City"
+# here); "The Barrens" was not present in the source at all,
+# and ZONE_NAMES above has no Northern/Southern Barrens
+# split to disambiguate against anyway, so there was nothing
+# to add or guess at. Keyed identically to ZONE_NAMES above
+# so get_zone_name() can do a straight locale-map lookup
+# with an English fallback.
+ZONE_NAMES_ES = {
+    1: "Dun Morogh", 3: "Tierras Inhóspitas", 4: "Las Tierras Devastadas",
+    8: "Pantano de las Penas", 10: "Bosque del Ocaso", 11: "Los Humedales",
+    12: "Bosque de Elwynn", 14: "Durotar", 15: "Marjal Revolcafango",
+    16: "Azshara", 28: "Tierras de la Peste del Oeste",
+    33: "Vega de Tuercespina", 38: "Loch Modan", 40: "Páramos de Poniente",
+    41: "Paso de la Muerte", 44: "Montañas Crestagrana",
+    45: "Tierras Altas de Arathi", 46: "Las Estepas Ardientes",
+    47: "Tierras del Interior", 51: "La Garganta de Fuego",
+    85: "Claros de Trisfal", 130: "Bosque de Argénteos",
+    139: "Tierras de la Peste del Este", 141: "Teldrassil",
+    148: "Costa Oscura", 215: "Mulgore", 267: "Laderas de Trabalomas",
+    331: "Vallefresno", 357: "Feralas", 361: "Frondavil",
+    400: "Las Mil Agujas", 405: "Desolace", 406: "Sierra Espolón",
+    440: "Tanaris", 490: "Cráter de Un'Goro", 493: "Claro de la Luna",
+    495: "Fiordo Aquilonal",  # verified: official Blizzard es-es news source
+    618: "Cuna del Invierno", 1377: "Silithus", 1497: "Entrañas",
+    1519: "Ciudad de Ventormenta", 1537: "Forjaz", 1637: "Orgrimmar",
+    1638: "Cima del Trueno", 1657: "Darnassus",
+    3483: "Península del Fuego Infernal",  # verified: official Blizzard es-es news source
+    3537: "Tundra Boreal",  # verified: official Blizzard es-es news source
+}
+
 # Capital cities - no hostile creatures to list
 CAPITAL_CITY_ZONES = {
     1519,  # Stormwind City
