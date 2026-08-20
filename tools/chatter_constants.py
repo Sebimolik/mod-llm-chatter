@@ -239,6 +239,27 @@ ZONE_NAMES_RU = {
 # higher-confidence -- same tier as the flagged es-es
 # entries in ZONE_NAMES_ES below. Flagged inline on each
 # entry.
+#
+# Update: 10 more zone names were added to ZONE_NAMES_FR
+# below (Bloodmyst Isle, Isle of Quel'Danas, Eversong Woods,
+# Azuremyst Isle, Ghostlands, Wintergrasp, Crystalsong
+# Forest, Silvermoon City, The Exodar, The Oculus), covering
+# most of the remaining Burning Crusade/Northrend gap.
+# Sourced from Wowhead's French-locale zone database
+# (cross-referenced across multiple expansion versions/URLs
+# for consistency), with Wowpedia/WikiWoW's French wiki used
+# for cross-confirmation on a couple of entries -- same
+# confidence tier as the wiki-sourced rest of this dict
+# above (likely accurate, not independently verified against
+# DBC), NOT the official-press tier of the 8 entries flagged
+# inline just above. "The Barrens" was deliberately not
+# added: the only French source found for it ("Tarides du
+# Nord") reflects the modern post-Cataclysm Northern/
+# Southern Barrens split and doesn't reliably correspond to
+# this server's single pre-split "The Barrens" zone_id 17,
+# the same ambiguity already noted for the German dict.
+# "Dalaran" was also skipped -- confirmed via Wowhead FR that
+# it keeps the same name in French, not a real translation.
 ZONE_NAMES_FR = {
     1: "Dun Morogh", 3: "Terres Ingrates", 4: "Terres Foudroyées",
     8: "Marais des chagrins", 10: "Bois de la pénombre", 11: "Les Paluns",
@@ -268,6 +289,11 @@ ZONE_NAMES_FR = {
     495: "Fjord Hurlant",  # verified: official Blizzard fr-fr news source
     3537: "Toundra Boréenne",  # verified: official Blizzard fr-fr news source
     3711: "Bassin de Sholazar",  # verified: official Blizzard fr-fr news source
+    3525: "Île de Brume-Sang", 4080: "Île de Quel'Danas",
+    3430: "Bois des Chants Éternels", 3524: "Île de Brume-Azur",
+    3433: "Les Terres Fantômes", 4197: "Joug-d'Hiver",
+    2817: "Forêt du Chant de Cristal", 3487: "Lune-d'Argent",
+    3557: "L'Exodar", 4228: "L'Oculus",
 }
 
 ZONE_NAMES_DE = {
@@ -325,6 +351,29 @@ ZONE_NAMES_DE = {
 # to add or guess at. Keyed identically to ZONE_NAMES above
 # so get_zone_name() can do a straight locale-map lookup
 # with an English fallback.
+#
+# Update: 17 more zone names were added to ZONE_NAMES_ES
+# below (Blade's Edge Mountains, Netherstorm, Shadowmoon
+# Valley, Terokkar Forest, Zangarmarsh, Crystalsong Forest,
+# Wintergrasp, Azuremyst Isle, Bloodmyst Isle, Eversong
+# Woods, Ghostlands, Silvermoon City, The Barrens, Shattrath
+# City, The Exodar, The Oculus, Isle of Quel'Danas), mostly
+# closing the Outland/Northrend gap. Sourced from
+# wowictionary.blogspot.com's "zonas del mundo" page (a
+# fan-maintained but broad/consistent Spanish translation
+# reference) plus Wowhead's Spanish-locale zone database for
+# a few entries (cross-referenced across expansion versions
+# for consistency) -- same confidence tier as the rest of
+# the fan-sourced entries above, NOT the official-press tier
+# of the nine entries flagged inline above. "The Barrens" ->
+# "Los Baldíos" was safe to add here (unlike the equivalent
+# skip in ZONE_NAMES_FR above): this source is classic-era-
+# only with no Northern/Southern Barrens split/version
+# ambiguity, and ZONE_NAMES above likewise has no such split
+# for this server, so it's a clean 1:1 match to zone_id 17.
+# "Dalaran" and "Nagrand" were both skipped -- confirmed via
+# Wowhead ES that they keep their English/original names in
+# Spanish, not real translations.
 ZONE_NAMES_ES = {
     1: "Dun Morogh", 3: "Tierras Inhóspitas", 4: "Las Tierras Devastadas",
     8: "Pantano de las Penas", 10: "Bosque del Ocaso", 11: "Los Humedales",
@@ -352,6 +401,15 @@ ZONE_NAMES_ES = {
     210: "Corona de Hielo",  # verified: official Blizzard es-es news source
     394: "Colinas Pardas",  # verified: official Blizzard es-es news source
     3711: "Cuenca de Sholazar",  # verified: official Blizzard es-es news source
+    3522: "Montañas Filoespada", 3523: "Tormenta Abisal",
+    3520: "Valle Sombraluna", 3519: "Bosque de Terokkar",
+    3521: "Marisma de Zangar", 2817: "Bosque Canto de Cristal",
+    4197: "Conquista del Invierno", 3524: "Isla Bruma Azur",
+    3525: "Isla Bruma de Sangre", 3430: "Bosque Canción Eterna",
+    3433: "Tierras Fantasma", 3487: "Ciudad de Lunargenta",
+    17: "Los Baldíos", 3703: "Ciudad de Shattrath",
+    3557: "El Exodar", 4228: "El Oculus",
+    4080: "Isla de Quel'Danas",
 }
 
 # Korean (koKR) zone names -- a brand-new locale, not
