@@ -210,6 +210,72 @@ ZONE_NAMES_RU = {
     4197: "Озеро Ледяных Оков", 4228: "Окулус", 4395: "Даларан",
 }
 
+# French (frFR) and German (deDE) zone names -- unlike
+# ZONE_NAMES_RU above (extracted directly from Blizzard's
+# own ruRU AreaTable.dbc, 100% authoritative), this data was
+# sourced from warcraft.wiki.gg's community-maintained
+# "LocalizedMapZones" addon-localization table, not from an
+# official Blizzard client data extraction. Treat it as
+# likely-accurate but NOT independently verified against
+# official client data. Zone IDs were cross-checked against
+# ZONE_NAMES above so every key here is a real, valid zone;
+# entries with no translation available on the wiki page are
+# simply omitted (get_zone_name() falls back to English for
+# those) rather than guessed. Coverage is known to be
+# incomplete, especially for French, which is missing most/
+# all of Northrend and a handful of other zones (e.g. Mount
+# Hyjal, Alterac Mountains, Hrothgar's Landing have no entry
+# in either language because they aren't present in
+# ZONE_NAMES at all).
+ZONE_NAMES_FR = {
+    1: "Dun Morogh", 3: "Terres Ingrates", 4: "Terres Foudroyées",
+    8: "Marais des chagrins", 10: "Bois de la pénombre", 11: "Les Paluns",
+    12: "Forêt d'Elwynn", 14: "Durotar", 15: "Marécage d'Aprefange",
+    16: "Azshara", 28: "Maleterres de l'Ouest",
+    33: "Vallée de Strangleronce", 38: "Loch Modan",
+    40: "La Marche de l'Ouest", 41: "Défilé de Deuillevent",
+    44: "Les Carmines", 45: "Hautes-terres d'Arathi", 46: "Steppes ardentes",
+    47: "Les Hinterlands", 51: "Gorge des Vents brûlants",
+    85: "Clairières de Tirisfal", 130: "Forêt des Pins argentés",
+    139: "Maleterres de l'Est", 141: "Teldrassil", 148: "Sombrivage",
+    215: "Mulgore", 267: "Contreforts de Hautebrande", 331: "Ashenvale",
+    357: "Feralas", 361: "Gangrebois", 400: "Mille pointes", 405: "Desolace",
+    406: "Les Serres-Rocheuses", 440: "Tanaris", 490: "Cratère d'Un'Goro",
+    493: "Reflet-de-Lune", 618: "Berceau-de-l'Hiver", 1377: "Silithus",
+    1497: "Les Fossoyeuses", 1519: "Hurlevent", 1537: "Forgefer",
+    1637: "Orgrimmar", 1638: "Pitons-du-Tonnerre", 1657: "Darnassus",
+    3483: "Péninsule des Flammes Infernales", 3518: "Nagrand",
+    3519: "Forêt de Terokkar", 3520: "Vallée d'Ombrelune",
+    3521: "Marécage de Zangar", 3522: "Les Tranchantes",
+    3523: "Raz-de-néant", 3703: "Shattrath",
+}
+
+ZONE_NAMES_DE = {
+    1: "Dun Morogh", 3: "Ödland", 4: "Verwüstete Lande",
+    8: "Sümpfe des Elends", 10: "Dämmerwald", 11: "Sumpfland",
+    12: "Wald von Elwynn", 14: "Durotar", 15: "Düstermarschen",
+    16: "Azshara", 28: "Westliche Pestländer", 33: "Schlingendorntal",
+    38: "Loch Modan", 40: "Westfall", 41: "Gebirgspass der Totenwinde",
+    44: "Rotkammgebirge", 45: "Arathihochland", 46: "Brennende Steppe",
+    47: "Hinterland", 51: "Sengende Schlucht", 65: "Drachenöde",
+    66: "Zul'Drak", 67: "Die Sturmgipfel", 85: "Tirisfal", 130: "Silberwald",
+    139: "Östliche Pestländer", 141: "Teldrassil", 148: "Dunkelküste",
+    210: "Eiskrone", 215: "Mulgore", 267: "Vorgebirge des Hügellands",
+    331: "Eschental", 357: "Feralas", 361: "Teufelswald",
+    394: "Grizzlyhügel", 400: "Tausend Nadeln", 405: "Desolace",
+    406: "Steinkrallengebirge", 440: "Tanaris", 490: "Krater von Un'Goro",
+    493: "Mondlichtung", 495: "Der Heulende Fjord", 618: "Winterquell",
+    1377: "Silithus", 1497: "Unterstadt", 1519: "Sturmwind",
+    1537: "Eisenschmiede", 1637: "Orgrimmar", 1638: "Donnerfels",
+    1657: "Darnassus", 2817: "Kristallsangwald", 3430: "Immersangwald",
+    3433: "Geisterlande", 3483: "Höllenfeuerhalbinsel", 3487: "Silbermond",
+    3518: "Nagrand", 3519: "Wälder von Terokkar", 3520: "Schattenmondtal",
+    3521: "Zangarmarschen", 3522: "Schergrat", 3523: "Nethersturm",
+    3524: "Azurmythosinsel", 3525: "Blutmythosinsel",
+    3537: "Boreanische Tundra", 3703: "Shattrath", 3711: "Sholazarbecken",
+    4080: "Insel von Quel'Danas", 4197: "Tausendwintersee", 4395: "Dalaran",
+}
+
 # Capital cities - no hostile creatures to list
 CAPITAL_CITY_ZONES = {
     1519,  # Stormwind City

@@ -17,7 +17,7 @@ import time
 from typing import Optional, Dict, List, Tuple, Any
 
 from chatter_constants import (
-    ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU,
+    ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
     CLASS_NAMES, RACE_NAMES,
     RACE_SPEECH_PROFILES, CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
@@ -278,32 +278,50 @@ def pick_random_max_tokens(config: dict) -> int:
 
 # =============================================================================
 # Maps a WoW client locale code (see _LANGUAGE_LOCALE_CODES
-# above) to the corresponding Blizzard-localized zone-name
-# dict, extracted from that locale's AreaTable.dbc. Add
-# further locales here (mirroring _LANGUAGE_LOCALE_CODES)
-# as more locale-specific zone-name data becomes available.
+# above) to the corresponding locale-specific zone-name
+# dict. Add further locales here (mirroring
+# _LANGUAGE_LOCALE_CODES) as more locale-specific zone-name
+# data becomes available.
 #
-# Deliberately Russian-only for now: zone names come from
-# the client's AreaTable.dbc (not from acore_world tables),
-# and we only have the ruRU AreaTable.dbc extracted so far.
-# frFR/deDE/esES/koKR creature/item/quest names above are
-# already live (sourced from acore_world.*_locale, which
-# does carry those locales) -- but wiring up frFR/deDE/esES/
-# koKR zone names here requires extracting the matching
-# client AreaTable.dbc for each locale first.
+# Provenance differs by locale, and that difference matters:
+#   - ruRU (ZONE_NAMES_RU): extracted directly from
+#     Blizzard's own ruRU AreaTable.dbc client data --
+#     100% authoritative.
+#   - frFR / deDE (ZONE_NAMES_FR / ZONE_NAMES_DE): sourced
+#     from warcraft.wiki.gg's community-maintained
+#     "LocalizedMapZones" addon-localization table, NOT from
+#     an official Blizzard client data extraction. Names are
+#     likely accurate (real translated zone names, not
+#     guesses) but have not been independently verified
+#     against official client data, and coverage is known to
+#     be incomplete -- French in particular is missing most/
+#     all of Northrend and a handful of other zones. Missing
+#     entries simply fall back to English below rather than
+#     being guessed at.
+# esES/koKR creature/item/quest names above are already live
+# (sourced from acore_world.*_locale, which does carry those
+# locales) -- but wiring up esES/koKR zone names here still
+# requires sourcing that locale's zone-name data first.
 _ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
     "ruRU": ZONE_NAMES_RU,
+    "frFR": ZONE_NAMES_FR,
+    "deDE": ZONE_NAMES_DE,
 }
 
 
 def get_zone_name(zone_id: int) -> Optional[str]:
     """Get human-readable zone name from zone ID.
 
-    Prefers the Blizzard-localized name for the configured
+    Prefers the localized name for the configured
     LLMChatter.Language (via _ZONE_NAME_LOCALE_MAPS) when
     available, falling back to the static English ZONE_NAMES
     entry, mirroring the same fallback-safe pattern used for
-    creature/item/quest name localization.
+    creature/item/quest name localization. See the
+    _ZONE_NAME_LOCALE_MAPS comment above for the differing
+    provenance/confidence of each locale's data (ruRU is
+    DBC-extracted and authoritative; frFR/deDE are
+    community-wiki-sourced and unverified against official
+    client data).
 
     Returns None when the zone ID is unknown to avoid
     injecting 'zone 123' placeholder text into prompts.
