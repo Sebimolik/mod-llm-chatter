@@ -1030,6 +1030,26 @@ bool HandleMemoryShowCommand(
         && !profile.name.empty())
         displayName = profile.name;
 
+    // Standing relationship disposition (see
+    // chatter_memory.py's _maybe_update_relationship()),
+    // printed ahead of the specific memory list below.
+    // Silently skipped if no row exists yet for this pair
+    // (first-time pair, or the update threshold was never
+    // reached) -- no "no relationship yet" noise.
+    QueryResult relResult = CharacterDatabase.Query(
+        "SELECT summary FROM llm_bot_relationships "
+        "WHERE bot_guid = {} AND player_guid = {}",
+        botGuid, playerGuid);
+    if (relResult)
+    {
+        std::string relationshipText =
+            relResult->Fetch()[0].Get<std::string>();
+        handler->PSendSysMessage(
+            "{}'s feelings about you: {}",
+            displayName,
+            TruncateMemoryText(relationshipText, 400));
+    }
+
     uint32 decayMaxImportance =
         sConfigMgr->GetOption<uint32>(
             "LLMChatter.Memory.DecayMaxImportance", 3);
@@ -1105,9 +1125,19 @@ bool HandleMemoryCleanCommand(ChatHandler* handler)
         "  ON m.player_guid = c2.guid "
         "WHERE c1.guid IS NULL OR c2.guid IS NULL");
 
+    // Same orphan cleanup for the relationship summary
+    // table -- same join shape, same one GM action.
+    CharacterDatabase.Execute(
+        "DELETE m FROM llm_bot_relationships m "
+        "LEFT JOIN characters c1 ON m.bot_guid = c1.guid "
+        "LEFT JOIN characters c2 "
+        "  ON m.player_guid = c2.guid "
+        "WHERE c1.guid IS NULL OR c2.guid IS NULL");
+
     handler->SendSysMessage(
         "LLM Chatter: purged orphaned "
-        "llm_bot_memories rows.");
+        "llm_bot_memories and llm_bot_relationships "
+        "rows.");
     return true;
 }
 }  // namespace

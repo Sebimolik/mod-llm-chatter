@@ -2098,6 +2098,7 @@ def build_player_response_prompt(
     travel_context="",
     companion_memories=None,
     companion_name=None,
+    relationship_summary=None,
 ):
     """Build prompt for a bot responding to a real
     player's party chat message. The bot should
@@ -2111,6 +2112,13 @@ def build_player_response_prompt(
     its own memories. Injected as a separate
     <party_memories> block, distinct from this bot's
     own <past_memories>.
+
+    relationship_summary: optional standing-disposition
+    text (see get_relationship_summary() in
+    chatter_memory.py) -- how this bot generally FEELS
+    about player_name overall, a running impression, not
+    a specific recollection like <past_memories>. Injected
+    as a <relationship> block.
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
@@ -2224,6 +2232,28 @@ def build_player_response_prompt(
                 f"- You may address {target} by "
                 f"name in your reply\n"
             )
+
+    # Inject standing relationship disposition, if any --
+    # positioned after identity/personality/tone (already
+    # set above) and BEFORE <past_memories>/<party_memories>,
+    # matching the plan's required ordering. Framed as a
+    # general, ongoing impression rather than a specific
+    # thing to recall, mirroring how <past_memories> vs.
+    # <party_memories> are already disambiguated below.
+    if relationship_summary:
+        rp_context += (
+            f"\n<relationship>\n"
+            f"How you generally feel about "
+            f"{player_name}, as a standing "
+            f"impression built up over time -- "
+            f"NOT a specific memory to recite, "
+            f"just your overall disposition "
+            f"toward them:\n"
+            f"{relationship_summary}\n"
+            f"Let this color your tone, not the "
+            f"topic. Do not quote it verbatim.\n"
+            f"</relationship>"
+        )
 
     # Inject memories if available
     if memories:
@@ -4401,6 +4431,7 @@ def build_bot_question_prompt(
     area_id=0,
     stored_tone=None,
     memories=None,
+    relationship_summary=None,
 ):
     """Build prompt for a bot asking the player a
     creative, contextual question in party chat.
@@ -4422,6 +4453,9 @@ def build_bot_question_prompt(
         recent_messages: for anti-repetition
         allow_action: whether to allow action field
         memories: list of memory strings or None
+        relationship_summary: optional standing-
+            disposition text, see
+            build_player_response_prompt()'s docstring
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
@@ -4465,6 +4499,25 @@ def build_bot_question_prompt(
             if speaker_talent_context:
                 prompt += (
                     f"{speaker_talent_context}\n"
+                )
+            # Standing relationship disposition, if
+            # any -- after identity/personality/tone,
+            # before <past_memories>, same framing as
+            # build_player_response_prompt().
+            if relationship_summary:
+                prompt += (
+                    f"\n<relationship>\n"
+                    f"How you generally feel about "
+                    f"{player_name}, as a standing "
+                    f"impression built up over time "
+                    f"-- NOT a specific memory to "
+                    f"recite, just your overall "
+                    f"disposition toward them:\n"
+                    f"{relationship_summary}\n"
+                    f"Let this color your tone, not "
+                    f"the topic. Do not quote it "
+                    f"verbatim.\n"
+                    f"</relationship>\n"
                 )
             prompt += (
                 f"\n<past_memories>\n"

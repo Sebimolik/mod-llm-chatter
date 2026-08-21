@@ -28,9 +28,11 @@ from chatter_shared import (
     build_bot_identity,
     estimate_tokens,
     get_gender_label,
+    append_json_instruction,
 )
 from chatter_text import (
     extract_json_object,
+    parse_single_response,
 )
 from chatter_llm import call_llm, get_llm_client
 
@@ -185,6 +187,23 @@ memory_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="memory",
 )
+
+# Separate, lower-priority pool for relationship-summary
+# condensation (see _maybe_update_relationship() below).
+# Kept independent from memory_executor so this lower-
+# frequency background work never competes with the
+# latency-sensitive memory-generation jobs sharing that pool.
+relationship_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="relationship",
+)
+
+# Input char budget for one relationship-condensation LLM
+# call, mirroring the guild summarizer's SummaryMaxInputChars
+# concept. Not itself a runtime config key (see
+# LLMChatter.Memory.Relationship.* in the conf.dist for the
+# tunables that are).
+_RELATIONSHIP_MAX_INPUT_CHARS = 6000
 
 # ============================================================
 # THREAD-SAFE SESSION TRACKER
@@ -1518,6 +1537,10 @@ def flush_session_memories(
                     rows_activated, bot_guid,
                     player_guid,
                 )
+                _maybe_queue_relationship_update(
+                    cursor, config, bot_guid,
+                    player_guid,
+                )
 
             # Prune to cap
             cnt = _count_active_memories(
@@ -1562,6 +1585,327 @@ def flush_session_memories(
                 f"bot={bot_guid} group={group_id}",
                 exc_info=True,
             )
+
+
+# ============================================================
+# RELATIONSHIP TRACKING
+# ============================================================
+#
+# A running, LLM-maintained per-(bot_guid, player_guid)
+# description of how a bot generally FEELS about a specific
+# player -- a standing disposition, distinct from the
+# individual llm_bot_memories journal entries it is
+# periodically condensed from. Updated in the background
+# (relationship_executor) after a farewell activates enough
+# new memories, mirroring the guild session summarizer's
+# _maybe_summarize_session() pattern in
+# chatter_guild_player.py.
+# ============================================================
+
+def _maybe_queue_relationship_update(
+    cursor, config, bot_guid, player_guid,
+):
+    """Decide whether enough new active memories have
+    accumulated since the last relationship update to
+    warrant submitting a background condensation job.
+
+    Called from flush_session_memories() right after that
+    bot's session rows are activated, reusing its already-
+    open cursor. Only decides WHETHER to submit; the actual
+    job (_maybe_update_relationship()) opens its own DB
+    connection and runs independently on
+    relationship_executor, so this check can never block or
+    slow down the farewell flow. Any failure here is caught
+    and logged -- it must never disrupt the farewell it's
+    piggybacking on.
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Relationship.Enable', 1
+    )):
+        return
+    try:
+        cursor.execute(
+            "SELECT updated_through_memory_id FROM"
+            " llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        row = cursor.fetchone()
+        watermark = int(row[0]) if row else 0
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM llm_bot_memories"
+            " WHERE bot_guid = %s"
+            "   AND player_guid = %s"
+            "   AND active = 1"
+            "   AND id > %s",
+            (bot_guid, player_guid, watermark),
+        )
+        count_row = cursor.fetchone()
+        new_count = count_row[0] if count_row else 0
+
+        threshold = int(config.get(
+            'LLMChatter.Memory.Relationship'
+            '.UpdateThreshold', 5,
+        ))
+        if new_count < threshold:
+            return
+
+        relationship_executor.submit(
+            _maybe_update_relationship,
+            config, bot_guid, player_guid,
+        )
+    except Exception:
+        logger.error(
+            "Relationship update trigger check failed "
+            f"for bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+
+
+def _maybe_update_relationship(
+    config, bot_guid, player_guid,
+):
+    """Condense new memories into the running relationship
+    summary for a bot-player pair. Runs in
+    relationship_executor (background thread) -- opens its
+    own DB connection rather than reusing the caller's, since
+    a single mysql-connector connection is not safe to share
+    across threads.
+
+    Fetches the current summary + watermark (absent row =
+    first-time pair, watermark 0), pulls active memories
+    newer than the watermark (capped by
+    _RELATIONSHIP_MAX_INPUT_CHARS), asks the LLM to fold them
+    into an updated summary, hard-truncates to
+    LLMChatter.Memory.Relationship.MaxChars, and writes it
+    back with the new watermark via INSERT ... ON DUPLICATE
+    KEY UPDATE.
+
+    On any failure (no new memories, LLM call failure, empty/
+    unparseable response) does nothing and leaves the
+    watermark untouched, so the next qualifying farewell
+    retries -- mirroring the guild summarizer's fail-safe:
+    never a partial/corrupt overwrite.
+    """
+    conn = None
+    try:
+        conn = get_db_connection(config)
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute(
+            "SELECT summary, updated_through_memory_id"
+            " FROM llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        existing = cursor.fetchone()
+        previous_summary = (
+            str(existing.get('summary') or '').strip()
+            if existing else ''
+        )
+        watermark = (
+            int(existing.get(
+                'updated_through_memory_id'
+            ) or 0)
+            if existing else 0
+        )
+
+        cursor.execute(
+            "SELECT id, memory FROM llm_bot_memories"
+            " WHERE bot_guid = %s"
+            "   AND player_guid = %s"
+            "   AND active = 1"
+            "   AND id > %s"
+            " ORDER BY id ASC",
+            (bot_guid, player_guid, watermark),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return  # nothing new to fold in
+
+        candidates = []
+        char_count = 0
+        for row in rows:
+            text = str(row.get('memory') or '')
+            row_chars = len(text) + 3
+            if (
+                candidates
+                and char_count + row_chars
+                    > _RELATIONSHIP_MAX_INPUT_CHARS
+            ):
+                break
+            candidates.append(row)
+            char_count += row_chars
+        if not candidates:
+            return
+
+        # Resolve display names for the prompt
+        cursor.execute(
+            "SELECT guid, name FROM characters"
+            " WHERE guid IN (%s, %s)",
+            (bot_guid, player_guid),
+        )
+        bot_name = ''
+        player_name = ''
+        for name_row in cursor.fetchall():
+            guid = int(name_row.get('guid') or 0)
+            if guid == bot_guid:
+                bot_name = name_row.get('name') or ''
+            elif guid == player_guid:
+                player_name = (
+                    name_row.get('name') or ''
+                )
+        if not bot_name or not player_name:
+            logger.error(
+                "Relationship update aborted: could "
+                f"not resolve names for bot={bot_guid}"
+                f" player={player_guid}",
+            )
+            return
+
+        memory_list = '\n'.join(
+            f"  - {sanitize_memory_for_prompt(row['memory'])}"
+            for row in candidates
+        )
+
+        max_chars = int(config.get(
+            'LLMChatter.Memory.Relationship.MaxChars',
+            400,
+        ))
+
+        prompt = (
+            f"Update a compact description of how "
+            f"{bot_name} feels about {player_name}, "
+            f"based on shared memories.\n"
+            f"Preserve established sentiment, inside "
+            f"jokes, notable moments, and any tension "
+            f"or warmth. Discard one-off trivia. Never "
+            f"invent feelings not supported by the "
+            f"memories.\n"
+            f"Hard limit: {max_chars} characters.\n\n"
+            f"Previous relationship:\n"
+            f"{previous_summary or '(just met)'}\n\n"
+            f"New memories to fold in:\n"
+            f"{memory_list}\n\n"
+            f"Return the updated relationship "
+            f"description."
+        )
+        # message_only=True routes through
+        # append_json_instruction's own language-rule +
+        # lore-guardrail injection (see chatter_shared.py),
+        # matching _maybe_summarize_session()'s call in
+        # chatter_guild_player.py exactly -- do not also
+        # inject get_lore_guardrail_rule()/
+        # get_language_rule() here, that would duplicate
+        # both rules in the final prompt.
+        prompt = append_json_instruction(
+            prompt, allow_action=False,
+            message_only=True,
+        )
+
+        client = get_llm_client(config)
+        response = call_llm(
+            client, prompt, config,
+            max_tokens_override=int(config.get(
+                'LLMChatter.Memory.Relationship'
+                '.MaxTokens', 300,
+            )),
+            context=(
+                f"relationship:{bot_guid}:"
+                f"{player_guid}"
+            ),
+            label='relationship_update',
+            metadata={
+                'bot_guid': bot_guid,
+                'player_guid': player_guid,
+                'relationship_input_lines':
+                    len(candidates),
+                'relationship_input_chars': char_count,
+            },
+        )
+        parsed = parse_single_response(response or '')
+
+        # Reuse the exact same truncation helper as the
+        # guild session summarizer rather than inventing a
+        # third near-identical one.
+        from chatter_guild_player import _trim_summary
+        summary = _trim_summary(
+            parsed.get('message', ''), max_chars,
+        )
+        if not summary:
+            logger.error(
+                "Relationship update produced an empty/"
+                f"unparseable summary for bot={bot_guid}"
+                f" player={player_guid}; watermark left"
+                " untouched for retry",
+            )
+            return
+
+        new_watermark = candidates[-1]['id']
+        write_cursor = conn.cursor()
+        write_cursor.execute(
+            "INSERT INTO llm_bot_relationships"
+            " (bot_guid, player_guid, summary,"
+            "  updated_through_memory_id, updated_at)"
+            " VALUES (%s, %s, %s, %s, NOW())"
+            " ON DUPLICATE KEY UPDATE"
+            "   summary = VALUES(summary),"
+            "   updated_through_memory_id ="
+            "     VALUES(updated_through_memory_id),"
+            "   updated_at = NOW()",
+            (
+                bot_guid, player_guid, summary,
+                new_watermark,
+            ),
+        )
+        conn.commit()
+        logger.info(
+            "Relationship summary updated bot=%s "
+            "player=%s lines=%s chars=%s out=%s",
+            bot_guid, player_guid, len(candidates),
+            char_count, len(summary),
+        )
+    except Exception:
+        logger.error(
+            "Relationship update failed for "
+            f"bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_relationship_summary(db, bot_guid, player_guid):
+    """Fetch the current relationship summary for a
+    bot-player pair.
+
+    Returns the summary string, or None if no row exists
+    yet (first-time pair / never reached the update
+    threshold) or on any DB error. Callers must treat None
+    as "no standing relationship text to inject" rather
+    than an error condition.
+    """
+    try:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT summary FROM llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        logger.error(
+            "Relationship summary lookup failed for "
+            f"bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+        return None
 
 
 # ============================================================
@@ -1715,14 +2059,15 @@ def rehydrate_active_sessions(db):
 # ============================================================
 
 def purge_orphaned_memories(db):
-    """Delete llm_bot_memories rows whose bot_guid
-    or player_guid no longer exists in characters
-    (e.g. deleted characters).
+    """Delete llm_bot_memories and llm_bot_relationships
+    rows whose bot_guid or player_guid no longer exists
+    in characters (e.g. deleted characters).
 
     Runs on the bridge's 24-hour periodic maintenance
     pass; the '.llm memory clean' GM command issues the
-    same DELETE from C++. Returns the number of rows
-    deleted.
+    same two DELETEs from C++. Returns the number of
+    llm_bot_memories rows deleted (unchanged return
+    contract for existing callers/logging).
     """
     cursor = db.cursor()
     cursor.execute("""
@@ -1736,12 +2081,31 @@ def purge_orphaned_memories(db):
     """)
     deleted = cursor.rowcount
     db.commit()
+
+    cursor.execute("""
+        DELETE m FROM llm_bot_relationships m
+        LEFT JOIN characters c1
+            ON m.bot_guid = c1.guid
+        LEFT JOIN characters c2
+            ON m.player_guid = c2.guid
+        WHERE c1.guid IS NULL
+           OR c2.guid IS NULL
+    """)
+    deleted_relationships = cursor.rowcount
+    db.commit()
     cursor.close()
+
     if deleted:
         logger.info(
             "[MEMORY] purged %d orphaned "
             "llm_bot_memories row(s)",
             deleted,
+        )
+    if deleted_relationships:
+        logger.info(
+            "[MEMORY] purged %d orphaned "
+            "llm_bot_relationships row(s)",
+            deleted_relationships,
         )
     return deleted
 

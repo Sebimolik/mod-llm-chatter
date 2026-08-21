@@ -2441,6 +2441,41 @@ LLMChatter.Memory.DecayMaxImportance = 3
 #
 LLMChatter.Memory.DecayDays = 30
 
+#
+#   LLMChatter.Memory.Relationship.Enable
+#       Master toggle for background relationship-summary
+#       condensation. When disabled, no llm_bot_relationships
+#       rows are created or updated (existing rows are left
+#       alone and still surfaced by .llmc memory / prompts).
+#       Default: 1
+#
+LLMChatter.Memory.Relationship.Enable = 1
+
+#
+#   LLMChatter.Memory.Relationship.UpdateThreshold
+#       New active memories needed for a bot-player pair,
+#       since the last relationship update, before a
+#       background re-summarization is triggered at farewell.
+#       Default: 5
+#
+LLMChatter.Memory.Relationship.UpdateThreshold = 5
+
+#
+#   LLMChatter.Memory.Relationship.MaxChars
+#       Maximum stored relationship-summary length.
+#       Default: 400
+#
+LLMChatter.Memory.Relationship.MaxChars = 400
+
+#
+#   LLMChatter.Memory.Relationship.MaxTokens
+#       Output budget for the relationship-condensation
+#       LLM call. The configured chatter provider and model
+#       are reused.
+#       Default: 300
+#
+LLMChatter.Memory.Relationship.MaxTokens = 300
+
 ###############################################################################
 # BACKSTORY
 ###############################################################################

@@ -130,6 +130,7 @@ from chatter_memory import (
     start_session,
     queue_memory,
     get_bot_memories,
+    get_relationship_summary,
     flush_session_memories,
     sanitize_memory_for_prompt,
     _get_group_lock,
@@ -1841,6 +1842,20 @@ def process_group_player_msg_event(
                         companion['bot_name']
                     )
 
+        # Standing relationship disposition (see
+        # get_relationship_summary() in chatter_memory.py) --
+        # independent of the RNG-gated memory recall above,
+        # since it's a persistent "how do I feel about this
+        # player" line, not a specific recollection.
+        relationship_summary = None
+        if player_info:
+            relationship_summary = (
+                get_relationship_summary(
+                    db, bot_guid,
+                    int(player_info['guid']),
+                )
+            )
+
         prompt = build_player_response_prompt(
             bot, traits, player_name,
             player_message, mode,
@@ -1858,6 +1873,7 @@ def process_group_player_msg_event(
             travel_context=travel_context,
             companion_memories=companion_memories,
             companion_name=companion_name,
+            relationship_summary=relationship_summary,
         )
 
         max_tokens = pick_random_max_tokens(config)
@@ -2208,6 +2224,15 @@ def _try_second_bot_response(
             player_name,
             perspective='target',
         )
+    bot2_relationship_summary = None
+    if player_info:
+        bot2_relationship_summary = (
+            get_relationship_summary(
+                db, bot2_guid,
+                int(player_info['guid']),
+            )
+        )
+
     prompt = build_player_response_prompt(
         bot2, bot2_traits, player_name,
         player_message, mode,
@@ -2222,6 +2247,7 @@ def _try_second_bot_response(
         map_id=map_id,
         stored_tone=bot2_tone,
         travel_context=bot2_travel_context,
+        relationship_summary=bot2_relationship_summary,
     )
 
     max_tokens = int(config.get(
@@ -4846,6 +4872,18 @@ def check_bot_questions(db, client, config):
                 if not question_memories:
                     question_memories = None
 
+        # Standing relationship disposition (only
+        # meaningful in build_bot_question_prompt()'s
+        # LEAN MEMORY PATH; harmless no-op otherwise).
+        relationship_summary = None
+        if player_info:
+            relationship_summary = (
+                get_relationship_summary(
+                    db, bot_guid,
+                    int(player_info['guid']),
+                )
+            )
+
         prompt = build_bot_question_prompt(
             bot, traits, mode,
             player_name=player_name,
@@ -4864,6 +4902,7 @@ def check_bot_questions(db, client, config):
             area_id=area_id,
             stored_tone=stored_tone,
             memories=question_memories or None,
+            relationship_summary=relationship_summary,
         )
 
         max_tokens = int(config.get(

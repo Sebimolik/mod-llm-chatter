@@ -54,6 +54,32 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ## Changelog
 
+### 2026-08-21 - Relationship Tracking
+
+* **Standing bot-player relationships**: Beyond the specific
+  `llm_bot_memories` journal, each bot now keeps ONE running,
+  LLM-condensed description of how it generally feels about a
+  specific player, distinct from any single recollection. It
+  updates itself in the background after a farewell once enough
+  new memories have accumulated
+  (`LLMChatter.Memory.Relationship.UpdateThreshold`, default 5),
+  on its own dedicated thread pool so it never competes with
+  regular memory generation.
+* **Colors party chat, not the topic**: Injected into party-chat
+  reply prompts as a `<relationship>` block, distinct from and
+  positioned ahead of `<past_memories>`, explicitly framed as an
+  ongoing disposition to color tone rather than something to
+  recite.
+* **`.llmc memory <botname>`**: Now also prints a
+  `"<Bot>'s feelings about you: ..."` line ahead of the memory
+  list when a relationship exists.
+* **`.llm memory clean`**: Now also purges orphaned
+  `llm_bot_relationships` rows for deleted characters, alongside
+  the existing `llm_bot_memories` cleanup.
+* **Database Migration**: Run
+  `data/sql/characters/updates/20260824_llm_bot_relationships.sql`
+  if upgrading from a previous version.
+
 ### 2026-08-21 - Player Memory Inspection Command
 
 * **`.llmc memory <botname>`**: Players can now check what one of their

@@ -1922,17 +1922,92 @@ loop calls `purge_orphaned_memories()` (which issues the identical
 `DELETE`) on a fixed 24-hour interval (`memory_gc_interval`), independent
 of whether a GM ever runs the manual command.
 
+### Relationship tracking
+
+Distinct from the `llm_bot_memories` journal, `llm_bot_relationships` holds
+ONE running, LLM-maintained description per `(bot_guid, player_guid)` pair
+of how that bot generally *feels* about that specific player — a standing
+disposition, not a list of specific recollections.
+
+1. **Trigger** — right after `flush_session_memories()` activates a
+   departing bot's session rows (`rows_activated > 0`),
+   `_maybe_queue_relationship_update()` reuses the same open cursor to
+   compare the count of `active = 1` memories newer than the pair's
+   `updated_through_memory_id` watermark (0 for a first-time pair, no row
+   yet) against `LLMChatter.Memory.Relationship.UpdateThreshold`. Meeting
+   the threshold submits `_maybe_update_relationship()` to
+   `relationship_executor` — a dedicated, single-worker
+   `ThreadPoolExecutor` kept separate from the shared `memory_executor` so
+   this lower-frequency background work never competes with
+   latency-sensitive memory generation. This check can never block or
+   slow down the farewell flow it's piggybacking on.
+2. **Condensation** — `_maybe_update_relationship()` opens its own DB
+   connection (background thread; connections aren't safe to share
+   across threads), fetches the current summary + watermark, pulls active
+   memories newer than the watermark (capped at ~6000 input characters,
+   mirroring the Guild Chat session summarizer's `SummaryMaxInputChars`
+   concept — see 13s below), and asks the LLM to fold them into an
+   updated description using the exact same
+   `append_json_instruction(..., message_only=True)` call the Guild
+   session summarizer uses, so the language rule and lore guardrail are
+   applied identically. The response is hard-truncated to
+   `LLMChatter.Memory.Relationship.MaxChars` with `_trim_summary()`
+   (imported from `chatter_guild_player.py` rather than re-implementing a
+   third near-identical truncation helper) and written back via
+   `INSERT ... ON DUPLICATE KEY UPDATE`, advancing the watermark to the
+   newest memory `id` folded in.
+3. **Fail-safe** — on no new memories, an LLM call failure, or an empty/
+   unparseable response, the function returns without writing anything;
+   the watermark is left untouched so the next qualifying farewell
+   retries. Never a partial or corrupt overwrite.
+4. **Read paths** — `get_relationship_summary(db, bot_guid, player_guid)`
+   returns the current summary or `None` (first-time pair / never
+   reached the threshold). `chatter_group.py` fetches it right before
+   the player-scoped prompt builders it feeds
+   (`build_player_response_prompt()`'s two call sites and
+   `build_bot_question_prompt()`'s LEAN MEMORY PATH call site) and passes
+   it as `relationship_summary=`. Both prompt builders inject it as a
+   `<relationship>` block positioned after identity/personality/tone and
+   before `<past_memories>`, explicitly framed as an ongoing disposition
+   ("let this color your tone, not the topic") rather than something to
+   recite — the same distinction already drawn between `<past_memories>`
+   and `<party_memories>`.
+5. **Command surfacing** — `.llmc memory <botname>` prints one extra line,
+   `"<Bot>'s feelings about you: <summary>"`, ahead of the memory list,
+   truncated with the same `TruncateMemoryText(..., 400)` used for
+   individual memory previews. Silently omitted if no row exists yet —
+   no "no relationship yet" noise.
+6. **Cleanup** — both `purge_orphaned_memories()` (24-hour periodic pass)
+   and `.llm memory clean` (GM command) now issue a second `DELETE`
+   against `llm_bot_relationships` with the identical
+   `characters`-orphan `LEFT JOIN` shape as `llm_bot_memories`, in the
+   same function/command.
+
+### Manual and automatic cleanup
+
+`.llm memory clean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
+runs a `DELETE` directly against `CharacterDatabase`, dropping
+`llm_bot_memories` rows whose `bot_guid`/`player_guid` no longer resolve
+to an existing character (e.g. after a character deletion) — the same
+pattern `.llmc forget` already uses. It also runs the equivalent `DELETE`
+against `llm_bot_relationships` (see "Relationship tracking" above).
+
+The same cleanup also runs automatically: `llm_chatter_bridge.py`'s main
+loop calls `purge_orphaned_memories()` (which issues the identical
+`DELETE`s) on a fixed 24-hour interval (`memory_gc_interval`), independent
+of whether a GM ever runs the manual command.
+
 ### Files
 
 | File | Role |
 |------|------|
-| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan purge, flush, retrieval |
-| `chatter_group.py` | Calls `start_session`, `get_bot_memories`, first-meeting insert |
+| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan purge, flush, retrieval, relationship tracking (`relationship_executor`, `_maybe_queue_relationship_update`, `_maybe_update_relationship`, `get_relationship_summary`) |
+| `chatter_group.py` | Calls `start_session`, `get_bot_memories`, `get_relationship_summary`, first-meeting insert |
 | `chatter_group_handlers.py` | `_kill_post_success()` / `_wipe_post_success()` filter altbot candidates and call `queue_shared_event_memory()` for party-wide kill/wipe memories |
-| `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection |
-| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop |
-| `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE` directly |
-| `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout |
+| `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection; `build_player_response_prompt()` / `build_bot_question_prompt()` — `<relationship>` block injection |
+| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop; drains both `memory_executor` and `relationship_executor` on shutdown |
+| `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE`s directly |
+| `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout plus the relationship line |
 | `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
 
 ### Database tables
@@ -1942,6 +2017,7 @@ of whether a GM ever runs the manual command.
 | `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, `ambient`, etc. `importance_score` (TINYINT UNSIGNED, default 5) drives decay-aware ranking. |
 | `llm_bot_identities` | Persistent personality traits keyed by `bot_guid`. Regenerated only on `IdentityVersion` bump. |
 | `llm_group_bot_traits` | `is_altbot` (TINYINT(1), default 1) marks whether a bot is player-owned; gates memory generation. |
+| `llm_bot_relationships` | One running LLM-maintained `summary` per `(bot_guid, player_guid)`, plus `updated_through_memory_id` (the memory-condensation watermark). Condensed from `llm_bot_memories`, not itself journaled. |
 
 ### Config keys
 
@@ -1955,6 +2031,10 @@ of whether a GM ever runs the manual command.
 | `LLMChatter.Memory.MaxInjectTokens` | `400` | Approximate token budget for memories injected into a single prompt (reunion greeting, recall) |
 | `LLMChatter.Memory.DecayMaxImportance` | `3` | Highest importance score still subject to decay; higher-scored memories never decay |
 | `LLMChatter.Memory.DecayDays` | `30` | Days a decaying memory takes to lose one point of importance (floored at 1) |
+| `LLMChatter.Memory.Relationship.Enable` | `1` | Master toggle for background relationship-summary condensation |
+| `LLMChatter.Memory.Relationship.UpdateThreshold` | `5` | New active memories needed since the last update before a re-summarization is triggered at farewell |
+| `LLMChatter.Memory.Relationship.MaxChars` | `400` | Maximum stored relationship-summary length |
+| `LLMChatter.Memory.Relationship.MaxTokens` | `300` | Output budget for the relationship-condensation LLM call |
 
 ---
 

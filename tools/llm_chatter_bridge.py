@@ -2390,6 +2390,20 @@ def main():
                     "Memory executor shutdown failed",
                     exc_info=True,
                 )
+            # Drain relationship executor
+            try:
+                from chatter_memory import (
+                    relationship_executor,
+                )
+                relationship_executor.shutdown(
+                    wait=True
+                )
+            except Exception:
+                logger.error(
+                    "Relationship executor shutdown "
+                    "failed",
+                    exc_info=True,
+                )
             break
         except Exception:
             logger.error(
