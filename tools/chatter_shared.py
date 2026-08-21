@@ -1533,6 +1533,31 @@ def get_language_rule() -> str:
     )
 
 
+def get_lore_guardrail_rule() -> str:
+    """Return a compact, era-scoped lore guardrail line.
+
+    Used by JSON instruction builders (and directly by
+    the memory-generation prompt builders) to keep
+    generated chat/memory text anchored to what actually
+    exists in Wrath of the Lich King (client 3.3.5a),
+    instead of drifting into anachronistic lore from
+    later expansions. Kept short by design since it is
+    injected into every single prompt.
+    """
+    return (
+        "\nLore: This server is Wrath of the Lich King "
+        "(client 3.3.5a) — content stops there. Playable "
+        "races are only the eight Classic races plus "
+        "Blood Elf and Draenei (no Worgen, Goblin, "
+        "Pandaren, or anything from later expansions). "
+        "The world is pre-Cataclysm — no Cataclysm-era "
+        "zone changes, factions, or events. Never invent "
+        "lore, characters, or places, and never "
+        "reference anything anachronistic to this point "
+        "in the timeline."
+    )
+
+
 # Maps the resolved language label (see _LANGUAGE_LABELS)
 # to the WoW client locale code used by Blizzard's own
 # localized data in acore_world.*_locale tables (e.g.
@@ -1975,8 +2000,11 @@ def append_json_instruction(
     """
     if message_only:
         lang_rule = get_language_rule()
+        lore_rule = get_lore_guardrail_rule()
         if lang_rule:
             prompt = prompt + lang_rule
+        if lore_rule:
+            prompt = prompt + lore_rule
         block = (
             "\n\nRESPONSE FORMAT: You MUST respond with "
             "ONLY valid JSON. No other text.\n"
@@ -1989,6 +2017,7 @@ def append_json_instruction(
             "in the prompt exactly — never exceed the "
             "stated character limit."
             f"{lang_rule}"
+            f"{lore_rule}"
         )
         return PromptParts(prompt, block)
     # Apply ActionChance RNG: allow_action=True means
@@ -2029,13 +2058,17 @@ def append_json_instruction(
         )
 
     lang_rule = get_language_rule()
+    lore_rule = get_lore_guardrail_rule()
     # Also inject the language rule into the user
     # prompt so split-system providers (Anthropic)
     # see it close to generation — system prompts
     # lose steering weight against English few-shot
     # content that sits inside the user prompt.
+    # Same reasoning for the lore guardrail.
     if lang_rule:
         prompt = prompt + lang_rule
+    if lore_rule:
+        prompt = prompt + lore_rule
     block = (
         "\n\nRESPONSE FORMAT: You MUST respond with "
         "ONLY valid JSON. No other text.\n"
@@ -2050,6 +2083,7 @@ def append_json_instruction(
         "in the prompt exactly — never exceed the "
         "stated character limit."
         f"{lang_rule}"
+        f"{lore_rule}"
     )
     return PromptParts(prompt, block)
 
@@ -2068,8 +2102,11 @@ def append_conversation_json_instruction(
     text without action or emote fields.
     """
     lang_rule = get_language_rule()
+    lore_rule = get_lore_guardrail_rule()
     if lang_rule:
         prompt = prompt + lang_rule
+    if lore_rule:
+        prompt = prompt + lore_rule
 
     if message_only:
         example_msgs = ',\n  '.join(
@@ -2097,6 +2134,7 @@ def append_conversation_json_instruction(
             "in the prompt exactly â€” never exceed the "
             "stated character limit."
             f"{lang_rule}"
+            f"{lore_rule}"
         )
         return PromptParts(prompt, block)
 
@@ -2178,6 +2216,7 @@ def append_conversation_json_instruction(
         "in the prompt exactly — never exceed the "
         "stated character limit."
         f"{lang_rule}"
+        f"{lore_rule}"
     )
     return PromptParts(prompt, block)
 

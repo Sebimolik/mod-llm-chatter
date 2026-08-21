@@ -663,29 +663,64 @@ def process_group_levelup_event(
         post_success=_levelup_post_success,
     )
 
-def _quest_complete_memory(db, ctx, message):
-    """Post-success: queue memory for quest
-    completion."""
-    mem_chance = int(ctx['config'].get(
+def _queue_quest_complete_shared_memory(
+    db, config, group_id, quest_name,
+):
+    """Memory: the whole party remembers the quest
+    turn-in.
+
+    Same shared-event pattern as
+    _kill_post_success()/_wipe_post_success(): one
+    shared LLM call produces a llm_bot_memories row
+    for every present altbot.
+    QuestGenerationChance is rolled once for the
+    event, not per bot.
+    """
+    mem_chance = int(config.get(
         'LLMChatter.Memory'
-        '.QuestGenerationChance', 40,
+        '.QuestGenerationChance', 40
     ))
-    if random.random() * 100 < mem_chance:
-        queue_memory(
-            ctx['config'], ctx['group_id'],
-            ctx['bot_guid'], 0,
+    if random.random() * 100 >= mem_chance:
+        return
+    try:
+        mc = db.cursor(dictionary=True)
+        mc.execute(
+            "SELECT t.bot_guid"
+            " FROM llm_group_bot_traits t"
+            " WHERE t.group_id = %s"
+            "   AND t.is_altbot = 1",
+            (group_id,),
+        )
+        bot_guids = [
+            row['bot_guid'] for row in mc.fetchall()
+        ]
+        if not bot_guids:
+            return
+        queue_shared_event_memory(
+            config, group_id,
             memory_type='quest_complete',
             event_context=(
-                f"Completed quest:"
-                f" {ctx['quest_name']}"
+                f"Completed quest: {quest_name}"
             ),
-            bot_name=ctx['bot_name'],
-            bot_class=ctx['bot']['class'],
-            bot_race=ctx['bot']['race'],
-            bot_gender=ctx['bot'].get(
-                'gender', ''
-            ),
+            bot_guids=bot_guids,
+            db=db,
         )
+    except Exception:
+        logger.error(
+            "quest_complete shared memory queue"
+            " failed",
+            exc_info=True,
+        )
+
+
+def _quest_complete_memory(db, ctx, message):
+    """Post-success: queue shared memory for quest
+    completion (pipeline / fallback statement
+    path)."""
+    _queue_quest_complete_shared_memory(
+        db, ctx['config'], ctx['group_id'],
+        ctx['quest_name'],
+    )
 
 
 def process_group_quest_complete_event(
@@ -768,46 +803,10 @@ def process_group_quest_complete_event(
                     'quest',
                 )
                 # Memory: quest completion (conv)
-                bot_class = get_class_name(int(
-                    extra_data.get('bot_class', 0)
-                ))
-                bot_race = get_race_name(int(
-                    extra_data.get('bot_race', 0)
-                ))
-                bot_gender = get_gender_label(int(
-                    extra_data.get('bot_gender', 0)
-                ))
-                try:
-                    mem_ch = int(config.get(
-                        'LLMChatter.Memory'
-                        '.QuestGenerationChance',
-                        40,
-                    ))
-                    if (
-                        random.random() * 100
-                        < mem_ch
-                    ):
-                        queue_memory(
-                            config, group_id,
-                            reactor_guid, 0,
-                            memory_type=(
-                                'quest_complete'
-                            ),
-                            event_context=(
-                                f"Completed quest:"
-                                f" {quest_name}"
-                            ),
-                            bot_name=reactor_name,
-                            bot_class=bot_class,
-                            bot_race=bot_race,
-                            bot_gender=bot_gender,
-                        )
-                except Exception:
-                    logger.error(
-                        "quest_complete memory"
-                        " failed (conv path)",
-                        exc_info=True,
-                    )
+                _queue_quest_complete_shared_memory(
+                    db, config, group_id,
+                    quest_name,
+                )
                 return True
         except Exception:
             logger.error(

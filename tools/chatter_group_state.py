@@ -1518,6 +1518,37 @@ def get_group_members(db, group_id):
     ]
 
 
+def get_group_bot_guids(db, group_id):
+    """Get bot_guid/bot_name/is_altbot for every bot
+    in a group.
+
+    Sibling to get_group_members() (which returns
+    plain bot_name strings and is relied on by many
+    callers as-is): this variant keeps the guid and
+    altbot flag for callers that need to identify a
+    SPECIFIC other bot in the group, e.g. cross-bot
+    memory referencing.
+
+    Returns a list of dicts:
+    [{'bot_guid': int, 'bot_name': str,
+      'is_altbot': bool}, ...]
+    """
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT bot_guid, bot_name, is_altbot
+        FROM llm_group_bot_traits
+        WHERE group_id = %s
+    """, (group_id,))
+    return [
+        {
+            'bot_guid': row['bot_guid'],
+            'bot_name': row['bot_name'],
+            'is_altbot': bool(row['is_altbot']),
+        }
+        for row in cursor.fetchall()
+    ]
+
+
 def get_group_player_name(db, group_id):
     """Get the real player's name from chat history
     or player_msg events. Returns name or None.

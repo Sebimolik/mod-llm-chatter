@@ -1114,11 +1114,16 @@ def _call_llm_for_memory(
 
     # Plain-string prompt path — not routed through
     # append_json_instruction, so inject the language
-    # rule directly.
-    from chatter_shared import get_language_rule
+    # rule and lore guardrail directly.
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
     lang_rule = get_language_rule()
     if lang_rule:
         prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
 
     try:
         response = call_llm(
@@ -1239,10 +1244,15 @@ def _generate_shared_event_memory(
         "- Just the JSON, nothing else"
     )
 
-    from chatter_shared import get_language_rule
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
     lang_rule = get_language_rule()
     if lang_rule:
         prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
 
     try:
         response = call_llm(
@@ -1743,6 +1753,7 @@ def purge_orphaned_memories(db):
 def get_bot_memories(
     db, bot_guid, player_guid, config=None, count=3,
     exclude_first_meeting=False, current_zone_id=None,
+    mark_used=True,
 ):
     """Retrieve decay-ranked active memories for a
     bot-player pair.
@@ -1752,7 +1763,11 @@ def get_bot_memories(
     accumulates them in that order until either `count`
     rows or the LLMChatter.Memory.MaxInjectTokens budget
     is reached. Only the rows actually returned are
-    marked used=1.
+    marked used=1 (unless mark_used=False, e.g. when a
+    memory is being fetched for secondhand reference by
+    a DIFFERENT bot than the one it belongs to — that
+    should not count toward this memory's own eviction
+    priority).
 
     When current_zone_id is given, it is used as a
     TIE-BREAKER ONLY (after effective_score) so a
@@ -1832,19 +1847,20 @@ def get_bot_memories(
         if not selected:
             return []
 
-        ids = [row['id'] for row in selected]
-        placeholders = ','.join(
-            ['%s'] * len(ids)
-        )
-        cursor.execute(
-            "UPDATE llm_bot_memories"
-            " SET used = 1,"
-            " last_used_at = NOW()"
-            " WHERE id IN (%s)"
-            % placeholders,
-            tuple(ids),
-        )
-        db.commit()
+        if mark_used:
+            ids = [row['id'] for row in selected]
+            placeholders = ','.join(
+                ['%s'] * len(ids)
+            )
+            cursor.execute(
+                "UPDATE llm_bot_memories"
+                " SET used = 1,"
+                " last_used_at = NOW()"
+                " WHERE id IN (%s)"
+                % placeholders,
+                tuple(ids),
+            )
+            db.commit()
         return [row['memory'] for row in selected]
     except Exception:
         logger.error(

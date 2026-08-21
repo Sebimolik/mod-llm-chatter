@@ -2096,10 +2096,21 @@ def build_player_response_prompt(
     stored_tone=None,
     memories=None,
     travel_context="",
+    companion_memories=None,
+    companion_name=None,
 ):
     """Build prompt for a bot responding to a real
     player's party chat message. The bot should
     reply naturally and contextually.
+
+    companion_memories/companion_name: optional
+    "shared party lore" — 1-2 memories belonging to
+    a DIFFERENT present bot (companion_name), so the
+    speaking bot can occasionally reference what a
+    companion remembers about the player, not just
+    its own memories. Injected as a separate
+    <party_memories> block, distinct from this bot's
+    own <past_memories>.
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
@@ -2267,6 +2278,46 @@ def build_player_response_prompt(
                     f"\"you\" to mean "
                     f"{player_name}."
                 )
+
+    # Inject a companion's memory of the player --
+    # "shared party lore". Distinct tag from
+    # <past_memories> above so the model can tell
+    # "my own memory" apart from "what I've heard
+    # from a companion".
+    if companion_memories and companion_name:
+        from chatter_memory import (
+            sanitize_memory_for_prompt,
+        )
+        comp_sanitized = [
+            sanitize_memory_for_prompt(m)
+            for m in companion_memories
+        ]
+        comp_sanitized = [
+            s for s in comp_sanitized if s
+        ]
+        if comp_sanitized:
+            comp_mem_lines = '\n'.join(
+                f"  - {m}" for m in comp_sanitized
+            )
+            rp_context += (
+                f"\n<party_memories "
+                f"bot=\"{companion_name}\">\n"
+                f"{companion_name}'s memories of "
+                f"past adventures with "
+                f"{player_name} -- NOT your own "
+                f"memory, you heard about this "
+                f"secondhand from "
+                f"{companion_name}:\n"
+                f"{comp_mem_lines}\n"
+                f"You may naturally bring this "
+                f"up as something {companion_name} "
+                f"told you or as a shared party "
+                f"moment -- don't claim it "
+                f"happened to you personally, and "
+                f"don't just recite it "
+                f"verbatim.\n"
+                f"</party_memories>"
+            )
 
     prompt += f"{rp_context}\n\n"
     if link_context:

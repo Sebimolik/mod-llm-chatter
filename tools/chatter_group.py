@@ -98,6 +98,7 @@ from chatter_group_state import (
     _get_recent_chat,
     format_chat_history,
     get_group_members,
+    get_group_bot_guids,
     get_group_player_name,
 )
 from chatter_group_handlers import (
@@ -1800,6 +1801,46 @@ def process_group_player_msg_event(
                 if not msg_memories:
                     msg_memories = None
 
+        # Cross-bot memory referencing ("shared party
+        # lore") — occasionally let the responding bot
+        # also draw on what a DIFFERENT present altbot
+        # remembers about the player, not just its own
+        # memories. Independent roll from the own-memory
+        # fetch above (same IdleRecallChance knob) so the
+        # two don't always coincide; skipped outright when
+        # solo or no other altbot is present.
+        companion_memories = None
+        companion_name = None
+        if (
+            memory_enabled and player_info
+            and player_guid
+            and random.random() < recall_chance
+        ):
+            other_altbots = [
+                b for b in get_group_bot_guids(
+                    db, group_id
+                )
+                if b['is_altbot']
+                and b['bot_guid'] != bot_guid
+            ]
+            if other_altbots:
+                companion = random.choice(
+                    other_altbots
+                )
+                c_mems = get_bot_memories(
+                    db, companion['bot_guid'],
+                    player_guid, config=config,
+                    count=2,
+                    exclude_first_meeting=True,
+                    current_zone_id=zone_id,
+                    mark_used=False,
+                )
+                if c_mems:
+                    companion_memories = c_mems
+                    companion_name = (
+                        companion['bot_name']
+                    )
+
         prompt = build_player_response_prompt(
             bot, traits, player_name,
             player_message, mode,
@@ -1815,6 +1856,8 @@ def process_group_player_msg_event(
             stored_tone=stored_tone,
             memories=msg_memories,
             travel_context=travel_context,
+            companion_memories=companion_memories,
+            companion_name=companion_name,
         )
 
         max_tokens = pick_random_max_tokens(config)
