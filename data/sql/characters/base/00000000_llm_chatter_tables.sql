@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
     ) NOT NULL,
     `memory`        TEXT         NOT NULL,
     `importance_score` TINYINT UNSIGNED NOT NULL DEFAULT 5,
+    `zone_id`        INT UNSIGNED DEFAULT NULL,
     `mood`          VARCHAR(32)  NOT NULL,
     `emote`         VARCHAR(32)  DEFAULT NULL,
     `active`        TINYINT(1)   NOT NULL DEFAULT 0,

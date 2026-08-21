@@ -425,7 +425,7 @@ def queue_memory(
             return  # can't create orphaned memory
 
         # Resolve location NOW while traits exist
-        location = _resolve_location(
+        location, zone_id = _resolve_location(
             db, config, group_id
         )
     finally:
@@ -450,6 +450,7 @@ def queue_memory(
         player_name=player_name,
         player_gender=player_gender,
         location=location,
+        zone_id=zone_id,
         session_start=session_start,
         insert_active=False,
     )
@@ -535,7 +536,8 @@ def queue_shared_event_memory(
 # ============================================================
 
 def _resolve_location(db, config, group_id):
-    """Resolve player-centric location label.
+    """Resolve player-centric location label and its
+    numeric zone_id.
 
     Uses get_group_location() for zone/area/map,
     then get_dungeon_flavor() for instances or
@@ -549,9 +551,11 @@ def _resolve_location(db, config, group_id):
         config: bridge config dict
         group_id: group identifier
 
-    Returns a human-readable string like
-    "Teldrassil > Dolanaar" or "The Deadmines",
-    or empty string on failure.
+    Returns (location_str, zone_id) where location_str
+    is a human-readable string like "Teldrassil >
+    Dolanaar" or "The Deadmines" (empty string on
+    failure), and zone_id is the numeric zone id or
+    None if unknown.
     """
     own_db = False
     try:
@@ -559,18 +563,19 @@ def _resolve_location(db, config, group_id):
             db = get_db_connection(config)
             own_db = True
         z, a, m = get_group_location(db, group_id)
+        zone_id = z or None
         if not z and not m:
-            return ""
+            return "", zone_id
         # Dungeons/raids: use flavour name
         df = get_dungeon_flavor(m)
         if df:
-            return df.split(':')[0]
+            return df.split(':')[0], zone_id
         # Open world: "Zone > Subzone" or "Zone"
         if z:
-            return format_location_label(z, a)
-        return ""
+            return format_location_label(z, a), zone_id
+        return "", zone_id
     except Exception:
-        return ""
+        return "", None
     finally:
         if own_db and db:
             try:
@@ -678,7 +683,7 @@ def _ensure_cap_and_insert(
     conn, config, bot_guid, player_guid, group_id,
     memory_type, memory_text, mood, emote,
     session_start, active, max_per,
-    importance=5,
+    importance=5, zone_id=None,
 ):
     """Check memory cap, evict if needed, insert.
 
@@ -705,15 +710,15 @@ def _ensure_cap_and_insert(
         "  group_id, memory_type,"
         "  memory, mood, emote,"
         "  active, session_start,"
-        "  importance_score)"
+        "  importance_score, zone_id)"
         " VALUES"
-        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             bot_guid, player_guid,
             group_id, memory_type,
             memory_text, mood, emote,
             active, session_start,
-            importance,
+            importance, zone_id,
         ),
     )
     conn.commit()
@@ -727,6 +732,7 @@ def _execute_generate_memory(
     bot_gender="",
     player_name="", player_gender="",
     location="",
+    zone_id=None,
     session_start=0.0, insert_active=False,
 ):
     """Generate a memory via LLM and insert it.
@@ -853,6 +859,7 @@ def _execute_generate_memory(
                     session_start, active=0,
                     max_per=max_per,
                     importance=importance,
+                    zone_id=zone_id,
                 )
         else:
             _ensure_cap_and_insert(
@@ -863,6 +870,7 @@ def _execute_generate_memory(
                 session_start, active=1,
                 max_per=max_per,
                 importance=importance,
+                zone_id=zone_id,
             )
 
     except Exception:
@@ -909,6 +917,16 @@ def _execute_generate_shared_memory(
     conn = None
     try:
         conn = get_db_connection(config)
+
+        # Resolve current zone for zone-aware recall
+        # tie-breaking (see get_bot_memories()).
+        try:
+            zone_id, _a, _m = get_group_location(
+                conn, group_id
+            )
+            zone_id = zone_id or None
+        except Exception:
+            zone_id = None
 
         moods = MEMORY_MOODS.get(
             memory_type, ['contemplative'],
@@ -967,6 +985,7 @@ def _execute_generate_shared_memory(
                     mood, emote, session_start,
                     active=0, max_per=max_per,
                     importance=importance,
+                    zone_id=zone_id,
                 ):
                     inserted_count += 1
 
@@ -1427,8 +1446,10 @@ def flush_session_memories(
                 '.PartyMemberGenerationChance',
                 50
             ))
-            flush_loc = _resolve_location(
-                db, config, group_id
+            flush_loc, flush_zone_id = (
+                _resolve_location(
+                    db, config, group_id
+                )
             )
             # Only player-owned (alt) bots get
             # party_member memories.
@@ -1461,6 +1482,7 @@ def flush_session_memories(
                         'gender', ''
                     ),
                     location=flush_loc,
+                    zone_id=flush_zone_id,
                     session_start=session_start,
                     insert_active=True,
                 )
@@ -1720,7 +1742,7 @@ def purge_orphaned_memories(db):
 
 def get_bot_memories(
     db, bot_guid, player_guid, config=None, count=3,
-    exclude_first_meeting=False,
+    exclude_first_meeting=False, current_zone_id=None,
 ):
     """Retrieve decay-ranked active memories for a
     bot-player pair.
@@ -1732,6 +1754,14 @@ def get_bot_memories(
     is reached. Only the rows actually returned are
     marked used=1.
 
+    When current_zone_id is given, it is used as a
+    TIE-BREAKER ONLY (after effective_score) so a
+    same-zone memory can win among comparably-important
+    candidates without ever outranking a genuinely more
+    important memory from elsewhere. When omitted
+    (default), ordering is byte-identical to before this
+    parameter existed.
+
     Returns list of memory strings (may be empty).
     """
     try:
@@ -1741,20 +1771,40 @@ def get_bot_memories(
         )
         candidate_limit = max(count * 3, 15)
         cursor = db.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT id, memory, "
-            + _effective_score_sql(config) +
-            " AS effective_score"
-            " FROM llm_bot_memories"
-            " WHERE bot_guid = %s"
-            "   AND player_guid = %s"
-            "   AND active = 1"
-            + extra +
-            " ORDER BY effective_score DESC,"
-            "   created_at DESC"
-            " LIMIT %s",
-            (bot_guid, player_guid, candidate_limit),
-        )
+        if current_zone_id is not None:
+            cursor.execute(
+                "SELECT id, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid = %s"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY effective_score DESC,"
+                "   (zone_id = %s) DESC,"
+                "   created_at DESC"
+                " LIMIT %s",
+                (
+                    bot_guid, player_guid,
+                    current_zone_id, candidate_limit,
+                ),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid = %s"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY effective_score DESC,"
+                "   created_at DESC"
+                " LIMIT %s",
+                (bot_guid, player_guid, candidate_limit),
+            )
         candidates = cursor.fetchall()
         if not candidates:
             return []

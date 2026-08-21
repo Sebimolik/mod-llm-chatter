@@ -551,6 +551,7 @@ def process_group_event(db, client, config, event):
                 memories = get_bot_memories(
                     db, bot_guid, player_guid,
                     config=config, count=3,
+                    current_zone_id=bot_zone,
                 )
                 player_name_known = bool(memories)
                 recall_chance = int(config.get(
@@ -1003,6 +1004,7 @@ def process_group_join_batch_event(
                         db, bot_guid,
                         batch_player_guid,
                         config=config, count=3,
+                        current_zone_id=bot_zone,
                     )
                     bot_player_known = bool(
                         bot_memories
@@ -1793,6 +1795,7 @@ def process_group_player_msg_event(
                     player_guid, config=config,
                     count=3,
                     exclude_first_meeting=True,
+                    current_zone_id=zone_id,
                 )
                 if not msg_memories:
                     msg_memories = None
@@ -4002,6 +4005,7 @@ def _idle_single_statement(
                         player_guid, config=config,
                         count=2,
                         exclude_first_meeting=True,
+                        current_zone_id=zone_id,
                     )
                     if not idle_memories:
                         idle_memories = None
@@ -4295,6 +4299,7 @@ def _idle_conversation(
                             exclude_first_meeting=(
                                 True
                             ),
+                            current_zone_id=zone_id,
                         )
                         if mems:
                             memories_map[
@@ -4792,6 +4797,7 @@ def check_bot_questions(db, client, config):
                         p_guid, config=config,
                         count=3,
                         exclude_first_meeting=True,
+                        current_zone_id=zone_id,
                     )
                 )
                 if not question_memories:
