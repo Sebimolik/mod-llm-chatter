@@ -11,6 +11,7 @@
 #include "LLMChatterShared.h"
 #include "Player.h"
 #include "ScriptMgr.h"
+#include "Util.h"
 
 #include <algorithm>
 #include <cctype>
@@ -152,6 +153,34 @@ bool IsKnownBotForPlayer(uint32 playerGuid, uint32 botGuid)
         "LIMIT 1",
         playerGuid, botGuid);
     return result != nullptr;
+}
+
+bool ResolveBotGuidByName(
+    uint32 playerGuid,
+    std::string const& botName,
+    uint32& outGuid)
+{
+    if (!playerGuid || botName.empty())
+        return false;
+
+    // Only resolve among bots this player already has
+    // memories with (same "known bot" boundary as the
+    // roster/forget commands), case-insensitive.
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT DISTINCT m.bot_guid "
+        "FROM llm_bot_memories m "
+        "JOIN characters c "
+        "  ON c.guid = m.bot_guid "
+        "WHERE m.player_guid = {} "
+        "  AND LOWER(c.name) = LOWER('{}') "
+        "LIMIT 1",
+        playerGuid, EscapeString(botName));
+
+    if (!result)
+        return false;
+
+    outGuid = result->Fetch()[0].Get<uint32>();
+    return outGuid != 0;
 }
 
 bool LoadBotProfile(uint32 botGuid, BotProfile& profile)
@@ -919,6 +948,152 @@ bool HandleForgetCommand(
     return true;
 }
 
+std::string CapitalizeMemoryType(
+    std::string const& memoryType)
+{
+    std::string out = memoryType;
+    for (char& ch : out)
+    {
+        if (ch == '_')
+            ch = ' ';
+    }
+    if (!out.empty())
+        out[0] = static_cast<char>(
+            std::toupper(
+                static_cast<unsigned char>(out[0])));
+    return out;
+}
+
+std::string TruncateMemoryText(
+    std::string const& memory, size_t maxLen)
+{
+    // Codepoint-safe: work off a UTF-8-sanitized copy and
+    // measure/truncate in codepoints (via utf8length /
+    // utf8truncate), not raw bytes, so multi-byte
+    // characters (e.g. 2-byte Cyrillic) never get sliced
+    // in half.
+    std::string text = SanitizeUtf8(memory);
+    if (utf8length(text) <= maxLen)
+        return text;
+
+    utf8truncate(text, maxLen);
+
+    // Prefer trimming back to the last whitespace so the
+    // output reads as a clean word boundary rather than a
+    // word cut off mid-way. Only do this if the last space
+    // is reasonably close to the end, otherwise keep the
+    // hard cut (e.g. one very long word).
+    size_t lastSpace = text.find_last_of(" \t\n\r");
+    if (lastSpace != std::string::npos &&
+        lastSpace > maxLen / 2)
+        text.resize(lastSpace);
+
+    return text + "...";
+}
+
+// Player-facing, plain chat reply (not the addon
+// protocol) — meant to be typed directly, e.g.
+// ".llmc memory Stella". Reads llm_bot_memories
+// synchronously; no Python bridge round-trip needed
+// since this is a read-only lookup with no LLM work.
+bool HandleMemoryShowCommand(
+    ChatHandler* handler, std::string const& args)
+{
+    Player* player = handler->GetSession()->GetPlayer();
+    if (!player)
+        return true;
+
+    std::string botName = Trim(args);
+    if (botName.empty())
+    {
+        handler->SendSysMessage(
+            "Usage: .llmc memory <botname>");
+        return true;
+    }
+
+    uint32 playerGuid =
+        player->GetGUID().GetCounter();
+
+    uint32 botGuid = 0;
+    if (!ResolveBotGuidByName(
+            playerGuid, botName, botGuid))
+    {
+        handler->PSendSysMessage(
+            "You don't know a bot named '{}'.",
+            botName);
+        return true;
+    }
+
+    BotProfile profile;
+    std::string displayName = botName;
+    if (LoadBotProfile(botGuid, profile)
+        && !profile.name.empty())
+        displayName = profile.name;
+
+    uint32 decayMaxImportance =
+        sConfigMgr->GetOption<uint32>(
+            "LLMChatter.Memory.DecayMaxImportance", 3);
+    uint32 decayDays =
+        sConfigMgr->GetOption<uint32>(
+            "LLMChatter.Memory.DecayDays", 30);
+    if (decayDays < 1)
+        decayDays = 30;
+
+    // Mirrors chatter_memory.py's
+    // _effective_score_sql(): memories at or below the
+    // decay threshold fade with age, floored at 1;
+    // higher-importance memories never decay.
+    std::string effectiveScoreExpr =
+        "CASE WHEN importance_score <= "
+        + std::to_string(decayMaxImportance)
+        + " THEN GREATEST(1, importance_score - "
+          "TIMESTAMPDIFF(DAY, created_at, NOW()) / "
+        + std::to_string(decayDays)
+        + ") ELSE importance_score END";
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT memory_type, importance_score, memory "
+        "FROM llm_bot_memories "
+        "WHERE bot_guid = {} "
+        "  AND player_guid = {} "
+        "  AND active = 1 "
+        "ORDER BY (" + effectiveScoreExpr + ") DESC, "
+        "         created_at DESC "
+        "LIMIT 10",
+        botGuid, playerGuid);
+
+    if (!result)
+    {
+        handler->PSendSysMessage(
+            "{} doesn't remember anything about "
+            "you yet.",
+            displayName);
+        return true;
+    }
+
+    handler->PSendSysMessage(
+        "{}'s memories of you:", displayName);
+
+    do
+    {
+        Field* fields = result->Fetch();
+        std::string memoryType =
+            fields[0].Get<std::string>();
+        uint32 importance = fields[1].Get<uint8>();
+        std::string memoryText =
+            fields[2].Get<std::string>();
+
+        handler->PSendSysMessage(
+            "  [{}] (importance {}) {}",
+            CapitalizeMemoryType(memoryType),
+            importance,
+            TruncateMemoryText(memoryText, 400));
+    }
+    while (result->NextRow());
+
+    return true;
+}
+
 bool HandleMemoryCleanCommand(ChatHandler* handler)
 {
     // Drop memories whose bot or player character no
@@ -1001,13 +1176,17 @@ public:
             return HandleForgetCommand(
                 handler, rest);
 
+        if (command == "memory")
+            return HandleMemoryShowCommand(
+                handler, rest);
+
         SendAddonLine(
             handler,
             "ERROR usage "
             + PercentEncode(
                 "Supported commands: roster, "
                 "get, set, setbackstory, "
-                "regenbackstory, forget"));
+                "regenbackstory, forget, memory"));
         return true;
     }
 

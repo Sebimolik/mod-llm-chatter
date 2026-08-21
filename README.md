@@ -54,6 +54,14 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ## Changelog
 
+### 2026-08-21 - Player Memory Inspection Command
+
+* **`.llmc memory <botname>`**: Players can now check what one of their
+  own bots remembers about them directly from chat, ordered by the same
+  decay-aware importance used for recall, capped at the 10 most relevant
+  memories. Instant, synchronous response, no bridge round-trip.
+* **No Database Migration**: This update is C++ command surface only.
+
 ### 2026-08-20 - Persistent Memory: Importance, Decay, and Eviction Guard
 
 * **Importance-Scored Memories**: Every memory now gets a 1-10 importance rating from the LLM (ambient chat, personal narrative, milestones, core bonds). Low-importance memories decay and fade out of retrieval/recall over time; milestone and core-bond memories never decay.

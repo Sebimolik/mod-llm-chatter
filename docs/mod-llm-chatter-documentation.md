@@ -1884,6 +1884,31 @@ truthful than several bots independently claiming an identical personal
 stored memory text that would otherwise leak into `get_bot_memories()`
 and other consumers.
 
+### Player memory inspection command
+
+`.llmc memory <botname>` (`SEC_PLAYER`, `src/LLMChatterCommand.cpp`)
+lets a player see what one of their own bots remembers about them. Unlike
+the rest of the `.llmc` surface (which is addon-protocol traffic sent by
+the Chatter Companion addon and replies via `SendAddonLine`/`CHATTER_ADDON`),
+this subcommand is meant to be typed directly in chat and replies with
+plain `SendSysMessage`/`PSendSysMessage` text.
+
+The bot name is resolved to a `bot_guid` the same way `roster`/`forget`
+scope bots to a player: a case-insensitive match against `characters.name`
+restricted to bots that already have at least one `llm_bot_memories` row
+for `player_guid = <invoking player>`. A player can never query another
+player's bot memories this way, since the resolution itself is scoped to
+their own `player_guid`.
+
+It's a synchronous `CharacterDatabase.Query` read — no event is queued
+and the Python bridge is never involved, since this is a read-only lookup
+with no LLM generation needed. Rows are ordered by the same decay-aware
+effective-importance expression as `get_bot_memories()`
+(`_effective_score_sql()` in `chatter_memory.py`), reimplemented inline in
+SQL and driven by the same `LLMChatter.Memory.DecayMaxImportance` /
+`LLMChatter.Memory.DecayDays` config keys, capped at the 10 highest-ranked
+`active = 1` memories.
+
 ### Manual and automatic cleanup
 
 `.llm memory clean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
@@ -1907,6 +1932,7 @@ of whether a GM ever runs the manual command.
 | `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection |
 | `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop |
 | `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE` directly |
+| `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout |
 | `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
 
 ### Database tables
