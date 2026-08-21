@@ -2370,9 +2370,11 @@ def main():
                         pass
 
             # Poll cadence honors the configured
-            # Bridge.PollIntervalSeconds. Background
-            # tasks self-rate-limit via their own
-            # last_X / interval checks.
+            # Bridge.PollIntervalSeconds instead of a
+            # hardcoded value (previously ignored the
+            # setting, causing excessive DB reconnects and
+            # CPU use). Background tasks self-rate-limit via
+            # their own last_X / interval checks.
             time.sleep(poll_interval)
 
         except KeyboardInterrupt:

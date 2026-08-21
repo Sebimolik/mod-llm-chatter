@@ -5,6 +5,8 @@ import random
 
 from chatter_shared import (
     get_zone_flavor,
+    get_race_speech_profile,
+    get_bg_lore,
     get_language_rule,
     get_subzone_lore,
     get_dungeon_flavor,
@@ -29,12 +31,10 @@ from chatter_prompts import (
     build_environmental_context_lines,
 )
 from chatter_constants import (
-    RACE_SPEECH_PROFILES,
     EMOTE_LIST_STR,
     LENGTH_HINTS,
     RP_LENGTH_HINTS,
     BG_MAP_NAMES,
-    BG_LORE,
     CLASS_ROLE_MAP,
 )
 
@@ -202,7 +202,7 @@ def build_bot_greeting_prompt(
             rp_context = f"\n{ctx}"
 
         # Add race flavor examples if available
-        profile = RACE_SPEECH_PROFILES.get(
+        profile = get_race_speech_profile(
             bot['race']
         )
         if profile:
@@ -235,7 +235,7 @@ def build_bot_greeting_prompt(
     if bg_context:
         bg_type_id = int(
             bg_context.get('bg_type_id', 0))
-        lore = BG_LORE.get(bg_type_id, {})
+        lore = get_bg_lore(bg_type_id)
         bg_name = lore.get(
             'name',
             bg_context.get('bg_type', 'a battleground'))
@@ -482,7 +482,7 @@ def build_bot_welcome_prompt(
         if ctx:
             rp_context = f"\n{ctx}"
 
-        profile = RACE_SPEECH_PROFILES.get(
+        profile = get_race_speech_profile(
             bot['race']
         )
         if profile:
@@ -617,7 +617,7 @@ def build_batch_welcome_prompt(
         if ctx:
             rp_context = f"\n{ctx}"
 
-        profile = RACE_SPEECH_PROFILES.get(
+        profile = get_race_speech_profile(
             bot['race']
         )
         if profile:
@@ -2099,7 +2099,7 @@ def build_player_response_prompt(
         if ctx:
             rp_context = f"\n{ctx}"
 
-        profile = RACE_SPEECH_PROFILES.get(
+        profile = get_race_speech_profile(
             bot['race']
         )
         if profile:
@@ -4479,7 +4479,7 @@ def build_bot_question_prompt(
         if ctx:
             rp_context = f"\n{ctx}"
 
-        profile = RACE_SPEECH_PROFILES.get(
+        profile = get_race_speech_profile(
             bot['race']
         )
         if profile:

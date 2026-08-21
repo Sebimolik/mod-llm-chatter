@@ -1375,8 +1375,7 @@ void HandleGroupPlayerAchievementCompleteImpl(
     std::string playerName = player->GetName();
 
     std::string achName =
-        achievement->name[0]
-            ? achievement->name[0] : "";
+        GetLocalizedAchievementName(achievement);
     uint32 achId = achievement->ID;
 
     std::string extraData = "{"

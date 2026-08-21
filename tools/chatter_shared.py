@@ -20,9 +20,14 @@ from chatter_constants import (
     ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
     ZONE_NAMES_ES, ZONE_NAMES_KO,
     CLASS_NAMES, RACE_NAMES,
-    RACE_SPEECH_PROFILES, CLASS_SPEECH_MODIFIERS,
+    RACE_SPEECH_PROFILES, RACE_SPEECH_PROFILES_RU, RACE_SPEECH_PROFILES_FR,
+    RACE_SPEECH_PROFILES_DE, RACE_SPEECH_PROFILES_ES,
+    CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
-    ZONE_FLAVOR, DUNGEON_FLAVOR,
+    ZONE_FLAVOR, ZONE_FLAVOR_RU, ZONE_FLAVOR_FR, ZONE_FLAVOR_DE, ZONE_FLAVOR_ES,
+    DUNGEON_FLAVOR, DUNGEON_FLAVOR_RU, DUNGEON_FLAVOR_FR, DUNGEON_FLAVOR_DE,
+    DUNGEON_FLAVOR_ES,
+    BG_LORE, BG_LORE_RU, BG_LORE_FR, BG_LORE_DE, BG_LORE_ES,
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
@@ -558,7 +563,7 @@ def build_race_class_context(
 ) -> str:
     """Build an RP personality fragment for prompts."""
     parts = []
-    profile = RACE_SPEECH_PROFILES.get(race)
+    profile = get_race_speech_profile(race)
     if profile:
         traits = profile['traits']
         if isinstance(traits, list):
@@ -631,7 +636,7 @@ def build_race_class_context_parts(
     shared_race_parts = []
     shared_class_parts = []
 
-    profile = RACE_SPEECH_PROFILES.get(race)
+    profile = get_race_speech_profile(race)
     if profile:
         # Per-bot: traits (random choice) + vocab phrase
         traits = profile['traits']
@@ -970,14 +975,129 @@ def get_zone_level_range(
     return (max(1, bot_level - 5), bot_level + 5)
 
 
+# Locale-keyed zone flavor text maps, mirroring
+# _ZONE_NAME_LOCALE_MAPS above. Only ruRU has a translated
+# ZONE_FLAVOR_RU dict so far; any other locale (or zone_id
+# missing from the localized map) falls back to the English
+# ZONE_FLAVOR via get_zone_flavor() below.
+_ZONE_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
+    "ruRU": ZONE_FLAVOR_RU,
+    "frFR": ZONE_FLAVOR_FR,
+    "deDE": ZONE_FLAVOR_DE,
+    "esES": ZONE_FLAVOR_ES,
+}
+
+
+# Locale-keyed race speech profile maps, mirroring
+# _ZONE_FLAVOR_LOCALE_MAPS above. Only ruRU has a translated
+# RACE_SPEECH_PROFILES_RU dict so far; any other locale (or
+# race missing from the localized map) falls back to the
+# static English RACE_SPEECH_PROFILES via
+# get_race_speech_profile() below.
+_RACE_SPEECH_LOCALE_MAPS: Dict[str, Dict[str, Dict]] = {
+    "ruRU": RACE_SPEECH_PROFILES_RU,
+    "frFR": RACE_SPEECH_PROFILES_FR,
+    "deDE": RACE_SPEECH_PROFILES_DE,
+    "esES": RACE_SPEECH_PROFILES_ES,
+}
+
+
+def get_race_speech_profile(race: str) -> Optional[Dict]:
+    """Get race speech profile for prompt context.
+
+    Prefers the localized profile for the configured
+    LLMChatter.Language (via _RACE_SPEECH_LOCALE_MAPS) when
+    available, falling back to the static English
+    RACE_SPEECH_PROFILES entry, mirroring get_zone_flavor()'s
+    locale-fallback pattern.
+    """
+    locale = get_language_locale_code()
+    if locale:
+        localized_map = _RACE_SPEECH_LOCALE_MAPS.get(locale)
+        if localized_map and race in localized_map:
+            return localized_map[race]
+    return RACE_SPEECH_PROFILES.get(race)
+
+
 def get_zone_flavor(zone_id: int) -> Optional[str]:
-    """Get rich zone flavor text for immersive context."""
+    """Get rich zone flavor text for immersive context.
+
+    Prefers the localized flavor text for the configured
+    LLMChatter.Language (via _ZONE_FLAVOR_LOCALE_MAPS) when
+    available, falling back to the static English ZONE_FLAVOR
+    entry, mirroring get_zone_name()'s locale-fallback pattern.
+
+    Returns None when the zone ID has no flavor text at all
+    (8 zones aren't covered even in English), exactly as before.
+    """
+    locale = get_language_locale_code()
+    if locale:
+        localized_map = _ZONE_FLAVOR_LOCALE_MAPS.get(locale)
+        if localized_map and zone_id in localized_map:
+            return localized_map[zone_id]
     return ZONE_FLAVOR.get(zone_id)
 
 
+# Locale-keyed dungeon/raid flavor text maps, mirroring
+# _ZONE_FLAVOR_LOCALE_MAPS above. Only ruRU has a translated
+# DUNGEON_FLAVOR_RU dict so far; any other locale (or map_id
+# missing from the localized map) falls back to the static
+# English DUNGEON_FLAVOR via get_dungeon_flavor() below.
+_DUNGEON_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
+    "ruRU": DUNGEON_FLAVOR_RU,
+    "frFR": DUNGEON_FLAVOR_FR,
+    "deDE": DUNGEON_FLAVOR_DE,
+    "esES": DUNGEON_FLAVOR_ES,
+}
+
+
 def get_dungeon_flavor(map_id: int) -> Optional[str]:
-    """Get dungeon/raid flavor text by map ID."""
+    """Get dungeon/raid flavor text by map ID.
+
+    Prefers the localized flavor text for the configured
+    LLMChatter.Language (via _DUNGEON_FLAVOR_LOCALE_MAPS) when
+    available, falling back to the static English
+    DUNGEON_FLAVOR entry, mirroring get_zone_flavor()'s
+    locale-fallback pattern.
+    """
+    locale = get_language_locale_code()
+    if locale:
+        localized_map = _DUNGEON_FLAVOR_LOCALE_MAPS.get(locale)
+        if localized_map and map_id in localized_map:
+            return localized_map[map_id]
     return DUNGEON_FLAVOR.get(map_id)
+
+
+# Locale-keyed battleground lore maps, mirroring
+# _DUNGEON_FLAVOR_LOCALE_MAPS above. Only ruRU has a translated
+# BG_LORE_RU dict so far; any other locale (or bg_type_id missing
+# from the localized map) falls back to the static English BG_LORE
+# entry via get_bg_lore() below.
+_BG_LORE_LOCALE_MAPS: Dict[str, Dict[int, Dict]] = {
+    "ruRU": BG_LORE_RU,
+    "frFR": BG_LORE_FR,
+    "deDE": BG_LORE_DE,
+    "esES": BG_LORE_ES,
+}
+
+
+def get_bg_lore(bg_type_id: int) -> Dict:
+    """Get battleground lore dict by bg_type_id.
+
+    Prefers the localized lore dict for the configured
+    LLMChatter.Language (via _BG_LORE_LOCALE_MAPS) when
+    available, falling back to the static English BG_LORE
+    entry, mirroring get_zone_flavor()'s locale-fallback
+    pattern. Returns {} (not None) when bg_type_id has no
+    lore at all, matching the BG_LORE.get(bg_type_id, {})
+    call sites this replaces.
+    """
+    locale = get_language_locale_code()
+    if locale:
+        localized_map = _BG_LORE_LOCALE_MAPS.get(locale)
+        if localized_map and bg_type_id in localized_map:
+            return localized_map[bg_type_id]
+    return BG_LORE.get(bg_type_id, {})
 
 
 def get_group_area(db, group_id: int) -> int:

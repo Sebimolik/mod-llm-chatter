@@ -1443,6 +1443,20 @@ std::string GetLocalizedSpellName(SpellInfo const* spellInfo)
     return name ? name : "";
 }
 
+std::string GetLocalizedAchievementName(AchievementEntry const* achievement)
+{
+    if (!achievement)
+        return "";
+
+    uint8 locale = sWorld->GetDefaultDbcLocale();
+    char const* name = achievement->name[locale];
+    if (name && name[0] != '\0')
+        return name;
+
+    name = achievement->name[LOCALE_enUS];
+    return name ? name : "";
+}
+
 std::string BuildBotIdentityFields(
     Player* player, bool includeRoles)
 {

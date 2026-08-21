@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 
+struct AchievementEntry;
 class Creature;
 class GameObject;
 class Group;
@@ -72,6 +73,7 @@ std::string GetLocalizedQuestTitle(Quest const* quest);
 std::string GetLocalizedQuestDetails(Quest const* quest);
 std::string GetLocalizedQuestObjectives(Quest const* quest);
 std::string GetLocalizedSpellName(SpellInfo const* spellInfo);
+std::string GetLocalizedAchievementName(AchievementEntry const* achievement);
 uint32 GetTextEmoteId(const std::string& emoteName);
 bool IsBGAllowedEmote(const std::string& emoteName);
 void PlayUnitTextEmoteAnimation(Unit* unit, uint32 textEmoteId);
