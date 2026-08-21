@@ -27,6 +27,7 @@ from chatter_shared import (
     format_location_label,
     build_bot_identity,
     estimate_tokens,
+    get_gender_label,
 )
 from chatter_text import (
     extract_json_object,
@@ -330,7 +331,7 @@ def queue_memory(
     memory_type, event_context,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     db=None,
 ):
     """Validate eligibility and submit a memory
@@ -447,6 +448,7 @@ def queue_memory(
         bot_race=bot_race,
         bot_gender=bot_gender,
         player_name=player_name,
+        player_gender=player_gender,
         location=location,
         session_start=session_start,
         insert_active=False,
@@ -723,7 +725,7 @@ def _execute_generate_memory(
     memory_type, event_context,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     location="",
     session_start=0.0, insert_active=False,
 ):
@@ -755,24 +757,38 @@ def _execute_generate_memory(
     try:
         conn = get_db_connection(config)
 
-        # Resolve player_name from DB if not
-        # provided but player_guid is known
-        if not player_name and player_guid:
+        # Resolve player_name/player_gender from DB
+        # if not provided but player_guid is known
+        if (
+            (not player_name or not player_gender)
+            and player_guid
+        ):
             try:
                 pc = conn.cursor(dictionary=True)
                 pc.execute(
-                    "SELECT name FROM characters"
-                    " WHERE guid = %s",
+                    "SELECT name, gender FROM"
+                    " characters WHERE guid = %s",
                     (player_guid,),
                 )
                 pr = pc.fetchone()
                 if pr:
-                    player_name = pr['name']
+                    if not player_name:
+                        player_name = pr['name']
+                    if (
+                        not player_gender
+                        and pr.get('gender') is not None
+                    ):
+                        player_gender = (
+                            get_gender_label(
+                                pr['gender']
+                            )
+                        )
                 pc.close()
             except Exception:
                 logger.debug(
-                    "Could not resolve player_name"
-                    " for guid=%s", player_guid,
+                    "Could not resolve player_name/"
+                    "player_gender for guid=%s",
+                    player_guid,
                 )
 
         # Pick mood and expression style
@@ -794,6 +810,7 @@ def _execute_generate_memory(
                 bot_race=bot_race,
                 bot_gender=bot_gender,
                 player_name=player_name,
+                player_gender=player_gender,
                 memory_type=memory_type,
                 event_context=event_context,
                 mood=mood,
@@ -898,14 +915,14 @@ def _execute_generate_shared_memory(
         )
         mood = random.choice(moods)
 
-        memory_text, emote, importance = (
+        memory_texts, emote, importance = (
             _generate_shared_event_memory(
                 config, memory_type, event_context,
                 mood_hint=mood,
             )
         )
 
-        if not memory_text:
+        if not memory_texts:
             return
 
         max_per = int(config.get(
@@ -934,11 +951,19 @@ def _execute_generate_shared_memory(
             if not live_bots:
                 return
             inserted_count = 0
-            for bot_guid in live_bots:
+            # Cycle through the available phrasings so
+            # bots present for the same event don't all
+            # get byte-identical stored text -- the
+            # underlying facts/importance stay shared,
+            # only the wording varies.
+            for i, bot_guid in enumerate(live_bots):
+                bot_memory_text = memory_texts[
+                    i % len(memory_texts)
+                ]
                 if _ensure_cap_and_insert(
                     conn, config, bot_guid,
                     player_guid, group_id,
-                    memory_type, memory_text,
+                    memory_type, bot_memory_text,
                     mood, emote, session_start,
                     active=0, max_per=max_per,
                     importance=importance,
@@ -987,7 +1012,7 @@ def _call_llm_for_memory(
     config,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     memory_type="ambient", event_context="",
     mood="contemplative", style="sincere",
     location="",
@@ -1011,7 +1036,12 @@ def _call_llm_for_memory(
     )
     if player_name:
         prompt += (
-            f"Player companion: {player_name}\n"
+            f"Player companion: {player_name}"
+            + (
+                f" (gender: {player_gender})"
+                if player_gender else ""
+            )
+            + "\n"
         )
     if location:
         prompt += f"Location: {location}\n"
@@ -1050,6 +1080,14 @@ def _call_llm_for_memory(
             f" ({player_name}) — never use generic"
             f" terms like 'a traveler' or 'someone'"
             f" or 'a stranger'\n"
+        )
+    if player_name and player_gender:
+        prompt += (
+            f"- The player ({player_name}) is"
+            f" grammatically {player_gender} — use"
+            f" correct gender agreement for any"
+            f" pronouns and past-tense verbs"
+            f" referring to them\n"
         )
     prompt += (
         f"- Just the JSON, nothing else"
@@ -1119,12 +1157,17 @@ def _generate_shared_event_memory(
     """Call the LLM ONCE to generate a shared memory
     for a party-wide event (boss/rare kill, wipe).
 
-    Bot-identity-agnostic on purpose: the same text is
-    stored verbatim for every present altbot, so the
-    prompt asks for a first-person-plural ("we"/"our
-    party") memory with no per-bot substitution.
+    Bot-identity-agnostic on purpose: the prompt asks
+    for a first-person-plural ("we"/"our party") memory
+    with no per-bot substitution. To avoid storing
+    byte-identical text for every present altbot, the
+    same call also asks for a couple of alternate
+    phrasings of the same event; callers cycle through
+    the returned list per bot.
 
-    Returns (memory_text, emote, importance) or
+    Returns (memory_texts, emote, importance) where
+    memory_texts is a non-empty list of equivalent
+    phrasings (always at least [primary_text]), or
     (None, None, None) on failure.
     """
     client = get_llm_client(config)
@@ -1145,16 +1188,18 @@ def _generate_shared_event_memory(
         "Write a 1-2 sentence first-person-plural "
         "memory (\"we\"/\"our party\") from the "
         "group's shared perspective about this "
-        "moment, suitable to be stored as an "
-        "identical private journal entry for every "
-        "party member. This is a private journal "
-        "entry, not spoken aloud. Be specific about "
-        "what happened.\n\n"
+        "moment, suitable to be stored as a "
+        "private journal entry for a party member. "
+        "This is a private journal entry, not "
+        "spoken aloud. Be specific about what "
+        "happened.\n\n"
     )
     prompt += _IMPORTANCE_RUBRIC
     prompt += (
         "Respond in JSON:\n"
         '{"memory": "your memory text", '
+        '"variations": ["alternate phrasing 1", '
+        '"alternate phrasing 2"], '
         '"emote": "one_word_emote", '
         '"importance": 5}\n\n'
         "Rules:\n"
@@ -1163,6 +1208,12 @@ def _generate_shared_event_memory(
         "perspective -- never use a single "
         "character's name or \"I\"\n"
         "- No quotes inside the memory text\n"
+        "- 'variations' holds 2 alternate ways to "
+        "phrase the SAME memory (same facts, "
+        "different wording/opening), since this "
+        "text will be stored as a separate journal "
+        "entry for each of several party members "
+        "and they should not all read identically\n"
         "- Emote is optional (null if none)\n"
         "- Importance is an integer from 1 to 10"
         " using the rubric above\n"
@@ -1177,7 +1228,7 @@ def _generate_shared_event_memory(
     try:
         response = call_llm(
             client, prompt, config,
-            max_tokens_override=120,
+            max_tokens_override=260,
             context=f"shared-memory:{memory_type}",
             label='shared_memory_generation',
         )
@@ -1199,6 +1250,26 @@ def _generate_shared_event_memory(
         if not memory or len(memory) > 500:
             return None, None, None
 
+        # Optional alternate phrasings of the same
+        # memory, so identical stored text isn't handed
+        # to every altbot present. Best-effort: any
+        # malformed/oversized/empty entry is dropped,
+        # and the primary `memory` text is always first
+        # so callers with no valid variations still get
+        # a working single-item list.
+        memory_texts = [memory]
+        raw_variations = data.get('variations')
+        if isinstance(raw_variations, list):
+            for variation in raw_variations:
+                if (
+                    isinstance(variation, str)
+                    and variation.strip()
+                    and len(variation) <= 500
+                ):
+                    memory_texts.append(
+                        variation.strip()
+                    )
+
         emote = data.get('emote')
         if isinstance(emote, str):
             emote = emote.strip()[:32] or None
@@ -1209,7 +1280,7 @@ def _generate_shared_event_memory(
             data.get('importance')
         )
 
-        return memory, emote, importance
+        return memory_texts, emote, importance
 
     except Exception:
         logger.error(

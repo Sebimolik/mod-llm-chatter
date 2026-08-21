@@ -857,6 +857,15 @@ def build_kill_reaction_prompt(
         f"- Don't repeat jokes or themes "
         f"already said in chat"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
@@ -2063,6 +2072,15 @@ def build_spell_cast_reaction_prompt(
         f"already said in chat"
         f"{anti_rep_block}"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
@@ -2360,6 +2378,15 @@ def build_resurrect_reaction_prompt(
         f"- Don't repeat jokes or themes "
         f"already said in chat"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
