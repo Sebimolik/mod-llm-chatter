@@ -42,6 +42,7 @@ struct GroupJoinEntry {
     uint8 botGender{0};
     uint8 botLevel{0};
     std::string role;
+    bool isAltBot{false};
     uint32 zoneId{0};
     uint32 mapId{0};
 };

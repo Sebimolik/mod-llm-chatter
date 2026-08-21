@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS `llm_group_bot_traits` (
     `group_id` INT UNSIGNED NOT NULL,
     `bot_guid` INT UNSIGNED NOT NULL,
     `bot_name` VARCHAR(64) NOT NULL,
+    `is_altbot` TINYINT(1) NOT NULL DEFAULT 1,
     `trait1` VARCHAR(32) NOT NULL,
     `trait2` VARCHAR(32) NOT NULL,
     `trait3` VARCHAR(32) NOT NULL,
@@ -338,6 +339,7 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
         'discovery', 'pvp_kill'
     ) NOT NULL,
     `memory`        TEXT         NOT NULL,
+    `importance_score` TINYINT UNSIGNED NOT NULL DEFAULT 5,
     `mood`          VARCHAR(32)  NOT NULL,
     `emote`         VARCHAR(32)  DEFAULT NULL,
     `active`        TINYINT(1)   NOT NULL DEFAULT 0,
@@ -347,5 +349,7 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
     `created_at`    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     INDEX `idx_bot_player`        (`bot_guid`, `player_guid`),
     INDEX `idx_bot_player_active` (`bot_guid`, `player_guid`, `active`),
-    INDEX `idx_group`             (`group_id`, `active`)
+    INDEX `idx_group`             (`group_id`, `active`),
+    CONSTRAINT `chk_importance_score`
+        CHECK (`importance_score` BETWEEN 1 AND 10)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

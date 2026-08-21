@@ -478,6 +478,9 @@ def process_group_event(db, client, config, event):
     try:
         # 1. Assign traits (with role from C++)
         bot_role = extra_data.get('role')
+        bot_is_altbot = bool(
+            extra_data.get('is_altbot', True)
+        )
         bot_zone = int(
             extra_data.get('zone', 0) or 0
         )
@@ -497,16 +500,20 @@ def process_group_event(db, client, config, event):
             bot_class=bot_class,
             bot_race=bot_race,
             bot_gender=bot.get('gender', ''),
+            is_altbot=bot_is_altbot,
         )
         traits = trait_result['traits']
         stored_tone = trait_result.get('tone')
 
         # 1b. Memory: start session + fetch memories
+        # (altbots only — random-pool bots that merely
+        # pass through a party via LFG should not build
+        # persistent memories of the player)
         player_guid = 0
         memories = None
         player_name_known = False
         recall_memory = None
-        if int(config.get(
+        if bot_is_altbot and int(config.get(
             'LLMChatter.Memory.Enable', 1
         )):
             player_guid = int(
@@ -543,7 +550,7 @@ def process_group_event(db, client, config, event):
             if player_guid:
                 memories = get_bot_memories(
                     db, bot_guid, player_guid,
-                    count=3,
+                    config=config, count=3,
                 )
                 player_name_known = bool(memories)
                 recall_chance = int(config.get(
@@ -903,6 +910,9 @@ def process_group_join_batch_event(
                 bot_raw.get('bot_level', 1)
             )
             bot_role = bot_raw.get('role')
+            bot_is_altbot = bool(
+                bot_raw.get('is_altbot', True)
+            )
 
             if not bot_guid:
                 continue
@@ -962,15 +972,17 @@ def process_group_join_batch_event(
                 bot_class=bot_class,
                 bot_race=bot_race,
                 bot_gender=bot.get('gender', ''),
+                is_altbot=bot_is_altbot,
             )
             traits = trait_result['traits']
             stored_tone = trait_result.get('tone')
 
             # 1b. Memory: start session + fetch
+            # (altbots only — see single-join path above)
             bot_memories = None
             bot_player_known = False
             bot_recall = None
-            if memory_enabled:
+            if bot_is_altbot and memory_enabled:
                 member_data = {
                     bot_guid: {
                         'name': bot_name,
@@ -990,7 +1002,7 @@ def process_group_join_batch_event(
                     bot_memories = get_bot_memories(
                         db, bot_guid,
                         batch_player_guid,
-                        count=3,
+                        config=config, count=3,
                     )
                     bot_player_known = bool(
                         bot_memories
@@ -1778,7 +1790,8 @@ def process_group_player_msg_event(
             ):
                 msg_memories = get_bot_memories(
                     db, bot_guid,
-                    player_guid, count=3,
+                    player_guid, config=config,
+                    count=3,
                     exclude_first_meeting=True,
                 )
                 if not msg_memories:
@@ -3986,7 +3999,8 @@ def _idle_single_statement(
                 if player_guid:
                     idle_memories = get_bot_memories(
                         db, bot_guid,
-                        player_guid, count=2,
+                        player_guid, config=config,
+                        count=2,
                         exclude_first_meeting=True,
                     )
                     if not idle_memories:
@@ -4276,6 +4290,7 @@ def _idle_conversation(
                         mems = get_bot_memories(
                             db, b['guid'],
                             player_guid,
+                            config=config,
                             count=2,
                             exclude_first_meeting=(
                                 True
@@ -4774,7 +4789,8 @@ def check_bot_questions(db, client, config):
                 question_memories = (
                     get_bot_memories(
                         db, bot_guid,
-                        p_guid, count=3,
+                        p_guid, config=config,
+                        count=3,
                         exclude_first_meeting=True,
                     )
                 )

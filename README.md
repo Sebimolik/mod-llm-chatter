@@ -54,6 +54,17 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ## Changelog
 
+### 2026-08-20 - Persistent Memory: Importance, Decay, and Eviction Guard
+
+* **Importance-Scored Memories**: Every memory now gets a 1-10 importance rating from the LLM (ambient chat, personal narrative, milestones, core bonds). Low-importance memories decay and fade out of retrieval/recall over time; milestone and core-bond memories never decay.
+* **Eviction Guard**: When a bot's memory pool for a player hits its cap, the single highest-value memory for that bot-player pair is always protected from eviction, so a bot never fully forgets its most meaningful moment with a player.
+* **Altbot-Only Generation**: Memories are now only generated for player-owned bots, not random/ownerless bots sharing the party.
+* **Shared Party Memories**: Boss/rare kills and wipes generate one shared "we"/"our party" memory per event instead of one LLM call per bot.
+* **`.llm memory clean` GM Command**: Manually purge orphaned memories for deleted characters; the same cleanup also runs automatically every 24 hours.
+* **Database Migration**: Run `data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql`
+  and `data/sql/characters/updates/20260822_memory_importance_check_constraint.sql`
+  if upgrading from a previous version.
+
 ### 2026-08-16 - Korean Language and Unicode Cleanup
 
 * **Korean language support**: `LLMChatter.Language = KO` now resolves
@@ -686,6 +697,12 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260725_guild_login_greeting.sql
 
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260822_memory_importance_check_constraint.sql
+
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260320_bot_memory_system.sql
@@ -731,6 +748,12 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260725_guild_login_greeting.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260822_memory_importance_check_constraint.sql
 ```
 
 Migrations are idempotent — safe to run on an already

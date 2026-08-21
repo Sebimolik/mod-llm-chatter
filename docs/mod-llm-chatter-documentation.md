@@ -1720,21 +1720,41 @@ Bots accumulate a bounded journal of shared moments with real players.
 On re-invite, the bot delivers a reunion greeting that references past
 experiences rather than treating the player as a stranger.
 
+Memories are only generated for player-owned ("alt") bots — never for
+random/ownerless bots — and every memory carries a 1-10 importance score.
+Low-importance memories decay and are the first to be evicted as a
+bot–player pair's memory pool grows, while high-importance memories (raid
+boss kills, core narrative moments) persist indefinitely. The single
+highest-value memory for each bot–player pair is always protected from
+eviction (see "Eviction guard" below), and party-wide events (boss/rare
+kills, wipes) generate one shared memory per event instead of one per
+bot.
+
 ### Memory lifecycle
 
 1. **Group join** (`process_group_join_event` / `process_group_join_batch_event`)
    - `start_session()` registers the bot in the in-memory session tracker
-   - `get_bot_memories()` fetches up to 3 random `active=1` memories for this
-     bot–player pair
+   - `get_bot_memories()` fetches up to 3 active memories for this
+     bot–player pair, ranked by decay-aware `effective_score` (see
+     "Importance scoring and decay" below) and trimmed to
+     `LLMChatter.Memory.MaxInjectTokens`
    - If memories exist: `player_name_known=True` → reunion greeting mode
    - If no memories (first meeting): a `first_meeting` memory is inserted
      directly with `active=1` and `memory_type='first_meeting'`, guarded by
      `INSERT...SELECT...WHERE NOT EXISTS` to prevent duplicates on re-join.
      This memory is immune to both short-session discard and cap pruning.
+   - C++ resolves `is_altbot` (`PlayerbotAI::IsAltBot()`) at join time and
+     puts it in the join event payload; `assign_bot_traits()` in Python
+     writes it into `llm_group_bot_traits.is_altbot`. Only altbots ever get
+     memories generated for them (see "Altbot-only generation" below).
 
 2. **During the session** — event handlers may call `_generate_and_store_memory()`
-   to produce LLM-generated memories (boss kills, notable events). These are
-   inserted with `active=0` until flush.
+   (via `queue_memory()`) to produce LLM-generated memories (boss kills, notable
+   events) for a single bot, or `queue_shared_event_memory()` for party-wide
+   kill/wipe events (see "Shared event memories" below). These are
+   inserted with `active=0` until flush, and each carries an
+   LLM-assigned `importance_score` (1-10; defaults to 5 if the LLM
+   response is missing or unparseable).
 
 3. **Group farewell** (`process_group_farewell_event` → `flush_session_memories()`)
    - If session was long enough (`SessionMinutes` threshold): activates `active=0`
@@ -1750,20 +1770,152 @@ experiences rather than treating the player as a stranger.
    meeting (where `memories=[]`) always produces a fresh greeting even though
    `player_name_known` is set to `True` for internal tracking.
 
+5. **Cap enforcement** — when a bot–player pair's active memory count
+   hits `MaxPerBotPlayer`, `_ensure_cap_and_insert()` calls
+   `_evict_one_used()` synchronously before inserting the new memory (see
+   "Eviction guard" below for the rule protecting the single most
+   valuable memory from ever being evicted).
+
+### Importance scoring and decay
+
+Every memory the LLM generates is asked to also rate the moment on a
+1-10 importance scale, using the same rubric text
+(`_IMPORTANCE_RUBRIC` in `chatter_memory.py`) across single-bot memory
+generation and shared event memories:
+
+- **1-3 (Ambient)** — casual chat, minor zone banter
+- **4-6 (Narrative)** — personal preferences stated by the player, minor
+  achievements
+- **7-8 (Milestones)** — leveling milestones, acquiring rare gear, wipe
+  encounters
+- **9-10 (Core Bonds)** — defeating raid bosses together, major
+  narrative turning points
+
+Retrieval (`get_bot_memories()`) and eviction (`_evict_one_used()`) both
+rank memories by a decay-aware `effective_score` rather than the raw
+`importance_score`:
+
+- Memories with `importance_score <= LLMChatter.Memory.DecayMaxImportance`
+  (default `3`, ambient) decay by roughly one point per
+  `LLMChatter.Memory.DecayDays` days (default `30`), floored at 1:
+  `GREATEST(1, importance_score - TIMESTAMPDIFF(DAY, created_at, NOW())
+  / 30)`. The expression is built by `_effective_score_sql()`.
+- Memories above that threshold (narrative and up) never decay — they
+  keep their raw score indefinitely.
+
+This means ambient chatter fades out of relevance over time while
+milestone and core-bond memories keep surfacing in reunion greetings and
+recall no matter how old they are.
+
+`get_bot_memories()` uses `effective_score` for both the row-count cap
+(`count`, default 3) and a token budget
+(`LLMChatter.Memory.MaxInjectTokens`, default 400): it over-fetches a
+larger candidate pool, then accumulates candidates in `effective_score`
+order until either the row count or token budget would be exceeded. The
+first candidate is always kept even if it alone exceeds the budget, so a
+single oversized memory can never starve the result to empty. Only the
+memories actually selected are marked `used = 1`.
+
+### Altbot-only generation
+
+Memory generation is restricted to player-owned bots — bots the player
+actually controls as an alt via mod-playerbots — and skipped for random/
+ownerless bots that happen to be in the party. The flag flows from C++
+through to the Python generation gate:
+
+1. `PlayerbotAI::IsAltBot()` is evaluated when a bot joins a group, in
+   `LLMChatterGroupJoin.cpp` (`QueueBotGreetingEvent()` and
+   `EnsureGroupJoinQueued()`/`FlushGroupJoinBatches()`).
+2. The result is written both into the `bot_group_join`/
+   `bot_group_join_batch` event payload as `is_altbot` and persisted to
+   `llm_group_bot_traits.is_altbot` (default `1`, so pre-existing rows and
+   any lookup failure fail open as altbot).
+3. `queue_memory()` (single-bot memory generation) calls `_is_altbot()`
+   to look up `llm_group_bot_traits.is_altbot` for the bot before
+   submitting any generation job; non-altbots return early and never
+   reach the LLM.
+4. `queue_shared_event_memory()` (party-wide kill/wipe memories) does not
+   re-check `is_altbot` itself — its callers (`_kill_post_success()`,
+   `_wipe_post_success()` in `chatter_group_handlers.py`) already filter
+   the candidate bot list with `... AND t.is_altbot = 1` before calling
+   it.
+
+### Eviction guard
+
+`_evict_one_used()` never evicts the single highest-`effective_score`
+memory for a given `(bot_guid, player_guid)` pair. Both of its DELETE
+queries (the preferred `used=1` pass and the `used=0` fallback pass, see
+"Importance scoring and decay" above) exclude that pair's current top row
+via a subquery:
+
+```sql
+AND id != (SELECT id FROM (
+  SELECT id FROM llm_bot_memories
+  WHERE bot_guid = %s AND player_guid = %s AND active = 1
+  ORDER BY effective_score DESC, created_at DESC LIMIT 1
+) t)
+```
+
+(MySQL requires the extra subquery wrapping since you can't otherwise
+select from the same table you're deleting from.) This guarantees a bot
+never fully forgets the single most meaningful moment it shares with a
+player, without needing a background condensation pass to preserve it —
+if the memory pool ever fills up, only the lowest-value rows get evicted,
+one at a time, and the top row is always the last one left standing. On a
+pool with only one row, that row is by definition the top row, so both
+queries find nothing eligible to evict and `_evict_one_used()` simply
+returns `False` — the same "nothing to evict" outcome
+`_ensure_cap_and_insert()` handles by declining the insert.
+
+### Shared event memories (kill/wipe batching)
+
+Boss/rare kills and wipes are witnessed by the whole party at once, so
+instead of one LLM call per altbot present, `queue_shared_event_memory()`
+makes a single call via `_generate_shared_event_memory()` and inserts the
+resulting memory verbatim into every present altbot's memory pool.
+
+The prompt deliberately asks for a first-person-**plural** memory
+("we"/"our party") rather than a first-person-singular one, and the
+identical text is stored for each bot — there is no per-bot name
+substitution or templating. This was chosen because every bot genuinely
+witnessed the same event together, so a shared "we" memory reads as more
+truthful than several bots independently claiming an identical personal
+"I" story, and it avoids baking any placeholder/substitution syntax into
+stored memory text that would otherwise leak into `get_bot_memories()`
+and other consumers.
+
+### Manual and automatic cleanup
+
+`.llm memory clean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
+runs a `DELETE` directly against `CharacterDatabase`, dropping
+`llm_bot_memories` rows whose `bot_guid`/`player_guid` no longer resolve
+to an existing character (e.g. after a character deletion) — the same
+pattern `.llmc forget` already uses.
+
+The same cleanup also runs automatically: `llm_chatter_bridge.py`'s main
+loop calls `purge_orphaned_memories()` (which issues the identical
+`DELETE`) on a fixed 24-hour interval (`memory_gc_interval`), independent
+of whether a GM ever runs the manual command.
+
 ### Files
 
 | File | Role |
 |------|------|
-| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), flush, retrieval |
+| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan purge, flush, retrieval |
 | `chatter_group.py` | Calls `start_session`, `get_bot_memories`, first-meeting insert |
+| `chatter_group_handlers.py` | `_kill_post_success()` / `_wipe_post_success()` filter altbot candidates and call `queue_shared_event_memory()` for party-wide kill/wipe memories |
 | `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection |
+| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop |
+| `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE` directly |
+| `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
 
 ### Database tables
 
 | Table | Purpose |
 |-------|---------|
-| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, etc. |
+| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, `ambient`, etc. `importance_score` (TINYINT UNSIGNED, default 5) drives decay-aware ranking. |
 | `llm_bot_identities` | Persistent personality traits keyed by `bot_guid`. Regenerated only on `IdentityVersion` bump. |
+| `llm_group_bot_traits` | `is_altbot` (TINYINT(1), default 1) marks whether a bot is player-owned; gates memory generation. |
 
 ### Config keys
 
@@ -1774,6 +1926,9 @@ experiences rather than treating the player as a stranger.
 | `LLMChatter.Memory.MaxPerBotPlayer` | `50` | Cap on active memories per bot–player pair |
 | `LLMChatter.Memory.RecallChance` | `30` | % chance a specific memory is highlighted in reunion greeting |
 | `LLMChatter.Memory.IdentityVersion` | `1` | Bump to force personality regeneration for all bots |
+| `LLMChatter.Memory.MaxInjectTokens` | `400` | Approximate token budget for memories injected into a single prompt (reunion greeting, recall) |
+| `LLMChatter.Memory.DecayMaxImportance` | `3` | Highest importance score still subject to decay; higher-scored memories never decay |
+| `LLMChatter.Memory.DecayDays` | `30` | Days a decaying memory takes to lose one point of importance (floored at 1) |
 
 ---
 
@@ -2435,10 +2590,10 @@ Typical multi-message JSON shape:
 | `llm_chatter_queue` | C++ | Python | Ambient request queue |
 | `llm_chatter_messages` | Python | C++ | Outbound delivery queue (includes `npc_spawn_id` for NPC speakers and `player_guid` for proximity scene tracking) |
 | `llm_group_cached_responses` | Python | C++ | Pre-cached instant reactions |
-| `llm_group_bot_traits` | Python + C++ travel refresh | Python | Group personality, location, and live travel state |
+| `llm_group_bot_traits` | Python + C++ travel refresh | Python | Group personality, location, live travel state, and `is_altbot` (player-owned bot flag; gates memory generation) |
 | `llm_group_chat_history` | Python | Python | Group anti-repetition history |
 | `llm_general_chat_history` | C++/Python read path | Python/C++ | General-channel history |
-| `llm_bot_memories` | Python | Python | Per-bot-per-player memory journal (active=1 persists; first_meeting immune to prune) |
+| `llm_bot_memories` | Python | Python | Per-bot-per-player memory journal (active=1 persists; first_meeting immune to prune); `importance_score` drives decay-aware retrieval and eviction, including the top-memory eviction guard (see 13n) |
 | `llm_bot_identities` | Python | Python | Persistent bot personality traits; regenerated on IdentityVersion bump |
 
 ---

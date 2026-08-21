@@ -11,7 +11,6 @@ Owns:
 - Memory retrieval for reunion greetings
 """
 
-import json
 import logging
 import random
 import re
@@ -27,6 +26,10 @@ from chatter_shared import (
     get_zone_name, get_dungeon_flavor,
     format_location_label,
     build_bot_identity,
+    estimate_tokens,
+)
+from chatter_text import (
+    extract_json_object,
 )
 from chatter_llm import call_llm, get_llm_client
 
@@ -101,6 +104,78 @@ MEMORY_EXPRESSION_STYLES = [
     'wry', 'sincere',
 ]
 
+# memory_type -> one-line prompt description, shared by
+# _call_llm_for_memory() and
+# _generate_shared_event_memory().
+_MEMORY_TYPE_DESCRIPTIONS = {
+    'ambient': "a quiet moment during travel",
+    'boss_kill': "defeating a powerful enemy together",
+    'wipe': "a total party wipe",
+    'rare_kill': "finding and slaying a rare creature",
+    'dungeon': "entering a dungeon or raid",
+    'party_member': "adventuring alongside a companion",
+    'player_message': "something the player said in chat",
+    'quest_complete': "completing a quest together",
+    'achievement': "earning an achievement",
+    'level_up': "reaching a new level",
+    'bg_win': "winning a battleground",
+    'bg_loss': "losing a battleground",
+    'discovery': "discovering a new area",
+    'pvp_kill': "defeating an enemy player in combat",
+}
+
+# 1-10 importance rubric appended to every memory prompt
+# so single-bot and shared-event memories are rated on
+# an identical scale.
+_IMPORTANCE_RUBRIC = (
+    "Also rate how important/memorable this "
+    "moment is on a 1-10 scale:\n"
+    "- 1-3 (Ambient): casual chat, minor zone"
+    " banter\n"
+    "- 4-6 (Narrative): personal preferences"
+    " stated by the player, minor achievements\n"
+    "- 7-8 (Milestones): leveling milestones,"
+    " acquiring rare gear, wipe encounters\n"
+    "- 9-10 (Core Bonds): defeating raid bosses"
+    " together, major narrative turning points\n\n"
+)
+
+DEFAULT_DECAY_MAX_IMPORTANCE = 3
+DEFAULT_DECAY_DAYS = 30
+
+
+def _effective_score_sql(config=None):
+    """Build the decay-aware "effective importance" SQL
+    expression used by get_bot_memories() and
+    _evict_one_used().
+
+    Memories at or below DecayMaxImportance lose about
+    one point per DecayDays days, floored at 1; higher
+    scores never decay. Both tunables are coerced to
+    int before interpolation.
+    """
+    cfg = config or {}
+    max_importance = int(cfg.get(
+        'LLMChatter.Memory.DecayMaxImportance',
+        DEFAULT_DECAY_MAX_IMPORTANCE,
+    ))
+    decay_days = int(cfg.get(
+        'LLMChatter.Memory.DecayDays',
+        DEFAULT_DECAY_DAYS,
+    ))
+    if decay_days < 1:
+        decay_days = DEFAULT_DECAY_DAYS
+    return (
+        "CASE"
+        " WHEN importance_score <= %d THEN"
+        "   GREATEST(1, importance_score -"
+        "     TIMESTAMPDIFF(DAY, created_at, NOW())"
+        " / %d)"
+        " ELSE importance_score"
+        " END"
+    ) % (max_importance, decay_days)
+
+
 # ============================================================
 # BACKGROUND EXECUTOR
 # ============================================================
@@ -126,7 +201,6 @@ _active_sessions: Dict[int, dict] = {}
 
 _group_locks: Dict[int, threading.Lock] = {}
 _group_locks_meta = threading.Lock()
-
 
 def _get_group_lock(
     group_id: int, create: bool = True
@@ -213,6 +287,44 @@ def clear_all_sessions():
 # QUEUE MEMORY
 # ============================================================
 
+def _is_altbot(db, group_id, bot_guid):
+    """Check whether a bot is player-owned (alt) vs.
+    a random/ownerless bot.
+
+    A missing connection, a missing row, and DB errors
+    all fail open (treated as altbot) to match the
+    is_altbot column's DEFAULT 1.
+
+    Args:
+        db: live DB connection (None = fail open)
+        group_id: group identifier
+        bot_guid: bot character guid
+    """
+    if db is None:
+        return True
+    try:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT is_altbot FROM"
+            " llm_group_bot_traits"
+            " WHERE group_id = %s"
+            "   AND bot_guid = %s",
+            (group_id, bot_guid),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True
+        return bool(row[0])
+    except Exception:
+        logger.error(
+            "is_altbot lookup failed for "
+            "bot=%s group=%s",
+            bot_guid, group_id,
+            exc_info=True,
+        )
+        return True
+
+
 def queue_memory(
     config, group_id, bot_guid, player_guid,
     memory_type, event_context,
@@ -238,8 +350,9 @@ def queue_memory(
         bot_name: bot's character name
         bot_class: bot's class name
         bot_race: bot's race name
-        db: optional DB connection for location
-            lookup (avoids opening a new one)
+        db: optional DB connection reused for the
+            altbot/player/location lookups; one
+            connection is opened here if omitted
     """
     if not int(config.get(
         'LLMChatter.Memory.Enable', 1
@@ -258,10 +371,127 @@ def queue_memory(
         session_start = session["start"]
         p_guid = session["player_guid"]
 
-    # Use the session's player_guid if caller
-    # didn't provide one
-    if not player_guid:
-        player_guid = p_guid
+    own_db = False
+    if db is None:
+        try:
+            db = get_db_connection(config)
+            own_db = True
+        except Exception:
+            logger.error(
+                "queue_memory could not open a DB "
+                "connection for group %s", group_id,
+                exc_info=True,
+            )
+            db = None
+    try:
+        # Persistent memories are only generated for
+        # player-owned (alt) bots, never for random/
+        # ownerless bots.
+        if not _is_altbot(db, group_id, bot_guid):
+            logger.debug(
+                "skipping memory generation for "
+                "non-altbot bot_guid=%s group=%s",
+                bot_guid, group_id,
+            )
+            return
+
+        # Use the session's player_guid if caller
+        # didn't provide one
+        if not player_guid:
+            player_guid = p_guid
+
+        # Last resort: resolve from group members
+        # (handles bridge restart mid-session where
+        # session player_guid was lost)
+        if not player_guid:
+            try:
+                from chatter_db import (
+                    get_real_player_guid_for_group,
+                )
+                player_guid = (
+                    get_real_player_guid_for_group(
+                        db, group_id
+                    )
+                )
+            except Exception:
+                logger.error(
+                    "player_guid DB fallback failed "
+                    "for group %s", group_id,
+                    exc_info=True,
+                )
+
+        if not player_guid:
+            return  # can't create orphaned memory
+
+        # Resolve location NOW while traits exist
+        location = _resolve_location(
+            db, config, group_id
+        )
+    finally:
+        if own_db and db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    memory_executor.submit(
+        _execute_generate_memory,
+        config=config,
+        group_id=group_id,
+        bot_guid=bot_guid,
+        player_guid=player_guid,
+        memory_type=memory_type,
+        event_context=event_context,
+        bot_name=bot_name,
+        bot_class=bot_class,
+        bot_race=bot_race,
+        bot_gender=bot_gender,
+        player_name=player_name,
+        location=location,
+        session_start=session_start,
+        insert_active=False,
+    )
+
+
+def queue_shared_event_memory(
+    config, group_id, memory_type, event_context,
+    bot_guids, db=None,
+):
+    """Submit ONE memory-generation task whose result is
+    inserted for every eligible bot in bot_guids.
+
+    Used for party-wide events (boss/rare kills, wipes):
+    a single LLM call replaces one call per bot. Callers
+    are responsible for passing altbots only.
+
+    Args:
+        config: bridge config dict
+        group_id: group identifier
+        memory_type: one of MEMORY_MOODS keys
+        event_context: brief description of the moment
+        bot_guids: iterable of altbot character guids
+        db: optional DB connection for the player_guid
+            fallback lookup
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Enable', 1
+    )):
+        return
+
+    lock = _get_group_lock(group_id, create=False)
+    if lock is None:
+        return
+    with lock:
+        session = _active_sessions.get(group_id)
+        if not session:
+            return
+        eligible_bots = (
+            set(bot_guids) & session["bots"]
+        )
+        if not eligible_bots:
+            return
+        session_start = session["start"]
+        player_guid = session["player_guid"]
 
     # Last resort: resolve from group members
     # (handles bridge restart mid-session where
@@ -286,27 +516,15 @@ def queue_memory(
     if not player_guid:
         return  # can't create orphaned memory
 
-    # Resolve location NOW while traits exist
-    location = _resolve_location(
-        db, config, group_id
-    )
-
     memory_executor.submit(
-        _execute_generate_memory,
+        _execute_generate_shared_memory,
         config=config,
         group_id=group_id,
-        bot_guid=bot_guid,
+        bot_guids=eligible_bots,
         player_guid=player_guid,
         memory_type=memory_type,
         event_context=event_context,
-        bot_name=bot_name,
-        bot_class=bot_class,
-        bot_race=bot_race,
-        bot_gender=bot_gender,
-        player_name=player_name,
-        location=location,
         session_start=session_start,
-        insert_active=False,
     )
 
 
@@ -372,28 +590,93 @@ def _count_active_memories(cursor, bot_guid, player_guid):
     return row[0] if row else 0
 
 
-def _evict_one_used(cursor, conn, bot_guid, player_guid):
-    """Evict one random used memory.
+def _evict_one_used(
+    cursor, conn, bot_guid, player_guid, config=None,
+):
+    """Evict the least valuable memory to make room.
+
+    Prefers the lowest decay-aware effective_score
+    used=1 row (created_at ASC breaks ties), falling
+    back to the lowest-scoring row regardless of used
+    status so a pool full of unread memories can't
+    deadlock the cap. Both queries exclude the pair's
+    single highest-scoring row, so a bot never forgets
+    its most valuable memory about a player.
 
     Returns True if a row was deleted.
     """
+    score_sql = _effective_score_sql(config)
+    top_row_subquery = (
+        " AND id != (SELECT id FROM ("
+        "SELECT id FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        " ORDER BY "
+        + score_sql +
+        " DESC, created_at DESC"
+        " LIMIT 1"
+        ") t)"
+    )
     cursor.execute(
         "DELETE FROM llm_bot_memories"
         " WHERE bot_guid = %s"
         "   AND player_guid = %s"
         "   AND active = 1"
         "   AND used = 1"
-        " ORDER BY RAND() LIMIT 1",
-        (bot_guid, player_guid),
+        + top_row_subquery +
+        " ORDER BY "
+        + score_sql +
+        " ASC, created_at ASC"
+        " LIMIT 1",
+        (
+            bot_guid, player_guid,
+            bot_guid, player_guid,
+        ),
     )
     conn.commit()
-    return cursor.rowcount > 0
+    if cursor.rowcount > 0:
+        return True
+
+    # Fallback: no used=1 row was eligible. Pool is
+    # under generation pressure (filling up with
+    # memories that haven't been recalled yet) --
+    # evict the lowest-value row regardless of used
+    # status so the cap never gets permanently stuck.
+    cursor.execute(
+        "DELETE FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        + top_row_subquery +
+        " ORDER BY "
+        + score_sql +
+        " ASC, created_at ASC"
+        " LIMIT 1",
+        (
+            bot_guid, player_guid,
+            bot_guid, player_guid,
+        ),
+    )
+    conn.commit()
+    if cursor.rowcount > 0:
+        logger.info(
+            "Memory pool for bot=%s player=%s had no"
+            " used=1 rows to evict (generation"
+            " pressure: pool filled with unread"
+            " memories); evicted lowest-value unused"
+            " row instead",
+            bot_guid, player_guid,
+        )
+        return True
+    return False
 
 
 def _ensure_cap_and_insert(
-    conn, bot_guid, player_guid, group_id,
+    conn, config, bot_guid, player_guid, group_id,
     memory_type, memory_text, mood, emote,
     session_start, active, max_per,
+    importance=5,
 ):
     """Check memory cap, evict if needed, insert.
 
@@ -405,7 +688,8 @@ def _ensure_cap_and_insert(
     )
     if cnt >= max_per:
         if not _evict_one_used(
-            cursor, conn, bot_guid, player_guid
+            cursor, conn, bot_guid, player_guid,
+            config,
         ):
             logger.debug(
                 "Memory pool full, no used"
@@ -418,14 +702,16 @@ def _ensure_cap_and_insert(
         " (bot_guid, player_guid,"
         "  group_id, memory_type,"
         "  memory, mood, emote,"
-        "  active, session_start)"
+        "  active, session_start,"
+        "  importance_score)"
         " VALUES"
-        " (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             bot_guid, player_guid,
             group_id, memory_type,
             memory_text, mood, emote,
             active, session_start,
+            importance,
         ),
     )
     conn.commit()
@@ -500,18 +786,20 @@ def _execute_generate_memory(
         )
 
         # Generate via LLM
-        memory_text, emote = _call_llm_for_memory(
-            config,
-            bot_name=bot_name,
-            bot_class=bot_class,
-            bot_race=bot_race,
-            bot_gender=bot_gender,
-            player_name=player_name,
-            memory_type=memory_type,
-            event_context=event_context,
-            mood=mood,
-            style=style,
-            location=location,
+        memory_text, emote, importance = (
+            _call_llm_for_memory(
+                config,
+                bot_name=bot_name,
+                bot_class=bot_class,
+                bot_race=bot_race,
+                bot_gender=bot_gender,
+                player_name=player_name,
+                memory_type=memory_type,
+                event_context=event_context,
+                mood=mood,
+                style=style,
+                location=location,
+            )
         )
 
         if not memory_text:
@@ -541,19 +829,23 @@ def _execute_generate_memory(
                 ):
                     return
                 _ensure_cap_and_insert(
-                    conn, bot_guid, player_guid,
-                    group_id, memory_type,
+                    conn, config, bot_guid,
+                    player_guid, group_id,
+                    memory_type,
                     memory_text, mood, emote,
                     session_start, active=0,
                     max_per=max_per,
+                    importance=importance,
                 )
         else:
             _ensure_cap_and_insert(
-                conn, bot_guid, player_guid,
-                group_id, memory_type,
+                conn, config, bot_guid,
+                player_guid, group_id,
+                memory_type,
                 memory_text, mood, emote,
                 session_start, active=1,
                 max_per=max_per,
+                importance=importance,
             )
 
     except Exception:
@@ -571,6 +863,126 @@ def _execute_generate_memory(
                 pass
 
 
+def _execute_generate_shared_memory(
+    config, group_id, bot_guids, player_guid,
+    memory_type, event_context, session_start=0.0,
+):
+    """Generate ONE shared memory via a single LLM call
+    and insert it for every bot in bot_guids.
+
+    Rows are inserted as active=0 (pending); they go
+    active at farewell (flush_session_memories()) or via
+    orphan recovery, like any other in-session memory.
+    """
+    # Fast bailout before expensive LLM call
+    lock = _get_group_lock(group_id, create=False)
+    if lock is None:
+        return
+    with lock:
+        session = _active_sessions.get(group_id)
+        if (
+            session is None
+            or session["start"] != session_start
+        ):
+            return
+        live_bots = set(bot_guids) & session["bots"]
+    if not live_bots:
+        return
+
+    conn = None
+    try:
+        conn = get_db_connection(config)
+
+        moods = MEMORY_MOODS.get(
+            memory_type, ['contemplative'],
+        )
+        mood = random.choice(moods)
+
+        memory_text, emote, importance = (
+            _generate_shared_event_memory(
+                config, memory_type, event_context,
+                mood_hint=mood,
+            )
+        )
+
+        if not memory_text:
+            return
+
+        max_per = int(config.get(
+            'LLMChatter.Memory.MaxPerBotPlayer', 30
+        ))
+
+        # Re-check session under per-group lock; bots
+        # that left mid-LLM-call are dropped from the
+        # insert.
+        lock = _get_group_lock(
+            group_id, create=False
+        )
+        if lock is None:
+            return
+        with lock:
+            session = _active_sessions.get(group_id)
+            if (
+                session is None
+                or session["start"]
+                    != session_start
+            ):
+                return
+            live_bots = (
+                set(bot_guids) & session["bots"]
+            )
+            if not live_bots:
+                return
+            inserted_count = 0
+            for bot_guid in live_bots:
+                if _ensure_cap_and_insert(
+                    conn, config, bot_guid,
+                    player_guid, group_id,
+                    memory_type, memory_text,
+                    mood, emote, session_start,
+                    active=0, max_per=max_per,
+                    importance=importance,
+                ):
+                    inserted_count += 1
+
+            logger.info(
+                "Shared memory generated for group=%s "
+                "type=%s: %d altbot(s)",
+                group_id, memory_type, inserted_count,
+            )
+
+    except Exception:
+        logger.error(
+            "Shared memory generation failed for "
+            f"group={group_id} type={memory_type}",
+            exc_info=True,
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _coerce_importance(raw_importance, default=5):
+    """Coerce a parsed `importance` field to an int in
+    [1, 10].
+
+    Always returns a usable value: `default` when the
+    field is missing, non-numeric, or wildly out of
+    range (a garbled misparse), otherwise clamped into
+    [1, 10].
+    """
+    try:
+        importance = int(raw_importance)
+    except (TypeError, ValueError):
+        return default
+    if importance < -1000 or importance > 1000:
+        return default
+    return max(1, min(10, importance))
+
+
 def _call_llm_for_memory(
     config,
     bot_name="", bot_class="", bot_race="",
@@ -582,54 +994,16 @@ def _call_llm_for_memory(
 ):
     """Call LLM to generate a memory entry.
 
-    Returns (memory_text, emote) or (None, None).
+    Returns (memory_text, emote, importance) or
+    (None, None, None) on failure. Only `memory` is
+    required; a missing/malformed `importance` or
+    `emote` falls back to a default instead of failing.
     """
     client = get_llm_client(config)
 
-    type_desc = {
-        'ambient': (
-            "a quiet moment during travel"
-        ),
-        'boss_kill': (
-            "defeating a powerful enemy together"
-        ),
-        'wipe': (
-            "a total party wipe"
-        ),
-        'rare_kill': (
-            "finding and slaying a rare creature"
-        ),
-        'dungeon': (
-            "entering a dungeon or raid"
-        ),
-        'party_member': (
-            "adventuring alongside a companion"
-        ),
-        'player_message': (
-            "something the player said in chat"
-        ),
-        'quest_complete': (
-            "completing a quest together"
-        ),
-        'achievement': (
-            "earning an achievement"
-        ),
-        'level_up': (
-            "reaching a new level"
-        ),
-        'bg_win': (
-            "winning a battleground"
-        ),
-        'bg_loss': (
-            "losing a battleground"
-        ),
-        'discovery': (
-            "discovering a new area"
-        ),
-        'pvp_kill': (
-            "defeating an enemy player in combat"
-        ),
-    }.get(memory_type, "a shared moment")
+    type_desc = _MEMORY_TYPE_DESCRIPTIONS.get(
+        memory_type, "a shared moment"
+    )
 
     prompt = (
         f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender)} "
@@ -654,9 +1028,11 @@ def _call_llm_for_memory(
         f"This is a private journal entry, not "
         f"spoken aloud. Be specific about what "
         f"happened.\n\n"
+        + _IMPORTANCE_RUBRIC +
         f"Respond in JSON:\n"
         f'{{"memory": "your memory text", '
-        f'"emote": "one_word_emote"}}\n\n'
+        f'"emote": "one_word_emote", '
+        f'"importance": 5}}\n\n'
         f"Rules:\n"
         f"- Memory must be 1-2 sentences\n"
         f"- First person perspective\n"
@@ -664,6 +1040,8 @@ def _call_llm_for_memory(
         f"- Only reference the location given above"
         f" — never invent or guess a location\n"
         f"- Emote is optional (null if none)\n"
+        f"- Importance is an integer from 1 to 10"
+        f" using the rubric above\n"
     )
     if player_name:
         prompt += (
@@ -693,29 +1071,25 @@ def _call_llm_for_memory(
             label='memory_generation',
         )
         if not response:
-            return None, None
+            return None, None, None
 
-        # Parse JSON response
-        response = response.strip()
-        # Try to find JSON object in response
-        start = response.find('{')
-        end = response.rfind('}')
-        if start >= 0 and end > start:
-            response = response[start:end + 1]
-
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError:
-            return None, None
+        # Robust JSON extraction (markdown-fence
+        # stripping + regex-matched embedded {...}
+        # fallback), keyed on 'memory'.
+        data = extract_json_object(
+            response, required_key='memory'
+        )
+        if data is None:
+            return None, None, None
 
         memory = data.get('memory', '')
         if isinstance(memory, str):
             memory = memory.strip()
         else:
-            return None, None
+            return None, None, None
 
         if not memory or len(memory) > 500:
-            return None, None
+            return None, None, None
 
         emote = data.get('emote')
         if isinstance(emote, str):
@@ -723,7 +1097,11 @@ def _call_llm_for_memory(
         else:
             emote = None
 
-        return memory, emote
+        importance = _coerce_importance(
+            data.get('importance')
+        )
+
+        return memory, emote, importance
 
     except Exception:
         logger.error(
@@ -731,12 +1109,161 @@ def _call_llm_for_memory(
             f"{bot_name}:{memory_type}",
             exc_info=True,
         )
-        return None, None
+        return None, None, None
+
+
+def _generate_shared_event_memory(
+    config, memory_type, event_context,
+    mood_hint=None,
+):
+    """Call the LLM ONCE to generate a shared memory
+    for a party-wide event (boss/rare kill, wipe).
+
+    Bot-identity-agnostic on purpose: the same text is
+    stored verbatim for every present altbot, so the
+    prompt asks for a first-person-plural ("we"/"our
+    party") memory with no per-bot substitution.
+
+    Returns (memory_text, emote, importance) or
+    (None, None, None) on failure.
+    """
+    client = get_llm_client(config)
+    type_desc = _MEMORY_TYPE_DESCRIPTIONS.get(
+        memory_type, "a shared moment"
+    )
+    mood = mood_hint or 'contemplative'
+
+    prompt = (
+        "A full party of adventurers in World of "
+        "Warcraft just shared a moment together.\n"
+        f"\nContext: {type_desc}\n"
+    )
+    if event_context:
+        prompt += f"What happened: {event_context}\n"
+    prompt += f"Mood: {mood}\n\n"
+    prompt += (
+        "Write a 1-2 sentence first-person-plural "
+        "memory (\"we\"/\"our party\") from the "
+        "group's shared perspective about this "
+        "moment, suitable to be stored as an "
+        "identical private journal entry for every "
+        "party member. This is a private journal "
+        "entry, not spoken aloud. Be specific about "
+        "what happened.\n\n"
+    )
+    prompt += _IMPORTANCE_RUBRIC
+    prompt += (
+        "Respond in JSON:\n"
+        '{"memory": "your memory text", '
+        '"emote": "one_word_emote", '
+        '"importance": 5}\n\n'
+        "Rules:\n"
+        "- Memory must be 1-2 sentences\n"
+        "- First person plural (\"we\"/\"our\") "
+        "perspective -- never use a single "
+        "character's name or \"I\"\n"
+        "- No quotes inside the memory text\n"
+        "- Emote is optional (null if none)\n"
+        "- Importance is an integer from 1 to 10"
+        " using the rubric above\n"
+        "- Just the JSON, nothing else"
+    )
+
+    from chatter_shared import get_language_rule
+    lang_rule = get_language_rule()
+    if lang_rule:
+        prompt += lang_rule
+
+    try:
+        response = call_llm(
+            client, prompt, config,
+            max_tokens_override=120,
+            context=f"shared-memory:{memory_type}",
+            label='shared_memory_generation',
+        )
+        if not response:
+            return None, None, None
+
+        data = extract_json_object(
+            response, required_key='memory'
+        )
+        if data is None:
+            return None, None, None
+
+        memory = data.get('memory', '')
+        if isinstance(memory, str):
+            memory = memory.strip()
+        else:
+            return None, None, None
+
+        if not memory or len(memory) > 500:
+            return None, None, None
+
+        emote = data.get('emote')
+        if isinstance(emote, str):
+            emote = emote.strip()[:32] or None
+        else:
+            emote = None
+
+        importance = _coerce_importance(
+            data.get('importance')
+        )
+
+        return memory, emote, importance
+
+    except Exception:
+        logger.error(
+            "Shared LLM memory call failed for "
+            f"type={memory_type}",
+            exc_info=True,
+        )
+        return None, None, None
 
 
 # ============================================================
 # FLUSH SESSION MEMORIES
 # ============================================================
+
+def _filter_altbot_guids(db, group_id, bot_guids):
+    """Filter a set of bot guids down to altbots only.
+
+    flush_session_memories() submits party_member jobs
+    straight to the executor, bypassing queue_memory()'s
+    per-bot altbot guard, so it needs its own filter.
+    DB errors fail open (keep the full set).
+    """
+    bot_guids = list(bot_guids)
+    if not bot_guids:
+        return set()
+    try:
+        cursor = db.cursor()
+        placeholders = ','.join(
+            ['%s'] * len(bot_guids)
+        )
+        cursor.execute(
+            "SELECT bot_guid FROM"
+            " llm_group_bot_traits"
+            " WHERE group_id = %s"
+            f"   AND bot_guid IN ({placeholders})"
+            "   AND is_altbot = 1",
+            [group_id] + bot_guids,
+        )
+        eligible = {
+            row[0] for row in cursor.fetchall()
+        }
+        logger.debug(
+            "Altbot filter: %d/%d bots eligible for "
+            "group=%s",
+            len(eligible), len(bot_guids), group_id,
+        )
+        return eligible
+    except Exception:
+        logger.error(
+            "altbot filter failed for group=%s",
+            group_id, exc_info=True,
+        )
+        return set(bot_guids)
+
 
 def flush_session_memories(
     db, group_id, player_guid, bot_guid, config,
@@ -832,7 +1359,12 @@ def flush_session_memories(
             flush_loc = _resolve_location(
                 db, config, group_id
             )
-            for target_guid in all_bots_snapshot:
+            # Only player-owned (alt) bots get
+            # party_member memories.
+            altbot_snapshot = _filter_altbot_guids(
+                db, group_id, all_bots_snapshot
+            )
+            for target_guid in altbot_snapshot:
                 if (random.random() * 100
                         >= party_chance):
                     continue
@@ -891,7 +1423,7 @@ def flush_session_memories(
             while cnt > max_per:
                 if not _evict_one_used(
                     cursor, db,
-                    bot_guid, player_guid,
+                    bot_guid, player_guid, config,
                 ):
                     break  # no used left
                 cnt -= 1
@@ -1076,15 +1608,58 @@ def rehydrate_active_sessions(db):
 
 
 # ============================================================
+# GARBAGE COLLECTION (GM-triggered)
+# ============================================================
+
+def purge_orphaned_memories(db):
+    """Delete llm_bot_memories rows whose bot_guid
+    or player_guid no longer exists in characters
+    (e.g. deleted characters).
+
+    Runs on the bridge's 24-hour periodic maintenance
+    pass; the '.llm memory clean' GM command issues the
+    same DELETE from C++. Returns the number of rows
+    deleted.
+    """
+    cursor = db.cursor()
+    cursor.execute("""
+        DELETE m FROM llm_bot_memories m
+        LEFT JOIN characters c1
+            ON m.bot_guid = c1.guid
+        LEFT JOIN characters c2
+            ON m.player_guid = c2.guid
+        WHERE c1.guid IS NULL
+           OR c2.guid IS NULL
+    """)
+    deleted = cursor.rowcount
+    db.commit()
+    cursor.close()
+    if deleted:
+        logger.info(
+            "[MEMORY] purged %d orphaned "
+            "llm_bot_memories row(s)",
+            deleted,
+        )
+    return deleted
+
+
+# ============================================================
 # MEMORY RETRIEVAL
 # ============================================================
 
 def get_bot_memories(
-    db, bot_guid, player_guid, count=3,
+    db, bot_guid, player_guid, config=None, count=3,
     exclude_first_meeting=False,
 ):
-    """Retrieve random active memories for a
+    """Retrieve decay-ranked active memories for a
     bot-player pair.
+
+    Over-fetches candidates ordered by the decay-aware
+    effective_score (see _effective_score_sql()), then
+    accumulates them in that order until either `count`
+    rows or the LLMChatter.Memory.MaxInjectTokens budget
+    is reached. Only the rows actually returned are
+    marked used=1.
 
     Returns list of memory strings (may be empty).
     """
@@ -1093,34 +1668,63 @@ def get_bot_memories(
             " AND memory_type != 'first_meeting'"
             if exclude_first_meeting else ""
         )
+        candidate_limit = max(count * 3, 15)
         cursor = db.cursor(dictionary=True)
         cursor.execute(
-            "SELECT id, memory"
+            "SELECT id, memory, "
+            + _effective_score_sql(config) +
+            " AS effective_score"
             " FROM llm_bot_memories"
             " WHERE bot_guid = %s"
             "   AND player_guid = %s"
             "   AND active = 1"
             + extra +
-            " ORDER BY RAND()"
+            " ORDER BY effective_score DESC,"
+            "   created_at DESC"
             " LIMIT %s",
-            (bot_guid, player_guid, count),
+            (bot_guid, player_guid, candidate_limit),
         )
-        rows = cursor.fetchall()
-        if rows:
-            ids = [row['id'] for row in rows]
-            placeholders = ','.join(
-                ['%s'] * len(ids)
-            )
-            cursor.execute(
-                "UPDATE llm_bot_memories"
-                " SET used = 1,"
-                " last_used_at = NOW()"
-                " WHERE id IN (%s)"
-                % placeholders,
-                tuple(ids),
-            )
-            db.commit()
-        return [row['memory'] for row in rows]
+        candidates = cursor.fetchall()
+        if not candidates:
+            return []
+
+        max_tokens = int((config or {}).get(
+            'LLMChatter.Memory.MaxInjectTokens', 400
+        ))
+
+        # Trim the (already effective_score-ordered)
+        # candidates down to count + token budget. The
+        # first pick is always kept even if it alone
+        # would exceed budget, so a single oversized
+        # memory can't starve the result down to empty.
+        selected = []
+        token_sum = 0
+        for row in candidates:
+            if len(selected) >= count:
+                break
+            cost = estimate_tokens(row['memory'])
+            if selected and token_sum + cost > max_tokens:
+                break
+            selected.append(row)
+            token_sum += cost
+
+        if not selected:
+            return []
+
+        ids = [row['id'] for row in selected]
+        placeholders = ','.join(
+            ['%s'] * len(ids)
+        )
+        cursor.execute(
+            "UPDATE llm_bot_memories"
+            " SET used = 1,"
+            " last_used_at = NOW()"
+            " WHERE id IN (%s)"
+            % placeholders,
+            tuple(ids),
+        )
+        db.commit()
+        return [row['memory'] for row in selected]
     except Exception:
         logger.error(
             f"Memory retrieval failed for "

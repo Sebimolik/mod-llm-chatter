@@ -98,7 +98,9 @@ from chatter_handler_pipeline import (
     run_group_handler,
     _maybe_talent_context,
 )
-from chatter_memory import queue_memory
+from chatter_memory import (
+    queue_memory, queue_shared_event_memory,
+)
 from chatter_bg_prompts import (
     build_bg_achievement_prompt,
     build_bg_spell_cast_prompt,
@@ -143,7 +145,15 @@ def _resolve_zone_name(
 
 
 def _kill_post_success(db, ctx, message):
-    """Memory: bots remember boss/rare kills."""
+    """Memory: bots remember boss/rare kills.
+
+    One shared LLM call generates the memory content
+    for the whole party (see
+    chatter_memory.queue_shared_event_memory()).
+    BossKillGenerationChance is rolled once for the
+    event: either every present altbot gets the shared
+    memory, or none do.
+    """
     is_boss = ctx['is_boss']
     is_rare = ctx['is_rare']
     if not (is_boss or is_rare):
@@ -158,45 +168,36 @@ def _kill_post_success(db, ctx, message):
         'LLMChatter.Memory'
         '.BossKillGenerationChance', 60
     ))
+    if random.random() * 100 >= boss_mem_chance:
+        return
     mc = db.cursor(dictionary=True)
     mc.execute(
-        "SELECT t.bot_guid, t.bot_name,"
-        " c.class, c.race, c.gender"
+        "SELECT t.bot_guid"
         " FROM llm_group_bot_traits t"
-        " JOIN characters c"
-        "   ON c.guid = t.bot_guid"
-        " WHERE t.group_id = %s",
+        " WHERE t.group_id = %s"
+        "   AND t.is_altbot = 1",
         (group_id,),
     )
-    all_bots = mc.fetchall()
-    for ab in all_bots:
-        if (random.random() * 100
-                >= boss_mem_chance):
-            continue
-        try:
-            queue_memory(
-                config, group_id,
-                ab['bot_guid'], 0,
-                memory_type=mem_type,
-                event_context=(
-                    f"Killed {creature_name}"
-                ),
-                bot_name=ab['bot_name'],
-                bot_class=get_class_name(
-                    ab['class']
-                ),
-                bot_race=get_race_name(
-                    ab['race']
-                ),
-                bot_gender=get_gender_label(
-                    ab.get('gender', 0)
-                ),
-            )
-        except Exception:
-            logger.error(
-                "kill memory queue failed",
-                exc_info=True,
-            )
+    bot_guids = [
+        row['bot_guid'] for row in mc.fetchall()
+    ]
+    if not bot_guids:
+        return
+    try:
+        queue_shared_event_memory(
+            config, group_id,
+            memory_type=mem_type,
+            event_context=(
+                f"Killed {creature_name}"
+            ),
+            bot_guids=bot_guids,
+            db=db,
+        )
+    except Exception:
+        logger.error(
+            "kill shared memory queue failed",
+            exc_info=True,
+        )
 
 
 def process_group_kill_event(
@@ -1136,7 +1137,30 @@ def _check_achievement_batch(
 
 
 def _achievement_post_success(db, ctx, message):
-    """Memory: ALL bots remember the achievement.
+    """Memory: bots remember achievements.
+
+    Dungeon/instance-completion achievements are earned
+    by every party member present at the same time -- the
+    C++ side fires one bot_group_achievement event per
+    achiever, and _check_achievement_batch() already
+    collapses events that land within a 2s window for the
+    same achievement_name in the same group, returning
+    'batched_names' with every achiever's name. More than
+    one name means this was a genuinely party-wide
+    completion (e.g. clearing a dungeon), so every present
+    altbot gets ONE shared memory of it -- same pattern as
+    _kill_post_success()/_wipe_post_success()
+    (chatter_memory.queue_shared_event_memory()).
+
+    A single achiever (batched_names is None or length 1)
+    means a personal achievement (leveling, exploration,
+    solo kill counters, etc. -- OnPlayerAchievementComplete
+    fires for every achievement type, not just party-wide
+    ones). In that case only the achiever's own bot (if
+    the achiever is actually a bot) remembers it; bystander
+    altbots are NOT given a false memory of an achievement
+    they did not actually earn.
+
     Skip in BG (achievements fire constantly).
     """
     if ctx['extra_data'].get('is_battleground'):
@@ -1148,6 +1172,54 @@ def _achievement_post_success(db, ctx, message):
         'LLMChatter.Memory'
         '.AchievementGenerationChance', 35
     ))
+    if random.random() * 100 >= achv_chance:
+        return
+
+    batched_names = ctx.get('batched_names')
+    is_party_wide = bool(
+        batched_names and len(batched_names) > 1
+    )
+
+    if is_party_wide:
+        mc = db.cursor(dictionary=True)
+        mc.execute(
+            "SELECT t.bot_guid"
+            " FROM llm_group_bot_traits t"
+            " WHERE t.group_id = %s"
+            "   AND t.is_altbot = 1",
+            (group_id,),
+        )
+        bot_guids = [
+            row['bot_guid'] for row in mc.fetchall()
+        ]
+        if not bot_guids:
+            return
+        try:
+            queue_shared_event_memory(
+                config, group_id,
+                memory_type='achievement',
+                event_context=(
+                    f"Earned achievement:"
+                    f" {achievement_name}"
+                ),
+                bot_guids=bot_guids,
+                db=db,
+            )
+        except Exception:
+            logger.error(
+                "achievement shared memory queue"
+                " failed",
+                exc_info=True,
+            )
+        return
+
+    # Personal achievement -- only the achiever's own
+    # bot (if any) remembers it, not the whole party.
+    if not ctx.get('is_bot'):
+        return
+    achiever_guid = ctx.get('achiever_guid')
+    if not achiever_guid:
+        return
     mc = db.cursor(dictionary=True)
     mc.execute(
         "SELECT t.bot_guid, t.bot_name,"
@@ -1155,38 +1227,39 @@ def _achievement_post_success(db, ctx, message):
         " FROM llm_group_bot_traits t"
         " JOIN characters c"
         "   ON c.guid = t.bot_guid"
-        " WHERE t.group_id = %s",
-        (group_id,),
+        " WHERE t.group_id = %s"
+        "   AND t.is_altbot = 1"
+        "   AND t.bot_guid = %s",
+        (group_id, achiever_guid),
     )
-    all_bots = mc.fetchall()
-    for ab in all_bots:
-        if random.random() * 100 >= achv_chance:
-            continue
-        try:
-            queue_memory(
-                config, group_id,
-                ab['bot_guid'], 0,
-                memory_type='achievement',
-                event_context=(
-                    f"Earned achievement:"
-                    f" {achievement_name}"
-                ),
-                bot_name=ab['bot_name'],
-                bot_class=get_class_name(
-                    ab['class']
-                ),
-                bot_race=get_race_name(
-                    ab['race']
-                ),
-                bot_gender=get_gender_label(
-                    ab.get('gender', 0)
-                ),
-            )
-        except Exception:
-            logger.error(
-                "achievement memory queue failed",
-                exc_info=True,
-            )
+    ab = mc.fetchone()
+    if not ab:
+        return
+    try:
+        queue_memory(
+            config, group_id,
+            ab['bot_guid'], 0,
+            memory_type='achievement',
+            event_context=(
+                f"Earned achievement:"
+                f" {achievement_name}"
+            ),
+            bot_name=ab['bot_name'],
+            bot_class=get_class_name(
+                ab['class']
+            ),
+            bot_race=get_race_name(
+                ab['race']
+            ),
+            bot_gender=get_gender_label(
+                ab.get('gender', 0)
+            ),
+        )
+    except Exception:
+        logger.error(
+            "achievement memory queue failed",
+            exc_info=True,
+        )
 
 
 def process_group_achievement_event(
@@ -1308,6 +1381,7 @@ def process_group_achievement_event(
             'achiever_name': achiever_name,
             'achievement_name': achievement_name,
             'is_bot': is_bot,
+            'achiever_guid': achiever_guid,
             'batched_names': batched_names,
         },
         build_prompt=lambda ctx: (
@@ -1908,33 +1982,51 @@ def process_group_dungeon_entry_event(
     )
 
 def _wipe_post_success(db, ctx, message):
-    """Memory: bot remembers the wipe."""
+    """Memory: the whole party remembers the wipe.
+
+    The spoken chat line is delivered separately by the
+    single designated reactor bot via
+    run_single_reaction(). Here every present altbot
+    gets a llm_bot_memories row from one shared LLM
+    call, same pattern as _kill_post_success().
+    """
     config = ctx['config']
     group_id = ctx['group_id']
-    bot_guid = ctx['bot_guid']
-    bot_name = ctx['bot_name']
     killer_name = ctx['killer_name']
     wipe_chance = int(config.get(
         'LLMChatter.Memory'
         '.WipeGenerationChance', 80
     ))
-    if random.random() * 100 < wipe_chance:
-        context = "Total party wipe"
-        if killer_name:
-            context = (
-                f"Wiped to {killer_name}"
-            )
-        queue_memory(
+    if random.random() * 100 >= wipe_chance:
+        return
+    mc = db.cursor(dictionary=True)
+    mc.execute(
+        "SELECT t.bot_guid"
+        " FROM llm_group_bot_traits t"
+        " WHERE t.group_id = %s"
+        "   AND t.is_altbot = 1",
+        (group_id,),
+    )
+    bot_guids = [
+        row['bot_guid'] for row in mc.fetchall()
+    ]
+    if not bot_guids:
+        return
+    context = "Total party wipe"
+    if killer_name:
+        context = f"Wiped to {killer_name}"
+    try:
+        queue_shared_event_memory(
             config, group_id,
-            bot_guid, 0,
             memory_type='wipe',
             event_context=context,
-            bot_name=bot_name,
-            bot_class=ctx['bot']['class'],
-            bot_race=ctx['bot']['race'],
-            bot_gender=ctx['bot'].get(
-                'gender', ''
-            ),
+            bot_guids=bot_guids,
+            db=db,
+        )
+    except Exception:
+        logger.error(
+            "wipe shared memory queue failed",
+            exc_info=True,
         )
 
 

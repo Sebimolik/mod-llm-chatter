@@ -2415,6 +2415,32 @@ LLMChatter.Memory.PartyMemberGenerationChance = 50
 #
 LLMChatter.Memory.IdleRecallChance = 20
 
+#
+#   LLMChatter.Memory.MaxInjectTokens
+#       Maximum approximate token budget for memories
+#       injected into a prompt.
+#       Default: 400
+#
+LLMChatter.Memory.MaxInjectTokens = 400
+
+#
+#   LLMChatter.Memory.DecayMaxImportance
+#       Highest importance score (1-10) still subject
+#       to decay. Memories at or below this score fade
+#       out of retrieval as they age; anything above it
+#       keeps its score forever.
+#       Default: 3
+#
+LLMChatter.Memory.DecayMaxImportance = 3
+
+#
+#   LLMChatter.Memory.DecayDays
+#       Days a decaying memory takes to lose one point
+#       of importance, floored at 1.
+#       Default: 30
+#
+LLMChatter.Memory.DecayDays = 30
+
 ###############################################################################
 # BACKSTORY
 ###############################################################################

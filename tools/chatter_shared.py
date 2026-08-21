@@ -277,6 +277,20 @@ def pick_random_max_tokens(config: dict) -> int:
     return full
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough character-based token estimate.
+
+    Uses a ~4 chars/token rule of thumb to budget how
+    many memories fit in a prompt injection (see
+    chatter_memory.get_bot_memories() /
+    LLMChatter.Memory.MaxInjectTokens) without needing
+    a real tokenizer. Never returns less than 1.
+    """
+    if not text:
+        return 1
+    return max(1, len(text) // 4)
+
+
 # =============================================================================
 # Maps a WoW client locale code (see _LANGUAGE_LOCALE_CODES
 # above) to the corresponding locale-specific zone-name

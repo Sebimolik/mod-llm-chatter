@@ -918,6 +918,23 @@ bool HandleForgetCommand(
         + PercentEncode(botName));
     return true;
 }
+
+bool HandleMemoryCleanCommand(ChatHandler* handler)
+{
+    // Drop memories whose bot or player character no
+    // longer exists (e.g. after a character deletion).
+    CharacterDatabase.Execute(
+        "DELETE m FROM llm_bot_memories m "
+        "LEFT JOIN characters c1 ON m.bot_guid = c1.guid "
+        "LEFT JOIN characters c2 "
+        "  ON m.player_guid = c2.guid "
+        "WHERE c1.guid IS NULL OR c2.guid IS NULL");
+
+    handler->SendSysMessage(
+        "LLM Chatter: purged orphaned "
+        "llm_bot_memories rows.");
+    return true;
+}
 }  // namespace
 
 class LLMChatterCommandScript : public CommandScript
@@ -934,6 +951,8 @@ public:
         {
             { "llmc", HandleRootCommand,
               SEC_PLAYER, Console::No },
+            { "llm", HandleLLMRootCommand,
+              SEC_GAMEMASTER, Console::Yes },
         };
 
         return commandTable;
@@ -989,6 +1008,34 @@ public:
                 "Supported commands: roster, "
                 "get, set, setbackstory, "
                 "regenbackstory, forget"));
+        return true;
+    }
+
+    static bool HandleLLMRootCommand(
+        ChatHandler* handler, Tail args)
+    {
+        if (!sLLMChatterConfig
+            || !sLLMChatterConfig->IsEnabled())
+        {
+            handler->SendSysMessage(
+                "LLM Chatter: module is disabled.");
+            return true;
+        }
+
+        std::string input = Trim(std::string(args));
+
+        std::string command;
+        std::string rest;
+        std::istringstream iss(input);
+        iss >> command;
+        std::getline(iss, rest);
+        rest = Trim(rest);
+
+        if (command == "memory" && rest == "clean")
+            return HandleMemoryCleanCommand(handler);
+
+        handler->SendSysMessage(
+            "Usage: .llm memory clean");
         return true;
     }
 };

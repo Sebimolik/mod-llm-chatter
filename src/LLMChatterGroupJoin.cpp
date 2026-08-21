@@ -101,6 +101,7 @@ void QueueBotGreetingEvent(
         else
             role = "melee_dps";
     }
+    bool isAltBot = botAi && botAi->IsAltBot();
 
     uint32 debounce = sLLMChatterConfig
         ->_groupJoinDebounceSec;
@@ -132,6 +133,9 @@ void QueueBotGreetingEvent(
             "\"bot_level\":" +
                 std::to_string(botLevel) + ","
             "\"role\":\"" + role + "\","
+            "\"is_altbot\":" +
+                std::string(
+                    isAltBot ? "true" : "false") + ","
             "\"group_id\":" +
                 std::to_string(groupId) + ","
             "\"player_name\":\"" +
@@ -181,6 +185,7 @@ void QueueBotGreetingEvent(
     entry.botGender = botGender;
     entry.botLevel = botLevel;
     entry.role = role;
+    entry.isAltBot = isAltBot;
     entry.zoneId = zoneId;
     entry.mapId = mapId;
 
@@ -295,6 +300,7 @@ void EnsureGroupJoinQueued(
                 else
                     entry.role = "melee_dps";
             }
+            entry.isAltBot = ai && ai->IsAltBot();
             existing.bots.push_back(
                 std::move(entry));
             return;
@@ -370,6 +376,7 @@ void EnsureGroupJoinQueued(
             else
                 entry.role = "melee_dps";
         }
+        entry.isAltBot = ai && ai->IsAltBot();
 
         botEntries.push_back(std::move(entry));
     }
@@ -538,6 +545,10 @@ void FlushGroupJoinBatches()
                 "\"bot_level\":" +
                     std::to_string(e.botLevel) + ","
                 "\"role\":\"" + e.role + "\","
+                "\"is_altbot\":" +
+                    std::string(
+                        e.isAltBot
+                            ? "true" : "false") + ","
                 "\"group_id\":" +
                     std::to_string(b.groupId) + ","
                 "\"player_name\":\"" +
@@ -598,6 +609,10 @@ void FlushGroupJoinBatches()
                             e.botLevel) + ","
                     "\"role\":\"" + e.role +
                         "\","
+                    "\"is_altbot\":" +
+                        std::string(
+                            e.isAltBot
+                                ? "true" : "false") + ","
                     "\"zone\":" +
                         std::to_string(
                             e.zoneId

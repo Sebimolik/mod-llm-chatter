@@ -1994,6 +1994,8 @@ def main():
     # Main loop
     last_cleanup = 0
     cleanup_interval = 60  # every 60 seconds
+    last_memory_gc = 0
+    memory_gc_interval = 86400  # every 24 hours
     last_db_snapshot = 0
     db_snapshot_interval = 10  # every 10 seconds
     last_idle_check = 0
@@ -2167,6 +2169,26 @@ def main():
                     # regardless of UseEventSystem)
                     cleanup_stale_groups(db)
                     last_cleanup = current_time
+
+                # Daily orphaned-memory GC (deleted
+                # characters). Runs the same DELETE the
+                # '.llm memory clean' GM command issues.
+                if (
+                    current_time - last_memory_gc
+                    >= memory_gc_interval
+                ):
+                    try:
+                        from chatter_memory import (
+                            purge_orphaned_memories,
+                        )
+                        purge_orphaned_memories(db)
+                    except Exception:
+                        logger.error(
+                            "Periodic orphaned-memory"
+                            " GC failed",
+                            exc_info=True,
+                        )
+                    last_memory_gc = current_time
 
                 # DB state snapshot for log viewer
                 if (
@@ -2348,11 +2370,9 @@ def main():
                         pass
 
             # Poll cadence honors the configured
-            # Bridge.PollIntervalSeconds instead of a
-            # hardcoded value (previously ignored the
-            # setting, causing excessive DB reconnects and
-            # CPU use). Background tasks self-rate-limit via
-            # their own last_X / interval checks.
+            # Bridge.PollIntervalSeconds. Background
+            # tasks self-rate-limit via their own
+            # last_X / interval checks.
             time.sleep(poll_interval)
 
         except KeyboardInterrupt:

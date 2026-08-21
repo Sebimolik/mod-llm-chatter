@@ -1033,6 +1033,7 @@ def assign_bot_traits(
     role=None, zone=0, area_id=0, map_id=0,
     config=None,
     bot_class='', bot_race='', bot_gender='',
+    is_altbot=True,
 ):
     """Pick 3 random traits and store them.
 
@@ -1079,12 +1080,13 @@ def assign_bot_traits(
     cursor = db.cursor()
     cursor.execute("""
         INSERT INTO llm_group_bot_traits
-        (group_id, bot_guid, bot_name,
+        (group_id, bot_guid, bot_name, is_altbot,
          trait1, trait2, trait3, role, tone,
          backstory, zone, area, map)
-        VALUES (%s, %s, %s, %s, %s, %s, %s,
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
+            is_altbot = VALUES(is_altbot),
             trait1 = VALUES(trait1),
             trait2 = VALUES(trait2),
             trait3 = VALUES(trait3),
@@ -1099,6 +1101,7 @@ def assign_bot_traits(
             assigned_at = CURRENT_TIMESTAMP
     """, (
         group_id, bot_guid, bot_name,
+        1 if is_altbot else 0,
         traits[0], traits[1], traits[2],
         role, persistent_tone,
         persistent_backstory,
