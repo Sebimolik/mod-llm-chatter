@@ -2409,6 +2409,22 @@ LLMChatter.Memory.AchievementGenerationChance = 60
 LLMChatter.Memory.LevelUpGenerationChance = 60
 
 #
+#   LLMChatter.Memory.GearChangeGenerationChance
+#       Percent chance (0-100) that a gear-change
+#       reaction generates a persistent memory.
+#       Default: 50
+#
+LLMChatter.Memory.GearChangeGenerationChance = 50
+
+#
+#   LLMChatter.Memory.MountChangeGenerationChance
+#       Percent chance (0-100) that a mount-change
+#       reaction generates a persistent memory.
+#       Default: 50
+#
+LLMChatter.Memory.MountChangeGenerationChance = 50
+
+#
 #   LLMChatter.Memory.BGMatchGenerationChance
 #       Percent chance (0-100) that a BG match result
 #       generates a persistent memory.

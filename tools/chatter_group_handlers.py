@@ -337,6 +337,42 @@ def _loot_msg_xform(db, raw_message, event):
         )
     return raw_message
 
+def _gear_change_post_success(db, ctx, message):
+    """Memory: the reactor bot remembers noticing the
+    player's new gear (single-bot, mirrors
+    _levelup_post_success() -- gear changes are personal
+    to the player being reacted to, not a shared party
+    moment, matching the single-bot reaction scope of
+    the gear-change reaction itself)."""
+    config = ctx['config']
+    group_id = ctx['group_id']
+    reactor_guid = ctx['bot_guid']
+    reactor_name = ctx['bot_name']
+    wearer_name = ctx['wearer_name']
+    item_name = ctx['item_name']
+
+    mem_chance = int(config.get(
+        'LLMChatter.Memory'
+        '.GearChangeGenerationChance', 50
+    ))
+    if random.random() * 100 < mem_chance:
+        queue_memory(
+            config, group_id,
+            reactor_guid, 0,
+            memory_type='gear_change',
+            event_context=(
+                f"Noticed {wearer_name} wearing"
+                f" {item_name}"
+            ),
+            bot_name=reactor_name,
+            bot_class=ctx['bot']['class'],
+            bot_race=ctx['bot']['race'],
+            bot_gender=ctx['bot'].get(
+                'gender', ''
+            ),
+        )
+
+
 def process_group_gear_change_event(
     db, client, config, event
 ):
@@ -376,7 +412,44 @@ def process_group_gear_change_event(
         needs_map_id=True,
         mood_key='gear_change',
         label='reaction_gear_change',
+        post_success=_gear_change_post_success,
     )
+
+
+def _mount_change_post_success(db, ctx, message):
+    """Memory: the reactor bot remembers noticing the
+    player's new mount (single-bot, mirrors
+    _levelup_post_success() -- mount changes are personal
+    to the player being reacted to, not a shared party
+    moment, matching the single-bot reaction scope of
+    the mount-change reaction itself)."""
+    config = ctx['config']
+    group_id = ctx['group_id']
+    reactor_guid = ctx['bot_guid']
+    reactor_name = ctx['bot_name']
+    rider_name = ctx['rider_name']
+    mount_name = ctx['mount_name']
+
+    mem_chance = int(config.get(
+        'LLMChatter.Memory'
+        '.MountChangeGenerationChance', 50
+    ))
+    if random.random() * 100 < mem_chance:
+        queue_memory(
+            config, group_id,
+            reactor_guid, 0,
+            memory_type='mount_change',
+            event_context=(
+                f"Noticed {rider_name} riding"
+                f" {mount_name}"
+            ),
+            bot_name=reactor_name,
+            bot_class=ctx['bot']['class'],
+            bot_race=ctx['bot']['race'],
+            bot_gender=ctx['bot'].get(
+                'gender', ''
+            ),
+        )
 
 
 def process_group_mount_change_event(
@@ -412,6 +485,7 @@ def process_group_mount_change_event(
         needs_map_id=True,
         mood_key='mount_change',
         label='reaction_mount_change',
+        post_success=_mount_change_post_success,
     )
 
 

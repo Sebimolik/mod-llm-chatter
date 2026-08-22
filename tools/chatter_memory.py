@@ -100,6 +100,14 @@ MEMORY_MOODS = {
         'fierce', 'satisfied', 'exhilarated',
         'proud', 'ruthless',
     ],
+    'gear_change': [
+        'impressed', 'admiring', 'envious',
+        'curious', 'approving',
+    ],
+    'mount_change': [
+        'impressed', 'admiring', 'delighted',
+        'curious', 'approving',
+    ],
 }
 
 MEMORY_EXPRESSION_STYLES = [
@@ -125,6 +133,8 @@ _MEMORY_TYPE_DESCRIPTIONS = {
     'bg_loss': "losing a battleground",
     'discovery': "discovering a new area",
     'pvp_kill': "defeating an enemy player in combat",
+    'gear_change': "noticing the player's new gear",
+    'mount_change': "noticing the player's new mount",
 }
 
 # 1-10 importance rubric appended to every memory prompt
