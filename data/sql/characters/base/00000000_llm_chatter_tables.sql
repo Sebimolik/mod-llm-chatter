@@ -372,13 +372,6 @@ CREATE TABLE IF NOT EXISTS `llm_bot_relationships` (
     `bot_guid`                   INT UNSIGNED NOT NULL,
     `player_guid`                INT UNSIGNED NOT NULL,
     `summary`                    TEXT NOT NULL,
-    -- Vestigial: still written as a debugging/rollback
-    -- breadcrumb, but no longer read. Condensation re-inserts
-    -- already-summarized content under fresh, higher ids, so an
-    -- id watermark replays it into the summary; the timestamp
-    -- watermark below does not, because a digest inherits its
-    -- oldest source's created_at.
-    `updated_through_memory_id`  BIGINT UNSIGNED NOT NULL DEFAULT 0,
     `updated_through_created_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00',
     `updated_at`                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`bot_guid`, `player_guid`)

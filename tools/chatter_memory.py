@@ -2556,15 +2556,13 @@ def _maybe_queue_relationship_update(
     )):
         return
     try:
-        # updated_through_memory_id is deliberately NOT read here
-        # (or in _maybe_update_relationship()): it is kept as a
-        # vestigial debugging/rollback breadcrumb only. Ids are
-        # the wrong watermark for this because condensation
-        # deletes source rows and re-inserts their content as
-        # digests with fresh, higher ids -- already-summarized
-        # material would look new again. Digests inherit their
-        # oldest source's created_at, so a timestamp watermark
-        # does not have that problem.
+        # The watermark is a timestamp, not an id, because
+        # condensation deletes source rows and re-inserts their
+        # content as digests with fresh, higher ids -- an id
+        # watermark would make already-summarized material look
+        # new again. Digests inherit their oldest source's
+        # created_at, so a timestamp watermark does not have that
+        # problem.
         cursor.execute(
             "SELECT updated_through_created_at FROM"
             " llm_bot_relationships"
@@ -2638,8 +2636,7 @@ def _maybe_update_relationship(
         cursor = conn.cursor(dictionary=True)
 
         # See _maybe_queue_relationship_update() for why the
-        # watermark is a timestamp and updated_through_memory_id
-        # is no longer read.
+        # watermark is a timestamp rather than an id.
         cursor.execute(
             "SELECT summary, updated_through_created_at"
             " FROM llm_bot_relationships"
@@ -2796,30 +2793,22 @@ def _maybe_update_relationship(
             return
 
         # Rows are ordered by created_at, so the last one
-        # carries the newest timestamp folded in. The id is
-        # still stored alongside it purely as a debugging /
-        # rollback breadcrumb -- nothing reads it back.
+        # carries the newest timestamp folded in.
         new_watermark = candidates[-1]['created_at']
-        new_watermark_id = max(
-            int(row['id']) for row in candidates
-        )
         write_cursor = conn.cursor()
         write_cursor.execute(
             "INSERT INTO llm_bot_relationships"
             " (bot_guid, player_guid, summary,"
-            "  updated_through_memory_id,"
             "  updated_through_created_at, updated_at)"
-            " VALUES (%s, %s, %s, %s, %s, NOW())"
+            " VALUES (%s, %s, %s, %s, NOW())"
             " ON DUPLICATE KEY UPDATE"
             "   summary = VALUES(summary),"
-            "   updated_through_memory_id ="
-            "     VALUES(updated_through_memory_id),"
             "   updated_through_created_at ="
             "     VALUES(updated_through_created_at),"
             "   updated_at = NOW()",
             (
                 bot_guid, player_guid, summary,
-                new_watermark_id, new_watermark,
+                new_watermark,
             ),
         )
         conn.commit()

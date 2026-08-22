@@ -837,9 +837,9 @@ def test_relationship_writes_timestamp_watermark():
         if q.startswith("INSERT INTO llm_bot_relationships")
     )
     assert 'updated_through_created_at' in write[0]
-    # (bot, player, summary, vestigial id, timestamp watermark)
-    assert write[1][3] == 7
-    assert write[1][4] == newest
+    assert 'updated_through_memory_id' not in write[0]
+    # (bot, player, summary, timestamp watermark)
+    assert write[1][3] == newest
     assert db.commits == 1
 
 
