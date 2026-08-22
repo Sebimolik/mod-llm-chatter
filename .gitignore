@@ -7,3 +7,7 @@ dev-only
 .DS_Store
 Gemini.md
 logs/
+tools/venv/
+tools/bridge.out
+tools/bridge.pid
+*.bak-*
