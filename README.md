@@ -54,6 +54,10 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ## Changelog
 
+### 2026-08-22 - Bots Tidy Up Their Memories
+
+Bots now quietly keep their memory of you from getting cluttered. The moments that matter to them stay put, but the small, routine stuff gets folded together over time into a shorter summary instead of just piling up forever — so a bot's memories of you stay meaningful instead of turning into a wall of trivia. This happens automatically in the background and is tunable for server admins, but as a player you shouldn't notice anything except that `.llmc memory <botname>` stays readable even after a long history together.
+
 ### 2026-08-22 - Bots Remember You Now
 
 Your bot companions have real memories now. They notice the moments you share together — boss kills, level-ups, quiet chats, big quests finished as a group — and bring them up naturally later, like a friend would; the more meaningful the moment, the longer it sticks with them. Curious what a bot remembers about you? Just type `.llmc memory <botname>` and it'll tell you. If you're grouped with more than one of your own bots, they'll sometimes talk about you to each other too, and each one slowly builds up an overall feeling about you the more you go through together. Bots also notice when you get new gear, a new mount, or a new title, and they'll stay in the mood of a big recent moment for a while afterward — still buzzing after a great kill, or a bit rattled after a rough wipe — instead of snapping back to neutral instantly. Everything they say stays true to the Warcraft world around them. This all now works in Russian, French, German, and Spanish too, and the module also now speaks Portuguese and Korean (a bit more limited than the four above for now), alongside a handful of small bug fixes picked up along the way.
