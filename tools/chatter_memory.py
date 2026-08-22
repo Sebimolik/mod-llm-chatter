@@ -291,15 +291,16 @@ def start_session(
             ].update(members)
 
 
-def get_session_mood(group_id, config=None):
-    """Return the group's current ambient mood, or None.
+def get_session_vibe(group_id, config=None):
+    """Return the group's current ambient session vibe,
+    or None.
 
-    Lazy decay, no background timer: a mood is written by
-    _ensure_cap_and_insert() whenever a new memory's
+    Lazy decay, no background timer: the vibe is written
+    by _ensure_cap_and_insert() whenever a new memory's
     importance_score crosses
-    LLMChatter.GroupChatter.MoodImportanceThreshold, and
+    LLMChatter.GroupChatter.VibeImportanceThreshold, and
     simply "expires" once
-    LLMChatter.GroupChatter.MoodDurationSeconds have
+    LLMChatter.GroupChatter.VibeDurationSeconds have
     elapsed -- callers just re-check the timestamp on
     every read instead of anything clearing it eagerly.
 
@@ -310,20 +311,20 @@ def get_session_mood(group_id, config=None):
     session = _active_sessions.get(group_id)
     if not session:
         return None
-    mood = session.get("mood")
-    mood_set_at = session.get("mood_set_at")
-    if not mood or not mood_set_at:
+    vibe = session.get("vibe")
+    vibe_set_at = session.get("vibe_set_at")
+    if not vibe or not vibe_set_at:
         return None
     duration = float((config or {}).get(
         'LLMChatter.GroupChatter'
-        '.MoodDurationSeconds', 600,
+        '.VibeDurationSeconds', 600,
     ))
-    if time.time() - mood_set_at >= duration:
+    if time.time() - vibe_set_at >= duration:
         return None
     # MEMORY_MOODS entries are occasionally
     # snake_case (e.g. "grimly_amused") -- normalize
     # to a plain phrase for use as a prompt tone.
-    return mood.replace('_', ' ')
+    return vibe.replace('_', ' ')
 
 
 def teardown_group_session(group_id):
@@ -788,9 +789,9 @@ def _ensure_cap_and_insert(
     )
     conn.commit()
 
-    # Session mood: a sufficiently important memory
+    # Session vibe: a sufficiently important memory
     # colors the group's ambient idle-chatter tone for
-    # a while (see get_session_mood() for the lazy-decay
+    # a while (see get_session_vibe() for the lazy-decay
     # read side). Skip silently if the session already
     # ended -- never create an entry just for this.
     # Not lock-protected: this call can already run
@@ -799,16 +800,16 @@ def _ensure_cap_and_insert(
     # path re-check block), and that lock is a plain
     # (non-reentrant) threading.Lock, so acquiring it
     # again here would deadlock. A couple of plain field
-    # writes are safe enough for a best-effort mood cue.
-    mood_threshold = int(config.get(
+    # writes are safe enough for a best-effort vibe cue.
+    vibe_threshold = int(config.get(
         'LLMChatter.GroupChatter'
-        '.MoodImportanceThreshold', 7,
+        '.VibeImportanceThreshold', 7,
     ))
-    if importance >= mood_threshold:
+    if importance >= vibe_threshold:
         session = _active_sessions.get(group_id)
         if session is not None:
-            session["mood"] = mood
-            session["mood_set_at"] = time.time()
+            session["vibe"] = mood
+            session["vibe_set_at"] = time.time()
 
     return True
 
