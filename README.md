@@ -56,7 +56,7 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ### 2026-08-22 - Bots Tidy Up Their Memories
 
-Bots now quietly keep their memory of you from getting cluttered. The moments that matter to them stay put, but the small, routine stuff gets folded together over time into a shorter summary instead of just piling up forever — so a bot's memories of you stay meaningful instead of turning into a wall of trivia. This happens automatically in the background and is tunable for server admins, but as a player you shouldn't notice anything except that `.llmc memory <botname>` stays readable even after a long history together.
+Bots now quietly keep their memory of you from getting cluttered, without ever throwing away what actually matters. Every memory a bot has of you gets scored for how meaningful it is, and the genuinely important ones — big fights won together, milestones, real turning points — are never touched; they stay exactly as they are, permanently. Only the small, everyday stuff (idle chit-chat, routine banter) is eligible for tidying, and even then only once a bot's memory of you is getting fairly full. When that happens, it takes just a handful of the least memorable entries at a time and quietly folds them into one short summary that keeps the gist without the clutter — a little at a time, not all at once, so a bot's memory of you never gets wiped down to a couple of generic blurbs in one go. This happens automatically in the background and is tunable for server admins, but as a player you shouldn't notice anything except that `.llmc memory <botname>` stays readable and full of the moments that actually mattered, even after a long history together.
 
 ### 2026-08-22 - Bots Remember You Now
 
