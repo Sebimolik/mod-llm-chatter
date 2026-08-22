@@ -673,7 +673,6 @@ void HandleGroupPlayerEnterCombatImpl(
         || (tmpl->type_flags
             & CREATURE_TYPE_FLAG_BOSS_MOB);
     bool isElite = (rank >= 1);
-    bool isNormal = !isBoss && !isElite;
 
     uint32 groupId =
         group->GetGUID().GetCounter();
