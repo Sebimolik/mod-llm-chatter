@@ -1539,8 +1539,15 @@ void HandleGroupPlayerAchievementCompleteImpl(
                 sAchievementMgr->GetAchievementReward(
                     achievement))
         {
+            // Achievement 1793 ("For the Children") is
+            // the one documented exception where reward
+            // titles are indexed by gender rather than
+            // faction -- mirrors AchievementMgr's own
+            // special case.
             uint32 titleId = reward->titleId[
-                uint8(player->GetTeamId())];
+                achievement->ID == 1793
+                    ? player->getGender()
+                    : uint8(player->GetTeamId())];
             if (titleId)
             {
                 if (CharTitlesEntry const* titleEntry =
