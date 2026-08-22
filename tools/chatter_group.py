@@ -994,7 +994,7 @@ def process_group_join_batch_event(
                     )
                     recall_chance = int(config.get(
                         'LLMChatter.Memory'
-                        '.RecallChance', 30,
+                        '.RecallChance', 20,
                     )) / 100.0
                     if (
                         bot_player_known
@@ -1733,7 +1733,7 @@ def process_group_player_msg_event(
         if memory_enabled and player_info:
             recall_chance = int(config.get(
                 'LLMChatter.Memory'
-                '.IdleRecallChance', 30,
+                '.IdleRecallChance', 20,
             )) / 100.0
             player_guid = int(
                 player_info['guid']
@@ -4025,7 +4025,7 @@ def _idle_single_statement(
     if memory_enabled and player_name:
         recall_chance = int(config.get(
             'LLMChatter.Memory.IdleRecallChance',
-            30,
+            20,
         )) / 100.0
         if random.random() < recall_chance:
             p_info = get_character_info_by_name(
@@ -4315,7 +4315,7 @@ def _idle_conversation(
     if memory_enabled and player_name:
         recall_chance = int(config.get(
             'LLMChatter.Memory.IdleRecallChance',
-            30,
+            20,
         )) / 100.0
         if random.random() < recall_chance:
             p_info = get_character_info_by_name(
@@ -4826,7 +4826,7 @@ def check_bot_questions(db, client, config):
         if memory_enabled and player_info:
             recall_chance = int(config.get(
                 'LLMChatter.Memory'
-                '.IdleRecallChance', 30,
+                '.IdleRecallChance', 20,
             )) / 100.0
             p_guid = int(
                 player_info['guid']

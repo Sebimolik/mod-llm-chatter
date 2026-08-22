@@ -724,7 +724,7 @@ def _levelup_post_success(db, ctx, message):
 
     mem_chance = int(config.get(
         'LLMChatter.Memory'
-        '.LevelUpGenerationChance', 50
+        '.LevelUpGenerationChance', 60
     ))
     if random.random() * 100 < mem_chance:
         queue_memory(
@@ -1323,7 +1323,7 @@ def _achievement_post_success(db, ctx, message):
     achievement_name = ctx['achievement_name']
     achv_chance = int(config.get(
         'LLMChatter.Memory'
-        '.AchievementGenerationChance', 35
+        '.AchievementGenerationChance', 60
     ))
     if random.random() * 100 >= achv_chance:
         return
