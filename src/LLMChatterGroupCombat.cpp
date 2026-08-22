@@ -1341,6 +1341,8 @@ static std::unordered_map<ObjectGuid::LowType,
 static std::unordered_map<uint32, time_t>
     _groupGearChangeCooldowns;
 
+static void PruneGroupGearMountCooldowns();
+
 void HandleGroupPlayerEquipImpl(
     Player* player, Item* it, uint8 /*bag*/,
     uint8 slot, bool /*update*/)
@@ -1350,6 +1352,8 @@ void HandleGroupPlayerEquipImpl(
         || !sLLMChatterConfig->_useGroupChatter
         || !sLLMChatterConfig->_groupGearChangeChance)
         return;
+
+    PruneGroupGearMountCooldowns();
 
     if (!player || !it || IsPlayerBot(player))
         return;
@@ -1623,12 +1627,42 @@ static std::unordered_map<ObjectGuid::LowType, uint32>
 static std::unordered_map<uint32, time_t>
     _groupMountChangeCooldowns;
 
+static void PruneGroupGearMountCooldowns()
+{
+    if (!sLLMChatterConfig)
+        return;
+
+    time_t now = time(nullptr);
+
+    for (auto it = _groupGearChangeCooldowns.begin();
+         it != _groupGearChangeCooldowns.end();)
+    {
+        if (now - it->second
+            >= sLLMChatterConfig->_groupGearChangeCooldown)
+            it = _groupGearChangeCooldowns.erase(it);
+        else
+            ++it;
+    }
+
+    for (auto it = _groupMountChangeCooldowns.begin();
+         it != _groupMountChangeCooldowns.end();)
+    {
+        if (now - it->second
+            >= sLLMChatterConfig->_groupMountChangeCooldown)
+            it = _groupMountChangeCooldowns.erase(it);
+        else
+            ++it;
+    }
+}
+
 void HandleGroupPlayerMountChangeImpl(
     Player* player, Group* group,
     SpellInfo const* spellInfo)
 {
     if (!GroupHasBots(group))
         return;
+
+    PruneGroupGearMountCooldowns();
 
     ObjectGuid::LowType playerGuid =
         player->GetGUID().GetCounter();
