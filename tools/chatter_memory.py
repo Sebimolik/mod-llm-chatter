@@ -1246,7 +1246,7 @@ def _condense_low_value_memories(
                 client, prompt, config,
                 max_tokens_override=int(config.get(
                     'LLMChatter.Memory.Condensation'
-                    '.MaxTokens', 300,
+                    '.MaxTokens', 500,
                 )),
                 context=(
                     f"memory-condense:{bot_guid}"

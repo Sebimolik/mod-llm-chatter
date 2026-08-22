@@ -2617,9 +2617,12 @@ LLMChatter.Memory.Condensation.MaxDigests = 2
 #   LLMChatter.Memory.Condensation.MaxTokens
 #       Output budget for the condensation LLM call. The
 #       configured chatter provider and model are reused.
-#       Default: 300
+#       Sized for up to MaxDigests (default 2) digests plus
+#       JSON scaffolding -- 300 risked truncation/parse
+#       failures on a full 2-digest response.
+#       Default: 500
 #
-LLMChatter.Memory.Condensation.MaxTokens = 300
+LLMChatter.Memory.Condensation.MaxTokens = 500
 
 ###############################################################################
 # BACKSTORY
