@@ -37,6 +37,10 @@ from chatter_constants import (
     BG_MAP_NAMES,
     CLASS_ROLE_MAP,
 )
+from wow_knowledge import (
+    is_gameplay_question,
+    retrieve_wow_knowledge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2541,6 +2545,24 @@ def build_player_response_prompt(
                 f"don't just recite it "
                 f"verbatim.\n"
                 f"</party_memories>"
+            )
+
+    # Inject gameplay knowledge when the player asks a question
+    # (e.g. "how do I become an alchemist?"). Fetched from
+    # wow_knowledge.json and framed as reference material to
+    # answer from in character, not a script to recite.
+    if is_gameplay_question(player_message):
+        kb = retrieve_wow_knowledge(player_message)
+        if kb:
+            kb_lines = '\n'.join(f"  - {k}" for k in kb)
+            rp_context += (
+                f"\n<knowledge>\n"
+                f"Reference material about the game world. "
+                f"Use it to answer {player_name}'s question "
+                f"accurately and in character, in your own "
+                f"words -- do not recite it verbatim:\n"
+                f"{kb_lines}\n"
+                f"</knowledge>"
             )
 
     prompt += f"{rp_context}\n\n"
