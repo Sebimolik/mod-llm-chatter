@@ -133,6 +133,7 @@ from chatter_memory import (
     get_relationship_summary,
     flush_session_memories,
     sanitize_memory_for_prompt,
+    get_session_mood,
     _get_group_lock,
     _active_sessions,
 )
@@ -3111,6 +3112,7 @@ def build_idle_conversation_prompt(
     area_id=0,
     memories_map=None,
     backstory_map=None,
+    session_mood=None,
 ):
     """Build prompt for a multi-bot idle conversation.
 
@@ -3469,8 +3471,10 @@ def build_idle_conversation_prompt(
     if topic:
         parts.append(f"Topic: {topic}")
 
-    # Tone and twist
-    tone = pick_random_tone(mode)
+    # Tone and twist -- a live group mood (see
+    # get_session_mood()) biases the whole exchange
+    # before falling back to a fully random tone roll.
+    tone = session_mood or pick_random_tone(mode)
     twist = maybe_get_creative_twist(
         chance=1.0, mode=mode
     )
@@ -3962,7 +3966,14 @@ def _idle_single_statement(
         bot_row['trait2'],
         bot_row['trait3'],
     ]
-    stored_tone = bot_row.get('tone')
+    # Per-bot stored tone takes precedence (existing
+    # personalization); a live group mood (see
+    # get_session_mood()) is the next fallback before a
+    # fully random tone roll further down the prompt
+    # builder.
+    stored_tone = bot_row.get('tone') or get_session_mood(
+        group_id, config,
+    )
 
     # Get class/race from characters table
     cursor = db.cursor(dictionary=True)
@@ -4443,6 +4454,9 @@ def _idle_conversation(
             memories_map=memories_map or None,
             backstory_map=conv_backstory_map,
             allow_action=allow_action,
+            session_mood=get_session_mood(
+                group_id, config,
+            ),
         )
         logger.info(
             "[IDLE] prompt snippet: %r",

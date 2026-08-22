@@ -914,6 +914,28 @@ LLMChatter.GroupChatter.IdleChance = 15
 LLMChatter.GroupChatter.ConversationBias = 50
 
 #
+#   LLMChatter.GroupChatter.MoodImportanceThreshold
+#       A newly-generated bot memory whose LLM-assigned
+#       importance_score is >= this value sets the group's
+#       ambient "session mood" (see MoodDurationSeconds).
+#       Idle chatter tone selection is then biased toward
+#       that mood instead of a fully random roll. Range 1-10
+#       (matches importance_score).
+#       Default: 7
+#
+LLMChatter.GroupChatter.MoodImportanceThreshold = 7
+
+#
+#   LLMChatter.GroupChatter.MoodDurationSeconds
+#       How long (in seconds) a session mood set via
+#       MoodImportanceThreshold stays active before idle
+#       chatter tone selection reverts to a fully random
+#       roll. Lazily checked on read, not a timer.
+#       Default: 600
+#
+LLMChatter.GroupChatter.MoodDurationSeconds = 600
+
+#
 #   LLMChatter.GroupChatter.IdleCooldown
 #       Minimum seconds between idle chatter triggers
 #       for the same group.
