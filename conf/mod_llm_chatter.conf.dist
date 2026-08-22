@@ -2592,6 +2592,20 @@ LLMChatter.Memory.Condensation.ProtectFloor = 7
 LLMChatter.Memory.Condensation.MinCandidates = 4
 
 #
+#   LLMChatter.Memory.Condensation.MaxCandidates
+#       Maximum eligible candidate memories (least-valuable
+#       first, by decay-aware effective_score) pulled into a
+#       single condensation pass. Keeps condensation gradual
+#       and incremental -- a bot-player pair with many more
+#       eligible rows than this is tidied a bounded handful at
+#       a time across several triggers, instead of every
+#       eligible row being folded into MaxDigests digests in
+#       one shot.
+#       Default: 8
+#
+LLMChatter.Memory.Condensation.MaxCandidates = 8
+
+#
 #   LLMChatter.Memory.Condensation.MaxDigests
 #       Maximum digest memories one condensation pass may
 #       produce from a single candidate batch.

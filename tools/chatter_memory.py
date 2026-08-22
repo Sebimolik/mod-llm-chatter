@@ -164,6 +164,14 @@ DEFAULT_CONDENSATION_TRIGGER_PERCENT = 80
 DEFAULT_CONDENSATION_PROTECT_FLOOR = 7
 DEFAULT_CONDENSATION_MIN_CANDIDATES = 4
 DEFAULT_CONDENSATION_MAX_DIGESTS = 2
+DEFAULT_CONDENSATION_MAX_CANDIDATES = 8
+
+# Input char budget for one condensation LLM call, mirroring
+# _RELATIONSHIP_MAX_INPUT_CHARS below -- defense in depth against an
+# unbounded prompt. In practice DEFAULT_CONDENSATION_MAX_CANDIDATES
+# already keeps a single batch well under this, but the guard stays
+# in place regardless of how MaxCandidates is configured.
+_CONDENSATION_MAX_INPUT_CHARS = 6000
 
 
 def _effective_score_sql(config=None):
@@ -938,13 +946,30 @@ def _get_condensation_candidates(
     the pair's single highest-effective_score row (same
     guard _evict_one_used() uses, via
     _top_row_exclusion_sql()), ordered by effective_score
-    ascending (least valuable first).
+    ascending (least valuable first) and capped at
+    LLMChatter.Memory.Condensation.MaxCandidates rows.
+
+    The MaxCandidates cap keeps a single condensation pass
+    gradual and incremental -- folding a bounded handful of
+    the pair's least-valuable memories into a digest each
+    time the trigger fires, rather than sweeping every
+    below-floor row into at most MaxDigests digests in one
+    shot. Since rows are ordered least-valuable-first and
+    LIMIT is applied in SQL, an oversized pool of eligible
+    memories is condensed gradually over several passes
+    instead of being folded away in a single one.
     """
     score_sql = _effective_score_sql(config)
     protect_floor = int((config or {}).get(
         'LLMChatter.Memory.Condensation.ProtectFloor',
         DEFAULT_CONDENSATION_PROTECT_FLOOR,
     ))
+    max_candidates = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.MaxCandidates',
+        DEFAULT_CONDENSATION_MAX_CANDIDATES,
+    ))
+    if max_candidates < 1:
+        max_candidates = DEFAULT_CONDENSATION_MAX_CANDIDATES
     cursor.execute(
         "SELECT id, group_id, memory, importance_score, "
         + score_sql + " AS effective_score"
@@ -954,13 +979,40 @@ def _get_condensation_candidates(
         "   AND active = 1"
         "   AND importance_score < %s"
         + _top_row_exclusion_sql(score_sql) +
-        " ORDER BY effective_score ASC, created_at ASC",
+        " ORDER BY effective_score ASC, created_at ASC"
+        " LIMIT %s",
         (
             bot_guid, player_guid, protect_floor,
-            bot_guid, player_guid,
+            bot_guid, player_guid, max_candidates,
         ),
     )
     return cursor.fetchall()
+
+
+def _cap_candidates_by_chars(candidates, max_chars):
+    """Trim a condensation candidate list (least-valuable-first,
+    as returned by _get_condensation_candidates()) so the
+    cumulative length of their 'memory' text never exceeds
+    max_chars, mirroring _maybe_update_relationship()'s identical
+    cumulative-char trim against _RELATIONSHIP_MAX_INPUT_CHARS.
+
+    Defense in depth: LLMChatter.Memory.Condensation.MaxCandidates
+    already bounds the batch size well under max_chars in practice,
+    but this keeps the prompt itself provably bounded regardless of
+    how that setting -- or the length of any individual memory --
+    is configured. Always keeps at least the first candidate even
+    if it alone exceeds max_chars, so a single oversized memory
+    can't stall condensation entirely.
+    """
+    kept = []
+    char_count = 0
+    for row in candidates:
+        row_chars = len(str(row.get('memory') or '')) + 3
+        if kept and char_count + row_chars > max_chars:
+            break
+        kept.append(row)
+        char_count += row_chars
+    return kept
 
 
 def _build_condensation_prompt(candidates, max_digests):
@@ -1139,6 +1191,16 @@ def _condense_low_value_memories(
 
         candidates = _get_condensation_candidates(
             cursor, bot_guid, player_guid, config,
+        )
+        # Defense-in-depth char cap on top of the SQL-level
+        # MaxCandidates LIMIT (see _cap_candidates_by_chars()
+        # docstring) -- whatever survives this trim is exactly
+        # what gets folded into the prompt AND deleted below, so
+        # a memory that didn't fit the char budget is left
+        # untouched for a future condensation pass rather than
+        # silently deleted without being represented in a digest.
+        candidates = _cap_candidates_by_chars(
+            candidates, _CONDENSATION_MAX_INPUT_CHARS,
         )
         min_candidates = int(config.get(
             'LLMChatter.Memory.Condensation.MinCandidates',
