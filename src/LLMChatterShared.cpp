@@ -1457,6 +1457,26 @@ std::string GetLocalizedAchievementName(AchievementEntry const* achievement)
     return name ? name : "";
 }
 
+std::string GetLocalizedTitleName(
+    CharTitlesEntry const* title, uint8 gender)
+{
+    if (!title)
+        return "";
+
+    uint8 locale = sWorld->GetDefaultDbcLocale();
+    char const* const* names =
+        (gender == GENDER_FEMALE)
+            ? title->nameFemale
+            : title->nameMale;
+
+    char const* name = names[locale];
+    if (name && name[0] != '\0')
+        return name;
+
+    name = names[LOCALE_enUS];
+    return name ? name : "";
+}
+
 std::string BuildBotIdentityFields(
     Player* player, bool includeRoles)
 {

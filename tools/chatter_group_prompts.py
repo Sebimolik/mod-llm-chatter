@@ -1013,6 +1013,192 @@ def build_loot_reaction_prompt(
     )
 
 
+def build_gear_change_reaction_prompt(
+    bot, traits, wearer_name, item_name,
+    item_quality, mode, chat_history="",
+    allow_action=True,
+    speaker_talent_context=None,
+    stored_tone=None,
+    map_id=0,
+):
+    """Build prompt for a bot noticing the real
+    player equipped a new item. Mirrors
+    build_loot_reaction_prompt's shape/quality
+    scaling, but this is a spontaneous "I noticed
+    your gear" comment rather than a loot-pickup
+    reaction -- wearer_name is always the player,
+    never another bot.
+    """
+    is_rp = (mode == 'roleplay')
+    trait_str = ', '.join(traits)
+    tone = stored_tone or pick_random_tone(mode)
+    twist = maybe_get_creative_twist(
+        chance=1.0, mode=mode
+    )
+
+    rp_context = ""
+    if is_rp:
+        ctx = build_race_class_context(
+            bot['race'], bot['class']
+        )
+        if ctx:
+            rp_context = f"\n{ctx}"
+
+    if chat_history:
+        rp_context += f"{chat_history}\n"
+
+    dungeon_flav = get_dungeon_flavor(map_id)
+    if dungeon_flav:
+        rp_context += (
+            f"\nDungeon context: {dungeon_flav}"
+        )
+
+    quality_names = {
+        2: 'uncommon (green)',
+        3: 'rare (blue)',
+        4: 'epic (purple)',
+        5: 'legendary (orange)',
+    }
+    quality_label = quality_names.get(
+        item_quality, 'notable'
+    )
+
+    gear_context = (
+        f"You just noticed {wearer_name} is now "
+        f"wearing {item_name}, a {quality_label} "
+        f"item they weren't wearing before. Make a "
+        f"brief, spontaneous remark about their new "
+        f"gear -- an offhand compliment, a bit of "
+        f"envy, or friendly curiosity about where "
+        f"they got it."
+    )
+
+    if is_rp:
+        style = (
+            "React in-character to noticing their "
+            "new gear. Keep it brief and natural."
+        )
+    else:
+        style = (
+            "React naturally in party chat to "
+            "noticing their new gear. Casual and "
+            "brief."
+        )
+
+    prompt = (
+        f"{build_bot_identity_from_dict(bot)}\n"
+        f"Your personality: {trait_str}\n"
+    )
+    if speaker_talent_context:
+        prompt += f"{speaker_talent_context}\n"
+    prompt += (
+        f"Your tone: {tone}\n"
+    )
+    if twist:
+        prompt += f"Creative twist: {twist}\n"
+    prompt += (
+        f"{rp_context}\n\n"
+        f"{gear_context}\n\n"
+        f"{style}\n\n"
+        f"Say a reaction in party chat.\n"
+        f"{_pick_length_hint(mode)}\n"
+        f"Rules:\n"
+        f"- No quotes, no emojis\n"
+        f"- Can mention the item by name\n"
+        f"- Address {wearer_name} by name\n"
+        f"- Reflect your personality traits\n"
+        f"- Don't repeat jokes or themes "
+        f"already said in chat"
+    )
+    return append_json_instruction(
+        prompt, allow_action
+    )
+
+
+def build_mount_change_reaction_prompt(
+    bot, traits, rider_name, mount_name, mode,
+    chat_history="",
+    allow_action=True,
+    speaker_talent_context=None,
+    stored_tone=None,
+    map_id=0,
+):
+    """Build prompt for a bot noticing the real
+    player summoned a new/different mount.
+    """
+    is_rp = (mode == 'roleplay')
+    trait_str = ', '.join(traits)
+    tone = stored_tone or pick_random_tone(mode)
+    twist = maybe_get_creative_twist(
+        chance=1.0, mode=mode
+    )
+
+    rp_context = ""
+    if is_rp:
+        ctx = build_race_class_context(
+            bot['race'], bot['class']
+        )
+        if ctx:
+            rp_context = f"\n{ctx}"
+
+    if chat_history:
+        rp_context += f"{chat_history}\n"
+
+    dungeon_flav = get_dungeon_flavor(map_id)
+    if dungeon_flav:
+        rp_context += (
+            f"\nDungeon context: {dungeon_flav}"
+        )
+
+    mount_context = (
+        f"{rider_name} just summoned {mount_name} "
+        f"and hopped on. Make a brief, spontaneous "
+        f"remark about the mount -- admiration, a "
+        f"joke, or friendly curiosity about where "
+        f"they got it."
+    )
+
+    if is_rp:
+        style = (
+            "React in-character to their new mount. "
+            "Keep it brief and natural."
+        )
+    else:
+        style = (
+            "React naturally in party chat to their "
+            "new mount. Casual and brief."
+        )
+
+    prompt = (
+        f"{build_bot_identity_from_dict(bot)}\n"
+        f"Your personality: {trait_str}\n"
+    )
+    if speaker_talent_context:
+        prompt += f"{speaker_talent_context}\n"
+    prompt += (
+        f"Your tone: {tone}\n"
+    )
+    if twist:
+        prompt += f"Creative twist: {twist}\n"
+    prompt += (
+        f"{rp_context}\n\n"
+        f"{mount_context}\n\n"
+        f"{style}\n\n"
+        f"Say a reaction in party chat.\n"
+        f"{_pick_length_hint(mode)}\n"
+        f"Rules:\n"
+        f"- No quotes, no emojis\n"
+        f"- Can mention the mount by name\n"
+        f"- Address {rider_name} by name\n"
+        f"- Reflect your personality traits\n"
+        f"- Don't repeat jokes or themes "
+        f"already said in chat"
+    )
+    return append_json_instruction(
+        prompt, allow_action
+    )
+
+
 def build_combat_reaction_prompt(
     bot, traits, creature_name, is_boss, mode,
     chat_history="", is_elite=False,
@@ -1547,6 +1733,7 @@ def build_achievement_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     map_id=0,
+    title_name=None,
 ):
     """Build prompt for a bot reacting to an
     achievement being earned. Achievements are
@@ -1599,6 +1786,13 @@ def build_achievement_reaction_prompt(
             f"\"{achievement_name}\"! Congratulate "
             f"them — achievements are a big deal "
             f"and worth celebrating!"
+        )
+    if title_name:
+        achieve_context += (
+            f" It also earned them a brand-new "
+            f"title: \"{title_name}\"! Call out "
+            f"the title specifically -- that's the "
+            f"exciting part."
         )
 
     if bot_is_achiever:

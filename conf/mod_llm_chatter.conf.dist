@@ -994,6 +994,42 @@ LLMChatter.GroupChatter.CorpseRunChance = 80
 LLMChatter.GroupChatter.CorpseRunCooldown = 120
 
 #
+#   LLMChatter.GroupChatter.GearChangeGenerationChance
+#       Percent chance (0-100) that a bot notices and
+#       comments on the real player equipping a new
+#       (uncommon+) item. First equip observed per player
+#       per bridge process lifetime never reacts -- it is
+#       treated as the login re-equip-from-DB baseline,
+#       not a real change.
+#       Default: 25
+#
+LLMChatter.GroupChatter.GearChangeGenerationChance = 25
+
+#
+#   LLMChatter.GroupChatter.GearChangeCooldown
+#       Minimum seconds between gear-change comments for
+#       the same group.
+#       Default: 180
+#
+LLMChatter.GroupChatter.GearChangeCooldown = 180
+
+#
+#   LLMChatter.GroupChatter.MountChangeGenerationChance
+#       Percent chance (0-100) that a bot notices and
+#       comments on the real player summoning a mount.
+#       Default: 30
+#
+LLMChatter.GroupChatter.MountChangeGenerationChance = 30
+
+#
+#   LLMChatter.GroupChatter.MountChangeCooldown
+#       Minimum seconds between mount-change comments for
+#       the same group.
+#       Default: 180
+#
+LLMChatter.GroupChatter.MountChangeCooldown = 180
+
+#
 #   LLMChatter.GroupChatter.LootChanceGreen
 #       Percent chance (0-100) that looting a green
 #       quality item triggers a group reaction.

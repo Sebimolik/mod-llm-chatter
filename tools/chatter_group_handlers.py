@@ -63,6 +63,8 @@ from chatter_group_state import (
 from chatter_group_prompts import (
     build_kill_reaction_prompt,
     build_loot_reaction_prompt,
+    build_gear_change_reaction_prompt,
+    build_mount_change_reaction_prompt,
     build_combat_reaction_prompt,
     build_death_reaction_prompt,
     build_levelup_reaction_prompt,
@@ -334,6 +336,84 @@ def _loot_msg_xform(db, raw_message, event):
             flags=re.IGNORECASE,
         )
     return raw_message
+
+def process_group_gear_change_event(
+    db, client, config, event
+):
+    """Handle a bot_group_gear_change event.
+
+    A bot notices the real player equipped a new
+    (uncommon+) item and makes a spontaneous remark
+    about it.
+    """
+    return run_group_handler(
+        db, client, config, event,
+        event_type_label='bot_group_gear_change',
+        extract_fields=lambda ed: {
+            'wearer_name': ed.get(
+                'wearer_name', 'the player'),
+            'item_name': localize_item_name(
+                db, ed.get(
+                    'item_name', 'something'),
+                ed.get('item_entry')),
+            'item_quality': int(
+                ed.get('item_quality', 3)),
+        },
+        build_prompt=lambda ctx: (
+            build_gear_change_reaction_prompt(
+                ctx['bot'], ctx['traits'],
+                ctx['wearer_name'],
+                ctx['item_name'],
+                ctx['item_quality'],
+                ctx['mode'],
+                chat_history=ctx['chat_hist'],
+                speaker_talent_context=(
+                    ctx['speaker_talent']),
+                stored_tone=ctx['stored_tone'],
+                map_id=ctx['map_id'],
+            )
+        ),
+        needs_map_id=True,
+        mood_key='gear_change',
+        label='reaction_gear_change',
+    )
+
+
+def process_group_mount_change_event(
+    db, client, config, event
+):
+    """Handle a bot_group_mount_change event.
+
+    A bot notices the real player summoned a new
+    mount and makes a spontaneous remark about it.
+    """
+    return run_group_handler(
+        db, client, config, event,
+        event_type_label='bot_group_mount_change',
+        extract_fields=lambda ed: {
+            'rider_name': ed.get(
+                'rider_name', 'the player'),
+            'mount_name': ed.get(
+                'mount_name', 'a new mount'),
+        },
+        build_prompt=lambda ctx: (
+            build_mount_change_reaction_prompt(
+                ctx['bot'], ctx['traits'],
+                ctx['rider_name'],
+                ctx['mount_name'],
+                ctx['mode'],
+                chat_history=ctx['chat_hist'],
+                speaker_talent_context=(
+                    ctx['speaker_talent']),
+                stored_tone=ctx['stored_tone'],
+                map_id=ctx['map_id'],
+            )
+        ),
+        needs_map_id=True,
+        mood_key='mount_change',
+        label='reaction_mount_change',
+    )
+
 
 def _maybe_raid_battle_cry(
     db, client, config, extra_data,
@@ -1382,6 +1462,7 @@ def process_group_achievement_event(
             'is_bot': is_bot,
             'achiever_guid': achiever_guid,
             'batched_names': batched_names,
+            'title_name': ed.get('title_name') or None,
         },
         build_prompt=lambda ctx: (
             build_group_achievement_reaction_prompt(
@@ -1406,6 +1487,7 @@ def process_group_achievement_event(
                     ctx['speaker_talent']),
                 map_id=ctx['map_id'],
                 stored_tone=ctx['stored_tone'],
+                title_name=ctx['title_name'],
             )
         ),
         needs_map_id=True,

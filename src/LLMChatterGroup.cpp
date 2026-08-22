@@ -1179,6 +1179,9 @@ void HandleGroupPlayerMapChangedImpl(
 void HandleGroupPlayerTextEmoteImpl(
     Player* player, uint32 textEmote,
     ObjectGuid guid);
+void HandleGroupPlayerEquipImpl(
+    Player* player, Item* it, uint8 bag,
+    uint8 slot, bool update);
 void HandleGroupPlayerUpdateZoneImpl(
     Player* player, uint32 newZone,
     uint32 newArea);
@@ -1209,6 +1212,7 @@ public:
                PLAYERHOOK_ON_PLAYER_RESURRECT,
                PLAYERHOOK_ON_PLAYER_RELEASED_GHOST,
                PLAYERHOOK_ON_MAP_CHANGED,
+               PLAYERHOOK_ON_EQUIP,
 
                PLAYERHOOK_ON_TEXT_EMOTE}) {}
 
@@ -1333,6 +1337,13 @@ public:
     {
         HandleGroupPlayerTextEmoteImpl(
             player, textEmote, guid);
+    }
+    void OnPlayerEquip(
+        Player* player, Item* it, uint8 bag,
+        uint8 slot, bool update) override
+    {
+        HandleGroupPlayerEquipImpl(
+            player, it, bag, slot, update);
     }
 };
 

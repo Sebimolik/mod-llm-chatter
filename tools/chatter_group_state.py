@@ -73,6 +73,8 @@ MOOD_DELTAS = {
     'quest': 1.0,
     'levelup': 2.0,
     'achievement': 1.5,
+    'gear_change': 0.5,
+    'mount_change': 0.5,
 }
 
 # Drift toward neutral each event
