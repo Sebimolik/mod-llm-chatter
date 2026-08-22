@@ -1072,7 +1072,8 @@ bool HandleMemoryShowCommand(
         + ") ELSE importance_score END";
 
     QueryResult result = CharacterDatabase.Query(
-        "SELECT memory_type, importance_score, memory "
+        "SELECT memory_type, importance_score, memory, "
+        "       emote "
         "FROM llm_bot_memories "
         "WHERE bot_guid = {} "
         "  AND player_guid = {} "
@@ -1102,12 +1103,22 @@ bool HandleMemoryShowCommand(
         uint32 importance = fields[1].Get<uint8>();
         std::string memoryText =
             fields[2].Get<std::string>();
+        std::string emote =
+            fields[3].Get<std::string>();
 
-        handler->PSendSysMessage(
-            "  [{}] (importance {}) {}",
-            CapitalizeMemoryType(memoryType),
-            importance,
-            TruncateMemoryText(memoryText, 400));
+        if (!emote.empty())
+            handler->PSendSysMessage(
+                "  [{}] (importance {}, {}) {}",
+                CapitalizeMemoryType(memoryType),
+                importance,
+                emote,
+                TruncateMemoryText(memoryText, 400));
+        else
+            handler->PSendSysMessage(
+                "  [{}] (importance {}) {}",
+                CapitalizeMemoryType(memoryType),
+                importance,
+                TruncateMemoryText(memoryText, 400));
     }
     while (result->NextRow());
 
