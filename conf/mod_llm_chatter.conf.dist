@@ -2550,6 +2550,63 @@ LLMChatter.Memory.Relationship.MaxChars = 400
 #
 LLMChatter.Memory.Relationship.MaxTokens = 300
 
+#
+#   LLMChatter.Memory.Condensation.Enable
+#       Master toggle for background low-value-memory
+#       condensation. When disabled, no digest memories are
+#       ever created (existing ones, if any, are left alone).
+#       Default: 1
+#
+LLMChatter.Memory.Condensation.Enable = 1
+
+#
+#   LLMChatter.Memory.Condensation.TriggerPercent
+#       Percent of LLMChatter.Memory.MaxPerBotPlayer a
+#       bot-player pair's active memory count must reach
+#       before a background condensation pass is submitted.
+#       Fires proactively, before the hard row cap, so it
+#       never races against the cap's synchronous eviction.
+#       Default: 80
+#
+LLMChatter.Memory.Condensation.TriggerPercent = 80
+
+#
+#   LLMChatter.Memory.Condensation.ProtectFloor
+#       Memories at or above this importance score are never
+#       condensed (only rows scoring below it are eligible
+#       candidates). Matches the importance rubric's
+#       Milestones tier (see _IMPORTANCE_RUBRIC in
+#       chatter_memory.py).
+#       Default: 7
+#
+LLMChatter.Memory.Condensation.ProtectFloor = 7
+
+#
+#   LLMChatter.Memory.Condensation.MinCandidates
+#       Minimum eligible candidate memories a bot-player pair
+#       must have before a condensation LLM call is worth
+#       making. Below this, condensation is skipped silently
+#       until more low-value memories accumulate.
+#       Default: 4
+#
+LLMChatter.Memory.Condensation.MinCandidates = 4
+
+#
+#   LLMChatter.Memory.Condensation.MaxDigests
+#       Maximum digest memories one condensation pass may
+#       produce from a single candidate batch.
+#       Default: 2
+#
+LLMChatter.Memory.Condensation.MaxDigests = 2
+
+#
+#   LLMChatter.Memory.Condensation.MaxTokens
+#       Output budget for the condensation LLM call. The
+#       configured chatter provider and model are reused.
+#       Default: 300
+#
+LLMChatter.Memory.Condensation.MaxTokens = 300
+
 ###############################################################################
 # BACKSTORY
 ###############################################################################
