@@ -1090,11 +1090,17 @@ def _maybe_trigger_condensation(
     successful insert. Non-blocking: submit-and-return,
     mirroring _maybe_queue_relationship_update()'s queuing
     shape -- never awaited here, and never allowed to slow
-    down or fail the insert it's piggybacking on (any
-    unexpected error here is a bug, not something that
-    should be silently swallowed at this call site, so this
-    function stays simple and side-effect-only rather than
-    wrapping itself in a try/except).
+    down or fail the insert it's piggybacking on. The
+    submit() call itself IS wrapped in a try/except (unlike
+    the rest of this function): a submit() failure (e.g. the
+    executor is mid-shutdown) must never leave `pair` stuck
+    in _condensing_pairs forever (which would permanently
+    block all future condensation attempts for it), and must
+    never propagate out of here -- this runs inline inside
+    _ensure_cap_and_insert() right after that function's own
+    insert already committed, so an uncaught exception here
+    would surface to the caller as a failure for an insert
+    that actually succeeded.
     """
     if not int(config.get(
         'LLMChatter.Memory.Condensation.Enable', 1,
@@ -1126,10 +1132,19 @@ def _maybe_trigger_condensation(
         bot_guid, player_guid, active_count, max_per,
         trigger_percent,
     )
-    condensation_executor.submit(
-        _condense_low_value_memories,
-        config, bot_guid, player_guid,
-    )
+    try:
+        condensation_executor.submit(
+            _condense_low_value_memories,
+            config, bot_guid, player_guid,
+        )
+    except Exception:
+        with _condensing_lock:
+            _condensing_pairs.discard(pair)
+        logger.error(
+            "Failed to submit condensation job for "
+            "bot=%s player=%s", bot_guid, player_guid,
+            exc_info=True,
+        )
 
 
 def _condense_low_value_memories(
