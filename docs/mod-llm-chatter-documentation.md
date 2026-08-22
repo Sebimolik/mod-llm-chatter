@@ -1997,15 +1997,79 @@ loop calls `purge_orphaned_memories()` (which issues the identical
 `DELETE`s) on a fixed 24-hour interval (`memory_gc_interval`), independent
 of whether a GM ever runs the manual command.
 
+### Memory condensation
+
+Distinct from both eviction (`_evict_one_used()`, hard-cap driven, deletes
+with no replacement) and relationship tracking (a running disposition
+summary), condensation proactively folds a bot-player pair's *low-value*
+memories into a small number of higher-quality digest memories, so a
+pair's memory pool stays meaningful instead of either growing forever or
+being trimmed down to bare deletions once it hits the cap.
+
+1. **Trigger** — `_ensure_cap_and_insert()` calls
+   `_maybe_trigger_condensation()` right after every successful insert
+   (post-eviction, so it reads the pool's real current size). Once a
+   pair's active memory count crosses
+   `LLMChatter.Memory.Condensation.TriggerPercent` of
+   `LLMChatter.Memory.MaxPerBotPlayer`, a background job is submitted to
+   `condensation_executor` — a dedicated, single-worker `ThreadPoolExecutor`
+   kept separate from both `memory_executor` and `relationship_executor` so
+   a slow condensation LLM call can never compete with either. A
+   `(bot_guid, player_guid)` guard set (`_condensing_pairs`) prevents
+   duplicate concurrent submissions for the same pair; the `submit()` call
+   itself is wrapped in a try/except so an executor-shutdown race can never
+   leave a pair stuck in the guard set or propagate past the insert it's
+   piggybacking on.
+2. **Candidate selection** — `_get_condensation_candidates()` selects the
+   pair's active rows scored below
+   `LLMChatter.Memory.Condensation.ProtectFloor`, excludes the pair's
+   single highest-effective_score row (the same guard
+   `_evict_one_used()` uses, via `_top_row_exclusion_sql()`, so a bot's
+   most valuable memory of a player is never condensed away), orders by
+   decay-aware effective_score ascending (least valuable first), and caps
+   the result at `LLMChatter.Memory.Condensation.MaxCandidates` rows. This
+   cap is what keeps condensation gradual and incremental — the "leave
+   core memories alone, tidy the routine stuff a little at a time"
+   behavior — rather than folding an entire oversized backlog of eligible
+   memories into `MaxDigests` digests in one pass. At least
+   `LLMChatter.Memory.Condensation.MinCandidates` eligible rows are
+   required or the pass is skipped silently; the trigger fires again next
+   time a qualifying insert crosses the threshold.
+3. **Prompt and response** — `_build_condensation_prompt()` asks the LLM
+   to fold the candidate batch into 1 to
+   `LLMChatter.Memory.Condensation.MaxDigests` digest memories, reusing
+   `_IMPORTANCE_RUBRIC` so a digest's suggested importance stays on the
+   same 1-10 scale as every other memory-generation prompt in this file.
+   The candidate batch fed into the prompt is additionally capped by
+   cumulative character count (`_cap_candidates_by_chars()`, defense in
+   depth mirroring `_RELATIONSHIP_MAX_INPUT_CHARS`) so a prompt can never
+   be unbounded regardless of how `MaxCandidates` or individual memory
+   lengths are configured.
+4. **Storage and atomicity** — each digest's `importance_score` is bounded
+   by `min(llm_suggested_score, max(source_importances))` so a digest can
+   never look more important than the single most important memory it
+   absorbed (and, since every source is already below `ProtectFloor`, this
+   also guarantees a digest can never itself cross the protect floor).
+   Digest rows are inserted directly via `_insert_memory_row()`
+   (`memory_type='condensed'`, bypassing `_ensure_cap_and_insert()`'s
+   own cap/threshold checks to avoid recursing into a condensation pass
+   that's already in flight for the same pair), and the source rows are
+   deleted, sharing a single `conn.commit()` so a crash between the two
+   writes can never lose memories without gaining their replacement.
+5. **Fail-safe** — on any failure (LLM call failure, missing/unparseable
+   response, or zero usable digests), the function logs and aborts with
+   no fallback deletion of source rows — a malformed response never
+   causes data loss, unlike the eviction path it complements.
+
 ### Files
 
 | File | Role |
 |------|------|
-| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan purge, flush, retrieval, relationship tracking (`relationship_executor`, `_maybe_queue_relationship_update`, `_maybe_update_relationship`, `get_relationship_summary`) |
+| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan purge, flush, retrieval, relationship tracking (`relationship_executor`, `_maybe_queue_relationship_update`, `_maybe_update_relationship`, `get_relationship_summary`), low-value-memory condensation (`condensation_executor`, `_maybe_trigger_condensation`, `_condense_low_value_memories`, `_get_condensation_candidates`) |
 | `chatter_group.py` | Calls `start_session`, `get_bot_memories`, `get_relationship_summary`, first-meeting insert |
 | `chatter_group_handlers.py` | `_kill_post_success()` / `_wipe_post_success()` filter altbot candidates and call `queue_shared_event_memory()` for party-wide kill/wipe memories |
 | `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection; `build_player_response_prompt()` / `build_bot_question_prompt()` — `<relationship>` block injection |
-| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop; drains both `memory_executor` and `relationship_executor` on shutdown |
+| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop; drains `memory_executor`, `relationship_executor`, and `condensation_executor` on shutdown |
 | `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE`s directly |
 | `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout plus the relationship line |
 | `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
@@ -2014,7 +2078,7 @@ of whether a GM ever runs the manual command.
 
 | Table | Purpose |
 |-------|---------|
-| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, `ambient`, etc. `importance_score` (TINYINT UNSIGNED, default 5) drives decay-aware ranking. |
+| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, `ambient`, `condensed` (see "Memory condensation" above), etc. `importance_score` (TINYINT UNSIGNED, default 5) drives decay-aware ranking. |
 | `llm_bot_identities` | Persistent personality traits keyed by `bot_guid`. Regenerated only on `IdentityVersion` bump. |
 | `llm_group_bot_traits` | `is_altbot` (TINYINT(1), default 1) marks whether a bot is player-owned; gates memory generation. |
 | `llm_bot_relationships` | One running LLM-maintained `summary` per `(bot_guid, player_guid)`, plus `updated_through_memory_id` (the memory-condensation watermark). Condensed from `llm_bot_memories`, not itself journaled. |
@@ -2035,6 +2099,13 @@ of whether a GM ever runs the manual command.
 | `LLMChatter.Memory.Relationship.UpdateThreshold` | `5` | New active memories needed since the last update before a re-summarization is triggered at farewell |
 | `LLMChatter.Memory.Relationship.MaxChars` | `400` | Maximum stored relationship-summary length |
 | `LLMChatter.Memory.Relationship.MaxTokens` | `300` | Output budget for the relationship-condensation LLM call |
+| `LLMChatter.Memory.Condensation.Enable` | `1` | Master toggle for background low-value-memory condensation |
+| `LLMChatter.Memory.Condensation.TriggerPercent` | `80` | Percent of `MaxPerBotPlayer` a pair's active memory count must reach before a condensation pass is submitted |
+| `LLMChatter.Memory.Condensation.ProtectFloor` | `7` | Memories at or above this importance score are never condensed |
+| `LLMChatter.Memory.Condensation.MinCandidates` | `4` | Minimum eligible candidates required before a condensation LLM call is worth making |
+| `LLMChatter.Memory.Condensation.MaxCandidates` | `8` | Maximum least-valuable eligible candidates pulled into a single condensation pass; keeps condensation gradual and incremental instead of folding an entire oversized pool away in one shot |
+| `LLMChatter.Memory.Condensation.MaxDigests` | `2` | Maximum digest memories one condensation pass may produce |
+| `LLMChatter.Memory.Condensation.MaxTokens` | `500` | Output budget for the condensation LLM call |
 
 ---
 
