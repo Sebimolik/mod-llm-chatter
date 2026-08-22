@@ -221,6 +221,11 @@ def _effective_score_sql(config=None):
     one point per DecayDays days, floored at 1; higher
     scores never decay. Both tunables are coerced to
     int before interpolation.
+
+    IMPORTANT: src/LLMChatterCommand.cpp hand-reimplements
+    this exact formula for the `.llmc memory` display. Keep
+    the two in sync -- if the decay model changes here, the
+    C++ mirror must change with it.
     """
     cfg = config or {}
     max_importance = int(cfg.get(
@@ -859,7 +864,10 @@ def _ensure_cap_and_insert(
         cursor, bot_guid, player_guid
     )
     evicted = False
-    if cnt >= max_per:
+    # Only enforce the active cap when this insert is itself active:
+    # a pending (active=0) row doesn't consume an active slot, so evicting
+    # a real memory to make room for it would be a needless, permanent loss.
+    if active and cnt >= max_per:
         if not _evict_one_used(
             cursor, conn, bot_guid, player_guid,
             config,
@@ -1523,6 +1531,13 @@ def insert_first_meeting_memory(
     Returns True if inserted, False if a first_meeting
     memory already existed or the cap was full with nothing
     evictable.
+
+    NOTE: this commits the caller's connection as a side
+    effect -- _ensure_cap_and_insert() commits after its
+    insert (and _evict_one_used() may commit again), so any
+    uncommitted work the caller has pending on `db` is
+    committed too. Do not rely on an open transaction
+    spanning this call.
     """
     cursor = db.cursor()
     cursor.execute(
@@ -1873,8 +1888,8 @@ def _call_llm_for_memory(
     )
 
     prompt = (
-        f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender)} "
-        f"in World of Warcraft.\n"
+        f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender).rstrip('.')}"
+        f" in World of Warcraft.\n"
     )
     if player_name:
         prompt += (
@@ -2854,7 +2869,7 @@ def get_relationship_summary(db, bot_guid, player_guid):
 # ============================================================
 
 def activate_orphaned_memories(
-    db, session_minutes,
+    db, session_minutes, max_per=30,
 ):
     """Promote orphaned inactive memories from
     sessions that ended without a clean farewell
@@ -2896,6 +2911,7 @@ def activate_orphaned_memories(
         rows = cursor.fetchall()
         promoted = 0
         discarded = 0
+        promoted_pairs = set()
         for row in rows:
             g_id = int(row['group_id'])
             # Skip live sessions — rehydration
@@ -2922,6 +2938,7 @@ def activate_orphaned_memories(
                     (g_id, b_guid, p_guid),
                 )
                 promoted += cursor.rowcount
+                promoted_pairs.add((b_guid, p_guid))
             else:
                 cursor.execute(
                     "DELETE FROM llm_bot_memories"
@@ -2932,6 +2949,29 @@ def activate_orphaned_memories(
                     (g_id, b_guid, p_guid),
                 )
                 discarded += cursor.rowcount
+
+        # Enforce the per-pair cap after a bulk promotion: crash recovery
+        # can otherwise leave a pair above LLMChatter.Memory.MaxPerBotPlayer
+        # until the next normal insert trims it. Drop the lowest-importance
+        # excess so the cap is a real invariant, not just self-correcting.
+        for (b_guid, p_guid) in promoted_pairs:
+            cursor.execute(
+                "SELECT id FROM llm_bot_memories"
+                " WHERE bot_guid = %s AND player_guid = %s"
+                "   AND active = 1"
+                " ORDER BY importance_score ASC, created_at ASC",
+                (b_guid, p_guid),
+            )
+            ids = [r['id'] for r in cursor.fetchall()]
+            if len(ids) > max_per:
+                excess = ids[:len(ids) - max_per]
+                placeholders = ','.join(['%s'] * len(excess))
+                cursor.execute(
+                    "DELETE FROM llm_bot_memories"
+                    " WHERE id IN (" + placeholders + ")",
+                    tuple(excess),
+                )
+
         db.commit()
         if promoted or discarded:
             logger.info(
