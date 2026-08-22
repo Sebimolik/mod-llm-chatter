@@ -54,50 +54,9 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 
 ## Changelog
 
-### 2026-08-21 - Relationship Tracking
+### 2026-08-22 - Bots Remember You Now
 
-* **Standing bot-player relationships**: Beyond the specific
-  `llm_bot_memories` journal, each bot now keeps ONE running,
-  LLM-condensed description of how it generally feels about a
-  specific player, distinct from any single recollection. It
-  updates itself in the background after a farewell once enough
-  new memories have accumulated
-  (`LLMChatter.Memory.Relationship.UpdateThreshold`, default 5),
-  on its own dedicated thread pool so it never competes with
-  regular memory generation.
-* **Colors party chat, not the topic**: Injected into party-chat
-  reply prompts as a `<relationship>` block, distinct from and
-  positioned ahead of `<past_memories>`, explicitly framed as an
-  ongoing disposition to color tone rather than something to
-  recite.
-* **`.llmc memory <botname>`**: Now also prints a
-  `"<Bot>'s feelings about you: ..."` line ahead of the memory
-  list when a relationship exists.
-* **`.llm memory clean`**: Now also purges orphaned
-  `llm_bot_relationships` rows for deleted characters, alongside
-  the existing `llm_bot_memories` cleanup.
-* **Database Migration**: Run
-  `data/sql/characters/updates/20260824_llm_bot_relationships.sql`
-  if upgrading from a previous version.
-
-### 2026-08-21 - Player Memory Inspection Command
-
-* **`.llmc memory <botname>`**: Players can now check what one of their
-  own bots remembers about them directly from chat, ordered by the same
-  decay-aware importance used for recall, capped at the 10 most relevant
-  memories. Instant, synchronous response, no bridge round-trip.
-* **No Database Migration**: This update is C++ command surface only.
-
-### 2026-08-20 - Persistent Memory: Importance, Decay, and Eviction Guard
-
-* **Importance-Scored Memories**: Every memory now gets a 1-10 importance rating from the LLM (ambient chat, personal narrative, milestones, core bonds). Low-importance memories decay and fade out of retrieval/recall over time; milestone and core-bond memories never decay.
-* **Eviction Guard**: When a bot's memory pool for a player hits its cap, the single highest-value memory for that bot-player pair is always protected from eviction, so a bot never fully forgets its most meaningful moment with a player.
-* **Altbot-Only Generation**: Memories are now only generated for player-owned bots, not random/ownerless bots sharing the party.
-* **Shared Party Memories**: Boss/rare kills and wipes generate one shared "we"/"our party" memory per event instead of one LLM call per bot.
-* **`.llm memory clean` GM Command**: Manually purge orphaned memories for deleted characters; the same cleanup also runs automatically every 24 hours.
-* **Database Migration**: Run `data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql`
-  and `data/sql/characters/updates/20260822_memory_importance_check_constraint.sql`
-  if upgrading from a previous version.
+Your bot companions have real memories now. They notice the moments you share together — boss kills, level-ups, quiet chats, big quests finished as a group — and bring them up naturally later, like a friend would; the more meaningful the moment, the longer it sticks with them. Curious what a bot remembers about you? Just type `.llmc memory <botname>` and it'll tell you. If you're grouped with more than one of your own bots, they'll sometimes talk about you to each other too, and each one slowly builds up an overall feeling about you the more you go through together. Bots also notice when you get new gear, a new mount, or a new title, and everything they say stays true to the Warcraft world around them. This all now works in Russian, French, German, and Spanish too, alongside a handful of small bug fixes picked up along the way.
 
 ### 2026-08-16 - Korean Language and Unicode Cleanup
 
