@@ -3003,7 +3003,7 @@ def build_idle_chatter_prompt(
             f"</backstory>\n"
         )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     party_ctx = (
         f"You're in a party, currently {topic}."
@@ -3429,7 +3429,7 @@ def build_idle_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     # Fixed message count keeps idle conversation
     # volume constant regardless of group size.

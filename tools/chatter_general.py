@@ -421,7 +421,7 @@ def _build_general_response_prompt(
         f"Your mood: {mood}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     address_hint = (
         f"- Address {player_name} by name "

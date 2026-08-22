@@ -287,7 +287,7 @@ def build_bot_greeting_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -521,7 +521,7 @@ def build_bot_welcome_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -659,7 +659,7 @@ def build_batch_welcome_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -841,7 +841,7 @@ def build_kill_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -990,7 +990,7 @@ def build_loot_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1095,7 +1095,7 @@ def build_gear_change_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{gear_context}\n\n"
@@ -1179,7 +1179,7 @@ def build_mount_change_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{mount_context}\n\n"
@@ -1282,7 +1282,7 @@ def build_combat_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1399,7 +1399,7 @@ def build_death_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1488,7 +1488,7 @@ def build_levelup_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{levelup_context}\n\n"
@@ -1597,7 +1597,7 @@ def build_quest_complete_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -1704,7 +1704,7 @@ def build_quest_objectives_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -1832,7 +1832,7 @@ def build_achievement_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{achieve_context}\n\n"
@@ -1931,7 +1931,7 @@ def build_group_achievement_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{achieve_context}\n\n"
@@ -2247,7 +2247,7 @@ def build_spell_cast_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -2387,7 +2387,7 @@ def build_player_response_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if members:
         others = [
             m for m in members
@@ -2637,7 +2637,7 @@ def build_resurrect_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"You just died and someone in your "
@@ -2780,7 +2780,7 @@ def build_zone_transition_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     location_name = (
         area_label if is_subzone and area_label
         else zone_name
@@ -2922,7 +2922,7 @@ def build_quest_accept_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -3026,7 +3026,7 @@ def build_quest_accept_batch_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -3144,7 +3144,7 @@ def build_dungeon_entry_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"Your party just entered {map_name}, "
@@ -3249,7 +3249,7 @@ def build_wipe_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -3384,7 +3384,7 @@ def build_corpse_run_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{situation}\n\n"
@@ -4215,7 +4215,7 @@ def build_nearby_object_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     # Message count: 2 per bot, cap at 8
     msg_count = min(2 * num_bots, 8)
@@ -4398,7 +4398,7 @@ def build_player_msg_conversation_prompt(
     )
     parts.append(f"\nOverall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     # Mood and length sequence
     mood_seq = generate_conversation_mood_sequence(
@@ -4894,7 +4894,7 @@ def build_bot_question_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     prompt += (
         f"{rp_context}\n\n"
@@ -5056,7 +5056,7 @@ def build_quest_complete_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(
@@ -5208,7 +5208,7 @@ def build_quest_objectives_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(
@@ -5363,7 +5363,7 @@ def build_quest_accept_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(
