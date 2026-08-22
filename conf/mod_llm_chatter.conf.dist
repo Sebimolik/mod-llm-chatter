@@ -2624,6 +2624,19 @@ LLMChatter.Memory.Condensation.MaxDigests = 2
 #
 LLMChatter.Memory.Condensation.MaxTokens = 500
 
+#
+#   LLMChatter.Memory.Condensation.MaxGenerations
+#       How many rounds of condensation a memory may pass
+#       through. A digest carries max(source generations) + 1,
+#       and rows that already reached this number are never
+#       condensed again. Digests always land below ProtectFloor
+#       by construction, so without this cap they would be
+#       folded into digests of digests indefinitely, drifting
+#       further from the source facts each round.
+#       Default: 2
+#
+LLMChatter.Memory.Condensation.MaxGenerations = 2
+
 ###############################################################################
 # BACKSTORY
 ###############################################################################

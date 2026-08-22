@@ -11,6 +11,7 @@ Owns:
 - Memory retrieval for reunion greetings
 """
 
+import datetime
 import logging
 import random
 import re
@@ -165,6 +166,21 @@ DEFAULT_CONDENSATION_PROTECT_FLOOR = 7
 DEFAULT_CONDENSATION_MIN_CANDIDATES = 4
 DEFAULT_CONDENSATION_MAX_DIGESTS = 2
 DEFAULT_CONDENSATION_MAX_CANDIDATES = 8
+# A digest's generation is max(source generations) + 1, and rows
+# at or above this generation are never picked as candidates
+# again -- so with the default 2, an original memory (gen 0) can
+# be folded into a gen-1 digest, gen-1 digests can be folded into
+# a gen-2 digest, and gen-2 digests are final. Without this cap
+# digests stay below ProtectFloor by construction and would be
+# re-condensed forever, drifting further from the source facts
+# each round.
+DEFAULT_CONDENSATION_MAX_GENERATIONS = 2
+
+# Zero value for llm_bot_relationships.updated_through_created_at
+# ("nothing folded into the summary yet"). Matches the column's
+# schema default; DATETIME (not TIMESTAMP) precisely so this
+# out-of-range-for-TIMESTAMP sentinel is storable.
+RELATIONSHIP_WATERMARK_EPOCH = datetime.datetime(1970, 1, 1)
 
 # Input char budget for one condensation LLM call, mirroring
 # _RELATIONSHIP_MAX_INPUT_CHARS below -- defense in depth against an
@@ -904,7 +920,7 @@ def _insert_memory_row(
     cursor, bot_guid, player_guid, group_id,
     memory_type, memory_text, mood, emote,
     active, session_start, importance, zone_id=None,
-    used=0,
+    used=0, created_at=None, condensation_generation=0,
 ):
     """Insert one llm_bot_memories row directly, bypassing
     _ensure_cap_and_insert()'s cap/threshold checks.
@@ -917,6 +933,12 @@ def _insert_memory_row(
     pair. Does NOT commit -- the caller controls the
     transaction boundary (digest insert(s) + source deletes
     share one commit, see _condense_low_value_memories()).
+
+    created_at defaults to the column default (NOW()); pass an
+    explicit value to make a digest inherit its oldest source's
+    timestamp, so it keeps decaying on the clock its sources
+    were already on instead of resetting it (see
+    _condense_low_value_memories()).
     """
     cursor.execute(
         "INSERT INTO llm_bot_memories"
@@ -924,15 +946,21 @@ def _insert_memory_row(
         "  group_id, memory_type,"
         "  memory, mood, emote,"
         "  active, used, session_start,"
-        "  importance_score, zone_id)"
+        "  importance_score, zone_id,"
+        "  condensation_generation, created_at)"
         " VALUES"
-        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+        + ("%s" if created_at is not None else "NOW()")
+        + ")",
         (
             bot_guid, player_guid,
             group_id, memory_type,
             memory_text, mood, emote,
             active, used, session_start,
             importance, zone_id,
+            condensation_generation,
+        ) + (
+            (created_at,) if created_at is not None else ()
         ),
     )
 
@@ -958,6 +986,13 @@ def _get_condensation_candidates(
     LIMIT is applied in SQL, an oversized pool of eligible
     memories is condensed gradually over several passes
     instead of being folded away in a single one.
+
+    Rows whose condensation_generation has already reached
+    LLMChatter.Memory.Condensation.MaxGenerations are excluded:
+    a digest always lands below ProtectFloor by construction, so
+    without a generation cap digests would be re-condensed round
+    after round (digests of digests), drifting further from the
+    facts they came from every time.
     """
     score_sql = _effective_score_sql(config)
     protect_floor = int((config or {}).get(
@@ -970,19 +1005,28 @@ def _get_condensation_candidates(
     ))
     if max_candidates < 1:
         max_candidates = DEFAULT_CONDENSATION_MAX_CANDIDATES
+    max_generations = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.MaxGenerations',
+        DEFAULT_CONDENSATION_MAX_GENERATIONS,
+    ))
+    if max_generations < 1:
+        max_generations = DEFAULT_CONDENSATION_MAX_GENERATIONS
     cursor.execute(
-        "SELECT id, group_id, memory, importance_score, "
+        "SELECT id, group_id, memory, importance_score,"
+        " created_at, condensation_generation, "
         + score_sql + " AS effective_score"
         " FROM llm_bot_memories"
         " WHERE bot_guid = %s"
         "   AND player_guid = %s"
         "   AND active = 1"
         "   AND importance_score < %s"
+        "   AND condensation_generation < %s"
         + _top_row_exclusion_sql(score_sql) +
         " ORDER BY effective_score ASC, created_at ASC"
         " LIMIT %s",
         (
             bot_guid, player_guid, protect_floor,
+            max_generations,
             bot_guid, player_guid, max_candidates,
         ),
     )
@@ -1186,8 +1230,22 @@ def _condense_low_value_memories(
     most important memory it absorbed -- since every source
     is already below ProtectFloor by construction, this also
     guarantees a digest can never itself cross the protect
-    floor, keeping it eligible for a future condensation
-    round too.
+    floor -- which is exactly why re-condensation is bounded by
+    condensation_generation instead
+    (LLMChatter.Memory.Condensation.MaxGenerations).
+
+    Three details keep a digest from crowding out the real
+    memories that outlive it:
+    - it inherits the OLDEST source's created_at rather than
+      NOW(), so its decay clock is not reset and it can never
+      end up scoring higher than the (already decayed) rows it
+      replaced. The auto-increment id still records the real
+      insertion order for auditing;
+    - it is inserted used=1, so _evict_one_used()'s preference
+      for used rows treats it like any other read memory rather
+      than making it last to go;
+    - it carries max(source generations) + 1, capping how many
+      times the same material can be re-folded.
 
     On failure (LLM call fails, response missing/
     unparseable, or zero usable digests): logs and aborts.
@@ -1297,6 +1355,21 @@ def _condense_low_value_memories(
         max_source_importance = max(
             int(c['importance_score']) for c in candidates
         )
+        # Inherit the oldest source's created_at (see docstring)
+        # -- guarded with a default so a caller/fake that didn't
+        # supply created_at still inserts a valid row.
+        source_created_ats = [
+            c['created_at'] for c in candidates
+            if c.get('created_at') is not None
+        ]
+        digest_created_at = (
+            min(source_created_ats)
+            if source_created_ats else None
+        )
+        digest_generation = max(
+            int(c.get('condensation_generation') or 0)
+            for c in candidates
+        ) + 1
         # group_id is informational metadata only (NOT NULL
         # column) -- candidates may span different
         # group_ids across rejoining sessions, the first
@@ -1357,10 +1430,12 @@ def _condense_low_value_memories(
             _insert_memory_row(
                 cursor, bot_guid, player_guid, group_id,
                 'condensed', digest['memory'],
-                digest['mood'], None, active=1, used=0,
+                digest['mood'], None, active=1, used=1,
                 session_start=time.time(),
                 importance=digest['importance'],
                 zone_id=None,
+                created_at=digest_created_at,
+                condensation_generation=digest_generation,
             )
         cursor.execute(
             "DELETE FROM llm_bot_memories"
@@ -1371,9 +1446,11 @@ def _condense_low_value_memories(
 
         logger.info(
             "Condensed %d memories into %d digest(s) for "
-            "bot=%s player=%s",
+            "bot=%s player=%s (generation=%d, "
+            "inherited created_at=%s)",
             len(candidate_ids), len(validated),
-            bot_guid, player_guid,
+            bot_guid, player_guid, digest_generation,
+            digest_created_at,
         )
         return True
 
@@ -2298,6 +2375,105 @@ def flush_session_memories(
 # chatter_guild_player.py.
 # ============================================================
 
+def _row_column(row, key, index):
+    """Read one column from a cursor row, working with both
+    plain (tuple) and dictionary=True cursors.
+
+    The relationship helpers below are called from both kinds of
+    cursor: flush_session_memories() hands
+    _maybe_queue_relationship_update() its own plain cursor,
+    while _maybe_update_relationship() opens a dictionary one.
+    """
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[index]
+
+
+def _sanitized_relationship_watermark(
+    cursor, bot_guid, player_guid, watermark,
+):
+    """Validate a stored relationship watermark, falling back to
+    the epoch (re-fold everything) with a loud warning if it is
+    impossible.
+
+    A watermark ahead of the database clock can never be passed
+    by `created_at > watermark`, so relationship updates for the
+    pair would stall silently and indefinitely -- the same class
+    of failure the previous id-based watermark had if a restore
+    or TRUNCATE reset llm_bot_memories' auto-increment below the
+    stored id, except that one was undetectable. Recovering
+    (epoch) re-folds this pair's memories once, which is cheap
+    and self-correcting; staying stuck is not.
+
+    A watermark merely newer than the pair's newest memory is
+    NOT treated as an error: that is the normal state right
+    after condensation, whose digests inherit their oldest
+    source's (older) created_at while the summarized rows they
+    replaced are deleted. It resolves itself as soon as the pair
+    makes another memory, so it is logged at debug only.
+    """
+    if not watermark:
+        return RELATIONSHIP_WATERMARK_EPOCH
+    cursor.execute(
+        "SELECT NOW() AS now_ts,"
+        " (SELECT MAX(created_at) FROM llm_bot_memories"
+        "   WHERE bot_guid = %s"
+        "     AND player_guid = %s"
+        "     AND active = 1) AS newest_memory_at",
+        (bot_guid, player_guid),
+    )
+    row = cursor.fetchone()
+    now_ts = _row_column(row, 'now_ts', 0)
+    newest_at = _row_column(row, 'newest_memory_at', 1)
+
+    if now_ts is not None and watermark > now_ts:
+        logger.warning(
+            "Relationship watermark %s for bot=%s player=%s is "
+            "ahead of the database clock (%s) -- no memory can "
+            "ever pass it. Resetting to epoch and re-folding "
+            "this pair's memories once rather than stalling "
+            "relationship updates forever.",
+            watermark, bot_guid, player_guid, now_ts,
+        )
+        return RELATIONSHIP_WATERMARK_EPOCH
+
+    if newest_at is not None and watermark > newest_at:
+        logger.debug(
+            "Relationship watermark %s for bot=%s player=%s is "
+            "newer than the pair's newest memory (%s); expected "
+            "after condensation, resolves on the next memory.",
+            watermark, bot_guid, player_guid, newest_at,
+        )
+    return watermark
+
+
+def _extend_candidates_to_timestamp_boundary(candidates, rows):
+    """Extend a char-budget-trimmed candidate list to cover every
+    remaining row sharing the last kept row's created_at.
+
+    The watermark advances to the last kept row's timestamp and
+    new material is selected with a strict `created_at > `
+    comparison, so a trim that cut through the middle of a group
+    of same-second memories would drop the leftovers from every
+    future pass. Rows arrive ordered by (created_at, id), so the
+    same-second leftovers are contiguous and this over-runs the
+    char budget by at most one such group.
+    """
+    if not candidates or len(candidates) >= len(rows):
+        return candidates
+    boundary = candidates[-1].get('created_at')
+    if boundary is None:
+        return candidates
+    extended = list(candidates)
+    for row in rows[len(candidates):]:
+        if row.get('created_at') != boundary:
+            break
+        extended.append(row)
+    return extended
+
+
 def _maybe_queue_relationship_update(
     cursor, config, bot_guid, player_guid,
 ):
@@ -2320,21 +2496,33 @@ def _maybe_queue_relationship_update(
     )):
         return
     try:
+        # updated_through_memory_id is deliberately NOT read here
+        # (or in _maybe_update_relationship()): it is kept as a
+        # vestigial debugging/rollback breadcrumb only. Ids are
+        # the wrong watermark for this because condensation
+        # deletes source rows and re-inserts their content as
+        # digests with fresh, higher ids -- already-summarized
+        # material would look new again. Digests inherit their
+        # oldest source's created_at, so a timestamp watermark
+        # does not have that problem.
         cursor.execute(
-            "SELECT updated_through_memory_id FROM"
+            "SELECT updated_through_created_at FROM"
             " llm_bot_relationships"
             " WHERE bot_guid = %s AND player_guid = %s",
             (bot_guid, player_guid),
         )
         row = cursor.fetchone()
-        watermark = int(row[0]) if row else 0
+        watermark = _sanitized_relationship_watermark(
+            cursor, bot_guid, player_guid,
+            _row_column(row, 'updated_through_created_at', 0),
+        )
 
         cursor.execute(
             "SELECT COUNT(*) FROM llm_bot_memories"
             " WHERE bot_guid = %s"
             "   AND player_guid = %s"
             "   AND active = 1"
-            "   AND id > %s",
+            "   AND created_at > %s",
             (bot_guid, player_guid, watermark),
         )
         count_row = cursor.fetchone()
@@ -2370,8 +2558,8 @@ def _maybe_update_relationship(
     across threads.
 
     Fetches the current summary + watermark (absent row =
-    first-time pair, watermark 0), pulls active memories
-    newer than the watermark (capped by
+    first-time pair, watermark = epoch), pulls active memories
+    created after the watermark (capped by
     _RELATIONSHIP_MAX_INPUT_CHARS), asks the LLM to fold them
     into an updated summary, hard-truncates to
     LLMChatter.Memory.Relationship.MaxChars, and writes it
@@ -2389,8 +2577,11 @@ def _maybe_update_relationship(
         conn = get_db_connection(config)
         cursor = conn.cursor(dictionary=True)
 
+        # See _maybe_queue_relationship_update() for why the
+        # watermark is a timestamp and updated_through_memory_id
+        # is no longer read.
         cursor.execute(
-            "SELECT summary, updated_through_memory_id"
+            "SELECT summary, updated_through_created_at"
             " FROM llm_bot_relationships"
             " WHERE bot_guid = %s AND player_guid = %s",
             (bot_guid, player_guid),
@@ -2400,20 +2591,20 @@ def _maybe_update_relationship(
             str(existing.get('summary') or '').strip()
             if existing else ''
         )
-        watermark = (
-            int(existing.get(
-                'updated_through_memory_id'
-            ) or 0)
-            if existing else 0
+        watermark = _sanitized_relationship_watermark(
+            cursor, bot_guid, player_guid,
+            existing.get('updated_through_created_at')
+            if existing else None,
         )
 
         cursor.execute(
-            "SELECT id, memory FROM llm_bot_memories"
+            "SELECT id, memory, created_at"
+            " FROM llm_bot_memories"
             " WHERE bot_guid = %s"
             "   AND player_guid = %s"
             "   AND active = 1"
-            "   AND id > %s"
-            " ORDER BY id ASC",
+            "   AND created_at > %s"
+            " ORDER BY created_at ASC, id ASC",
             (bot_guid, player_guid, watermark),
         )
         rows = cursor.fetchall()
@@ -2433,6 +2624,9 @@ def _maybe_update_relationship(
                 break
             candidates.append(row)
             char_count += row_chars
+        candidates = _extend_candidates_to_timestamp_boundary(
+            candidates, rows,
+        )
         if not candidates:
             return
 
@@ -2538,29 +2732,40 @@ def _maybe_update_relationship(
             )
             return
 
-        new_watermark = candidates[-1]['id']
+        # Rows are ordered by created_at, so the last one
+        # carries the newest timestamp folded in. The id is
+        # still stored alongside it purely as a debugging /
+        # rollback breadcrumb -- nothing reads it back.
+        new_watermark = candidates[-1]['created_at']
+        new_watermark_id = max(
+            int(row['id']) for row in candidates
+        )
         write_cursor = conn.cursor()
         write_cursor.execute(
             "INSERT INTO llm_bot_relationships"
             " (bot_guid, player_guid, summary,"
-            "  updated_through_memory_id, updated_at)"
-            " VALUES (%s, %s, %s, %s, NOW())"
+            "  updated_through_memory_id,"
+            "  updated_through_created_at, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s, NOW())"
             " ON DUPLICATE KEY UPDATE"
             "   summary = VALUES(summary),"
             "   updated_through_memory_id ="
             "     VALUES(updated_through_memory_id),"
+            "   updated_through_created_at ="
+            "     VALUES(updated_through_created_at),"
             "   updated_at = NOW()",
             (
                 bot_guid, player_guid, summary,
-                new_watermark,
+                new_watermark_id, new_watermark,
             ),
         )
         conn.commit()
         logger.info(
             "Relationship summary updated bot=%s "
-            "player=%s lines=%s chars=%s out=%s",
+            "player=%s lines=%s chars=%s out=%s "
+            "watermark=%s",
             bot_guid, player_guid, len(candidates),
-            char_count, len(summary),
+            char_count, len(summary), new_watermark,
         )
     except Exception:
         logger.error(
