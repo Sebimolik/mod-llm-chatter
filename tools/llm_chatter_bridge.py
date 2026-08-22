@@ -2404,6 +2404,20 @@ def main():
                     "failed",
                     exc_info=True,
                 )
+            # Drain condensation executor
+            try:
+                from chatter_memory import (
+                    condensation_executor,
+                )
+                condensation_executor.shutdown(
+                    wait=True
+                )
+            except Exception:
+                logger.error(
+                    "Condensation executor shutdown "
+                    "failed",
+                    exc_info=True,
+                )
             break
         except Exception:
             logger.error(
