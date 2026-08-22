@@ -1380,7 +1380,7 @@ def _condense_low_value_memories(
     except Exception:
         logger.error(
             "Memory condensation failed for bot=%s "
-            f"player={player_guid}",
+            "player=%s", bot_guid, player_guid,
             exc_info=True,
         )
         return False
