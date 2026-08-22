@@ -165,6 +165,73 @@ def _extract_chat_content(response, label=''):
     return None
 
 
+def _usage_int(usage, *names):
+    """Return the first int-valued attribute/key found.
+
+    Providers hand back either a pydantic-ish object or a
+    plain dict, so both are probed. Anything non-int (or
+    missing) yields None -- never a guess.
+    """
+    for name in names:
+        value = None
+        if isinstance(usage, dict):
+            value = usage.get(name)
+        else:
+            value = getattr(usage, name, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _extract_usage(response):
+    """Pull REAL token counts off a provider response.
+
+    Handles the OpenAI-compatible shape (usage.
+    prompt_tokens / completion_tokens / total_tokens --
+    used by OpenAI, OpenRouter, DeepSeek, Google's
+    OpenAI-compat endpoint and Ollama) and Anthropic's
+    (usage.input_tokens / output_tokens, which carries no
+    total, so it is summed only when both halves are
+    present).
+
+    Returns None when the provider reported nothing, so the
+    logger can omit the fields entirely rather than write
+    fabricated zeros. Never raises: usage accounting must
+    not be able to break an otherwise good LLM call.
+    """
+    try:
+        usage = getattr(response, 'usage', None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get('usage')
+        if usage is None:
+            return None
+        prompt_tokens = _usage_int(
+            usage, 'prompt_tokens', 'input_tokens'
+        )
+        completion_tokens = _usage_int(
+            usage, 'completion_tokens', 'output_tokens'
+        )
+        total_tokens = _usage_int(usage, 'total_tokens')
+        if (
+            total_tokens is None
+            and prompt_tokens is not None
+            and completion_tokens is not None
+        ):
+            total_tokens = prompt_tokens + completion_tokens
+        out = {}
+        if prompt_tokens is not None:
+            out['prompt_tokens'] = prompt_tokens
+        if completion_tokens is not None:
+            out['completion_tokens'] = completion_tokens
+        if total_tokens is not None:
+            out['total_tokens'] = total_tokens
+        return out or None
+    except Exception:
+        return None
+
+
 def resolve_model(model_name: str) -> str:
     """Resolve friendly model aliases to provider model IDs."""
     normalized = (model_name or '').strip()
@@ -313,6 +380,7 @@ def call_llm(
 
     t0 = time.monotonic()
     result = None
+    usage = None
     sys_msg, user_msg = _split_prompt(prompt)
     sent_user_msg = user_msg  # tracks actual payload
     try:
@@ -342,6 +410,7 @@ def call_llm(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         elif provider in ('openai', 'google', 'openrouter'):
             kwargs = {
                 'model': model,
@@ -359,6 +428,7 @@ def call_llm(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         else:
             # Anthropic (default)
             kwargs = {
@@ -375,6 +445,7 @@ def call_llm(
             response = client.messages.create(
                 **kwargs
             )
+            usage = _extract_usage(response)
             result = response.content[0].text.strip()
     except Exception as exc:
         logger.error(
@@ -394,6 +465,7 @@ def call_llm(
                 model, provider, duration_ms,
                 metadata=metadata,
                 system_prompt=sys_msg,
+                usage=usage,
             )
         except Exception:
             pass
@@ -585,6 +657,7 @@ def quick_llm_analyze(
 
     t0 = time.monotonic()
     result = None
+    usage = None
     sys_msg, user_msg = _split_prompt(prompt)
     sent_user_msg = user_msg
     try:
@@ -617,6 +690,7 @@ def quick_llm_analyze(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         elif provider in ('openai', 'google', 'openrouter'):
             kwargs = {
                 'model': model,
@@ -639,6 +713,7 @@ def quick_llm_analyze(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         else:
             kwargs = {
                 "model": model,
@@ -656,6 +731,7 @@ def quick_llm_analyze(
                     **kwargs
                 )
             )
+            usage = _extract_usage(response)
             result = response.content[0].text.strip()
     except Exception as exc:
         logger.error(
@@ -675,6 +751,7 @@ def quick_llm_analyze(
                 model, provider, duration_ms,
                 metadata=metadata,
                 system_prompt=sys_msg,
+                usage=usage,
             )
         except Exception:
             pass

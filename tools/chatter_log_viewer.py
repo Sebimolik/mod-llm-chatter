@@ -8,6 +8,9 @@ and presents it in a filterable, searchable web UI.
 Run on the HOST (not in Docker):
     python chatter_log_viewer.py [--log PATH] [--port 5555]
 
+Per-label token spend, without starting the server:
+    python chatter_log_viewer.py --log PATH --tokens
+
 No external dependencies — uses only stdlib.
 """
 
@@ -164,6 +167,57 @@ def _api_memories(qs):
     }
 
 
+def _token_breakdown(entries):
+    """Aggregate provider-reported token usage per label.
+
+    Entries written before token logging existed (and any
+    provider that reports no usage) simply have no token
+    fields; those still count toward `calls` but not toward
+    `measured`, so a partially-instrumented log reads
+    honestly instead of looking like free calls.
+
+    Returns (per_label_dict, totals_dict).
+    """
+    labels = {}
+    totals = {
+        'calls': 0,
+        'measured': 0,
+        'prompt_tokens': 0,
+        'completion_tokens': 0,
+        'total_tokens': 0,
+    }
+    for e in entries:
+        lbl = e.get('label', '') or '(none)'
+        row = labels.setdefault(lbl, {
+            'calls': 0,
+            'measured': 0,
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+        })
+        row['calls'] += 1
+        totals['calls'] += 1
+        pt = e.get('prompt_tokens')
+        ct = e.get('completion_tokens')
+        tt = e.get('total_tokens')
+        if not any(
+            isinstance(v, int)
+            for v in (pt, ct, tt)
+        ):
+            continue
+        row['measured'] += 1
+        totals['measured'] += 1
+        for key, val in (
+            ('prompt_tokens', pt),
+            ('completion_tokens', ct),
+            ('total_tokens', tt),
+        ):
+            if isinstance(val, int):
+                row[key] += val
+                totals[key] += val
+    return labels, totals
+
+
 def _api_stats():
     entries = _read_entries()
     total = len(entries)
@@ -179,12 +233,77 @@ def _api_stats():
     avg_dur = (
         int(total_dur / total) if total > 0 else 0
     )
+    token_labels, token_totals = _token_breakdown(
+        entries
+    )
     return {
         'total': total,
         'labels': labels,
         'avg_duration_ms': avg_dur,
         'providers': providers,
+        'tokens': token_totals,
+        'token_labels': token_labels,
     }
+
+
+def _print_token_report():
+    """Print the per-label token breakdown to stdout.
+
+    CLI companion to /api/stats for the common
+    "where is the spend going?" question, so answering it
+    does not need the web UI running.
+    """
+    entries = _read_entries()
+    labels, totals = _token_breakdown(entries)
+    print(f"Log file : {LOG_PATH}")
+    print(f"Entries  : {len(entries)}")
+    if not entries:
+        return
+    rows = sorted(
+        labels.items(),
+        key=lambda kv: (
+            -kv[1]['total_tokens'], -kv[1]['calls']
+        ),
+    )
+    hdr = (
+        f"{'label':<32}{'calls':>7}{'meas':>7}"
+        f"{'prompt':>12}{'completion':>12}"
+        f"{'total':>12}{'tot%':>7}"
+    )
+    print()
+    print(hdr)
+    print('-' * len(hdr))
+    grand = totals['total_tokens']
+    for lbl, r in rows:
+        pct = (
+            100.0 * r['total_tokens'] / grand
+            if grand else 0.0
+        )
+        print(
+            f"{lbl[:32]:<32}{r['calls']:>7}"
+            f"{r['measured']:>7}"
+            f"{r['prompt_tokens']:>12}"
+            f"{r['completion_tokens']:>12}"
+            f"{r['total_tokens']:>12}"
+            f"{pct:>6.1f}%"
+        )
+    print('-' * len(hdr))
+    print(
+        f"{'TOTAL':<32}{totals['calls']:>7}"
+        f"{totals['measured']:>7}"
+        f"{totals['prompt_tokens']:>12}"
+        f"{totals['completion_tokens']:>12}"
+        f"{totals['total_tokens']:>12}"
+        f"{100.0 if grand else 0.0:>6.1f}%"
+    )
+    unmeasured = totals['calls'] - totals['measured']
+    if unmeasured:
+        print(
+            f"\nNote: {unmeasured} call(s) carry no "
+            "provider token usage (older log rows or a "
+            "provider that reports none); they are "
+            "counted but contribute 0 tokens."
+        )
 
 
 def _api_dbstate():
@@ -1339,9 +1458,16 @@ function selectEntry(i){
 function fetchStats(){
   fetch('/api/stats').then(r=>r.json()).then(
     data=>{
-    document.getElementById('statsBar')
-      .textContent='Total: '+data.total
+    const tk=data.tokens||{};
+    let txt='Total: '+data.total
       +' | Avg: '+data.avg_duration_ms+'ms';
+    if(tk.total_tokens){
+      txt+=' | Tokens: '+tk.total_tokens
+        +' ('+(tk.prompt_tokens||0)+' in / '
+        +(tk.completion_tokens||0)+' out)';
+    }
+    document.getElementById('statsBar')
+      .textContent=txt;
   }).catch(()=>{});
 }
 
@@ -2319,10 +2445,22 @@ if __name__ == '__main__':
         '--port', type=int, default=5555,
         help='Port to listen on (default 5555)'
     )
+    parser.add_argument(
+        '--tokens', action='store_true',
+        help=(
+            'Print the per-label token/spend breakdown '
+            'and exit (no server)'
+        )
+    )
     args = parser.parse_args()
 
     LOG_PATH = Path(args.log)
     SNAPSHOT_DIR = LOG_PATH.parent
+
+    if args.tokens:
+        _print_token_report()
+        raise SystemExit(0)
+
     print(f"Log file : {LOG_PATH}")
     print(
         f"Viewer   : http://localhost:{args.port}"
