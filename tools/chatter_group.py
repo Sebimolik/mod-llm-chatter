@@ -134,6 +134,7 @@ from chatter_memory import (
     flush_session_memories,
     sanitize_memory_for_prompt,
     get_session_mood,
+    insert_first_meeting_memory,
     _get_group_lock,
     _active_sessions,
 )
@@ -591,33 +592,11 @@ def process_group_event(db, client, config, event):
                             f" began adventuring"
                             f" together."
                         )
-                    mc = db.cursor()
-                    mc.execute(
-                        "INSERT INTO llm_bot_memories"
-                        " (bot_guid, player_guid,"
-                        "  group_id, memory_type,"
-                        "  memory, mood, emote,"
-                        "  active, session_start)"
-                        " SELECT"
-                        "  %s,%s,%s,"
-                        "  'first_meeting',"
-                        "  %s,'warm',NULL,1,%s"
-                        " WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM"
-                        "  llm_bot_memories"
-                        "  WHERE bot_guid=%s"
-                        "    AND player_guid=%s"
-                        "    AND memory_type="
-                        "    'first_meeting')",
-                        (
-                            bot_guid, player_guid,
-                            group_id,
-                            mem_text, time.time(),
-                            bot_guid, player_guid,
-                        ),
+                    insert_first_meeting_memory(
+                        db, config, bot_guid,
+                        player_guid, group_id,
+                        mem_text,
                     )
-                    db.commit()
-                    mc.close()
                     player_name_known = True
 
         # 1c. Normalize this bot's trait row to the
@@ -1048,41 +1027,11 @@ def process_group_join_batch_event(
                                 f" adventuring"
                                 f" together."
                             )
-                        mc = db.cursor()
-                        mc.execute(
-                            "INSERT INTO"
-                            " llm_bot_memories"
-                            " (bot_guid,"
-                            "  player_guid,"
-                            "  group_id,"
-                            "  memory_type,"
-                            "  memory, mood,"
-                            "  emote, active,"
-                            "  session_start)"
-                            " SELECT"
-                            "  %s,%s,%s,"
-                            "  'first_meeting',"
-                            "  %s,'warm',"
-                            "  NULL,1,%s"
-                            " WHERE NOT EXISTS ("
-                            "  SELECT 1 FROM"
-                            "  llm_bot_memories"
-                            "  WHERE bot_guid=%s"
-                            "    AND player_guid=%s"
-                            "    AND memory_type="
-                            "    'first_meeting')",
-                            (
-                                bot_guid,
-                                batch_player_guid,
-                                group_id,
-                                mem_text,
-                                time.time(),
-                                bot_guid,
-                                batch_player_guid,
-                            ),
+                        insert_first_meeting_memory(
+                            db, config, bot_guid,
+                            batch_player_guid,
+                            group_id, mem_text,
                         )
-                        db.commit()
-                        mc.close()
                         bot_player_known = True
 
             # On rejoin, skip greeting but track bot

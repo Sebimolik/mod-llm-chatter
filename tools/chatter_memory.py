@@ -802,6 +802,50 @@ def _ensure_cap_and_insert(
     return True
 
 
+def insert_first_meeting_memory(
+    db, config, bot_guid, player_guid, group_id,
+    memory_text, importance=5,
+):
+    """Insert a bot's first-meeting memory of a player.
+
+    Routes through _ensure_cap_and_insert() so this memory
+    type gets the same cap/eviction guarantees as every
+    other memory type instead of bypassing them with a raw
+    INSERT. Preserves the original hand-rolled behavior:
+    mood is always 'warm', there's no emote, the memory is
+    active immediately (active=1, not the pending-until-
+    farewell active=0 lifecycle other event types use), and
+    a duplicate is never created for a bot/player pair that
+    already has a first_meeting memory.
+
+    Returns True if inserted, False if a first_meeting
+    memory already existed or the cap was full with nothing
+    evictable.
+    """
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT 1 FROM llm_bot_memories"
+        " WHERE bot_guid = %s AND player_guid = %s"
+        "   AND memory_type = 'first_meeting'"
+        " LIMIT 1",
+        (bot_guid, player_guid),
+    )
+    already_exists = cursor.fetchone() is not None
+    cursor.close()
+    if already_exists:
+        return False
+
+    max_per = int(config.get(
+        'LLMChatter.Memory.MaxPerBotPlayer', 30
+    ))
+    return _ensure_cap_and_insert(
+        db, config, bot_guid, player_guid, group_id,
+        'first_meeting', memory_text, 'warm', None,
+        time.time(), active=1, max_per=max_per,
+        importance=importance,
+    )
+
+
 def _execute_generate_memory(
     config, group_id, bot_guid, player_guid,
     memory_type, event_context,
