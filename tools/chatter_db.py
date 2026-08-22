@@ -191,6 +191,7 @@ def get_creature_entry_column(db):
         cursor.close()
         _creature_entry_col = (row[0] if row else 'id')
     except Exception:
+        logger.warning("get_creature_entry_column failed", exc_info=True)
         _creature_entry_col = 'id'
     return _creature_entry_col
 
@@ -272,6 +273,7 @@ def query_zone_quests(
         return quests
 
     except Exception:
+        logger.warning("query_zone_quests failed", exc_info=True)
         return []
 
 
@@ -389,6 +391,7 @@ def query_zone_loot(
         return loot
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return []
 
 
@@ -480,6 +483,7 @@ def query_zone_mobs(
         return mobs
 
     except Exception:
+        logger.warning("query_zone_mobs failed", exc_info=True)
         return []
 
 
@@ -649,6 +653,7 @@ def query_zone_npcs(
         return results
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return []
 
 
@@ -760,6 +765,7 @@ def query_bot_spells(
         return result
 
     except Exception:
+        logger.warning("query_bot_spells failed", exc_info=True)
         return []
 
 
@@ -897,6 +903,7 @@ def query_item_details(
         """, (entry,))
         return cursor.fetchone()
     except Exception:
+        logger.warning("query_item_details failed", exc_info=True)
         return None
 
 
@@ -923,6 +930,7 @@ def query_quest_turnin_npc(
         row = cursor.fetchone()
         return row['name'] if row else None
     except Exception:
+        logger.warning("query_quest_turnin_npc failed", exc_info=True)
         return None
     finally:
         try:
@@ -971,6 +979,7 @@ def get_recent_zone_messages(
             'message'
         )]
     except Exception:
+        logger.warning("get_recent_zone_messages failed", exc_info=True)
         return []
 
 
@@ -1003,6 +1012,7 @@ def get_recent_bot_messages(
             'message'
         )]
     except Exception:
+        logger.warning("get_recent_bot_messages failed", exc_info=True)
         return []
 
 
@@ -1080,6 +1090,7 @@ def get_group_location(db, group_id):
                 int(row.get('map', 0) or 0),
             )
     except Exception:
+        logger.warning("get_group_location failed", exc_info=True)
         pass
     return (0, 0, 0)
 
@@ -1115,6 +1126,7 @@ def get_character_info_by_name(
         )
         return result
     except Exception:
+        logger.warning("get_character_info_by_name failed", exc_info=True)
         return None
 
 
@@ -1157,6 +1169,7 @@ def is_player_online(
         )
         return result
     except Exception:
+        logger.warning("is_player_online failed", exc_info=True)
         return True  # assume online on error
 
 
@@ -1186,6 +1199,7 @@ def get_character_talents(
             spec_row['activeTalentGroup']
         )
     except Exception:
+        logger.warning("get_character_talents failed", exc_info=True)
         return empty
 
     cache_key = (char_guid, active_spec)
@@ -1258,6 +1272,7 @@ def get_character_talents(
         return result
 
     except Exception:
+        logger.warning("get_character_talents failed", exc_info=True)
         return empty
 
 
@@ -1288,6 +1303,7 @@ def any_real_players_online(db) -> bool:
         row = cursor.fetchone()
         return row is not None
     except Exception:
+        logger.warning("any_real_players_online failed", exc_info=True)
         # On error, assume online to avoid
         # accidentally suppressing work
         return True
@@ -1420,6 +1436,7 @@ def cleanup_stale_groups(db) -> int:
                 )
                 teardown_group_session(gid)
             except Exception:
+                logger.warning("operation failed", exc_info=True)
                 pass
             cleaned += 1
 

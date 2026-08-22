@@ -214,6 +214,7 @@ def check_or_create_bot_identity(
             }
         had_row = row is not None
     except Exception:
+        logger.warning("check_or_create_bot_identity failed", exc_info=True)
         had_row = False
 
     # No stored identity or version mismatch:
@@ -266,6 +267,7 @@ def check_or_create_bot_identity(
             traits[0], traits[1], traits[2],
         )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     return {
@@ -343,6 +345,7 @@ def _generate_bot_tone(
             db.commit()
             return tone
     except Exception:
+        logger.warning("_sync_group_rows failed", exc_info=True)
         pass
 
     # Build LLM prompt
@@ -440,6 +443,7 @@ def _generate_bot_tone(
                 )
             )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     try:
@@ -478,6 +482,7 @@ def _generate_bot_tone(
         return tone
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         # Store fallback so we don't retry LLM on
         # every subsequent call for this bot+group
         try:
@@ -492,6 +497,10 @@ def _generate_bot_tone(
             )
             db.commit()
         except Exception:
+            logger.warning(
+                "_sync_group_rows commit failed",
+                exc_info=True,
+            )
             pass
         return fallback
 
@@ -562,6 +571,7 @@ def _generate_bot_backstory(
             db.commit()
             return bs
     except Exception:
+        logger.warning("_sync_group_rows failed", exc_info=True)
         pass
 
     # Build LLM prompt
@@ -669,6 +679,7 @@ def _generate_bot_backstory(
                 )
             )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     try:
@@ -716,6 +727,7 @@ def _generate_bot_backstory(
         return backstory
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return None
 
 
@@ -824,6 +836,7 @@ def regenerate_bot_backstory(
         )
         db.commit()
     except Exception:
+        logger.warning("regenerate_bot_backstory failed", exc_info=True)
         pass
 
     # Fetch bot info for generation — try identity
@@ -945,6 +958,7 @@ def regenerate_bot_tone(db, config, bot_guid):
         )
         db.commit()
     except Exception:
+        logger.warning("regenerate_bot_tone failed", exc_info=True)
         pass
 
     cursor = db.cursor(dictionary=True)
@@ -1123,6 +1137,7 @@ def assign_bot_traits(
             )
             db.commit()
         except Exception:
+            logger.warning("assign_bot_traits failed", exc_info=True)
             pass
 
     # Clear stored tone and backstory on fresh identity
@@ -1139,6 +1154,7 @@ def assign_bot_traits(
             )
             db.commit()
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     # Generate LLM-derived tone if not already set
@@ -1151,6 +1167,7 @@ def assign_bot_traits(
                 traits,
             )
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     # Generate LLM-derived backstory if not already set
@@ -1164,6 +1181,7 @@ def assign_bot_traits(
                 bot_gender=bot_gender,
             )
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     return {
@@ -1325,6 +1343,7 @@ def _generate_farewell(
                 db.commit()
                 return
         except Exception:
+            logger.warning("_generate_farewell failed", exc_info=True)
             pass
 
     is_rp = (mode == 'roleplay')
@@ -1407,9 +1426,14 @@ def _generate_farewell(
                 )
                 db.commit()
             except Exception:
+                logger.warning("operation failed", exc_info=True)
                 pass
 
     except Exception:
+        logger.warning(
+            "_generate_farewell failed",
+            exc_info=True,
+        )
         pass
 
 def _has_recent_event(

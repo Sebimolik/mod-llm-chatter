@@ -3611,6 +3611,7 @@ def check_idle_group_chatter(
             _pre_map = int(
                 _pre_row.get('map') or 0)
     except Exception:
+        logger.warning("check_idle_group_chatter failed", exc_info=True)
         pass
 
     # Raid instance: use dedicated idle chance/cooldown
