@@ -31,6 +31,7 @@ from chatter_shared import (
     append_json_instruction,
 )
 from chatter_text import (
+    _trim_summary,
     extract_json_object,
     parse_single_response,
 )
@@ -1940,8 +1941,8 @@ def _maybe_update_relationship(
 
         # Reuse the exact same truncation helper as the
         # guild session summarizer rather than inventing a
-        # third near-identical one.
-        from chatter_guild_player import _trim_summary
+        # third near-identical one (now shared via
+        # chatter_text.py rather than a cross-domain import).
         summary = _trim_summary(
             parsed.get('message', ''), max_chars,
         )

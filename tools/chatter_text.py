@@ -509,3 +509,17 @@ def pick_statement_length() -> Tuple[int, int, str]:
     return lo, hi, label
 
 
+def _trim_summary(text: str, maximum: int) -> str:
+    """Collapse whitespace and hard-cap a summary string
+    at a word boundary, ending with a period.
+
+    Shared by the guild session summarizer
+    (chatter_guild_player.py) and the relationship-summary
+    updater (chatter_memory.py) so both use one truncation
+    rule instead of near-duplicate implementations.
+    """
+    text = " ".join(str(text or '').split())
+    if len(text) <= maximum:
+        return text
+    shortened = text[:maximum].rsplit(' ', 1)[0]
+    return shortened.rstrip(' ,;:-') + "."
