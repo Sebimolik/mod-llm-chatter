@@ -585,7 +585,7 @@ def queue_shared_event_memory(
         return  # can't create orphaned memory
 
     memory_executor.submit(
-        _execute_generate_shared_memory,
+        _execute_shared_event_memory,
         config=config,
         group_id=group_id,
         bot_guids=eligible_bots,
@@ -1020,7 +1020,7 @@ def _execute_generate_memory(
                 pass
 
 
-def _execute_generate_shared_memory(
+def _execute_shared_event_memory(
     config, group_id, bot_guids, player_guid,
     memory_type, event_context, session_start=0.0,
 ):
