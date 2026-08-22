@@ -858,6 +858,7 @@ def _ensure_cap_and_insert(
     cnt = _count_active_memories(
         cursor, bot_guid, player_guid
     )
+    evicted = False
     if cnt >= max_per:
         if not _evict_one_used(
             cursor, conn, bot_guid, player_guid,
@@ -869,6 +870,7 @@ def _ensure_cap_and_insert(
                 " bot %s", bot_guid,
             )
             return False
+        evicted = True
     cursor.execute(
         "INSERT INTO llm_bot_memories"
         " (bot_guid, player_guid,"
@@ -910,13 +912,17 @@ def _ensure_cap_and_insert(
             session["vibe"] = mood
             session["vibe_set_at"] = time.time()
 
-    # Proactive condensation trigger: check the pair's
+    # Proactive condensation trigger: needs the pair's
     # active count AFTER the insert above (and any eviction
-    # that made room for it) so this reads the pool's real
-    # current size, not a pre-insert snapshot.
-    new_count = _count_active_memories(
-        cursor, bot_guid, player_guid
-    )
+    # that made room for it), i.e. the pool's real current
+    # size rather than the pre-insert snapshot. Derived
+    # rather than re-queried -- _evict_one_used() removes
+    # exactly one active row and the insert adds one only
+    # when it lands active -- since this sits on the hot
+    # path of every single memory write.
+    new_count = cnt + (1 if active else 0)
+    if evicted:
+        new_count -= 1
     _maybe_trigger_condensation(
         config, bot_guid, player_guid, new_count, max_per,
     )
@@ -3049,6 +3055,169 @@ def purge_orphaned_memories(db):
 # MEMORY RETRIEVAL
 # ============================================================
 
+def _select_within_token_budget(
+    candidates, count, max_tokens,
+):
+    """Trim effective_score-ordered candidates down to
+    `count` rows and the injection token budget.
+
+    The first pick is always kept even if it alone would
+    exceed budget, so a single oversized memory can't
+    starve the result down to empty.
+
+    Shared by get_bot_memories() and
+    get_bot_memories_batch() so the batched path cannot
+    drift from the per-bot one.
+    """
+    selected = []
+    token_sum = 0
+    for row in candidates:
+        if len(selected) >= count:
+            break
+        cost = estimate_tokens(row['memory'])
+        if selected and token_sum + cost > max_tokens:
+            break
+        selected.append(row)
+        token_sum += cost
+    return selected
+
+
+def get_bot_memories_batch(
+    db, bot_guids, player_guid, config=None, count=3,
+    exclude_first_meeting=False, current_zone_id=None,
+    mark_used=True,
+):
+    """Batched get_bot_memories() for a whole party.
+
+    One SELECT for every bot, partitioned per bot in
+    Python, then ONE UPDATE + ONE commit for all the rows
+    actually returned -- instead of the 2 queries and 1
+    commit per bot the naive loop cost (8 queries and 4
+    commits for a 4-bot party, every idle conversation).
+
+    Per-bot semantics are identical to get_bot_memories():
+    same decay-aware ordering, same optional same-zone
+    tie-break, same candidate over-fetch, same per-bot
+    `count` limit and MaxInjectTokens budget, same
+    mark_used behaviour.
+
+    The candidate over-fetch is applied per bot in Python
+    rather than as a SQL LIMIT (a single LIMIT can't be
+    per-partition, and one greedy bot must not eat another
+    bot's share). That is safe because active rows per
+    bot-player pair are already hard-capped by
+    LLMChatter.Memory.MaxPerBotPlayer.
+
+    Returns {bot_guid: [memory strings]}. Bots with no
+    memories are simply absent from the dict.
+    """
+    guids = []
+    for guid in bot_guids or []:
+        try:
+            guid = int(guid)
+        except (TypeError, ValueError):
+            continue
+        if guid not in guids:
+            guids.append(guid)
+    if not guids:
+        return {}
+
+    try:
+        extra = (
+            " AND memory_type != 'first_meeting'"
+            if exclude_first_meeting else ""
+        )
+        candidate_limit = max(count * 3, 15)
+        placeholders = ','.join(['%s'] * len(guids))
+        cursor = db.cursor(dictionary=True)
+        if current_zone_id is not None:
+            cursor.execute(
+                "SELECT id, bot_guid, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid IN (" + placeholders + ")"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY bot_guid,"
+                "   effective_score DESC,"
+                "   (zone_id = %s) DESC,"
+                "   created_at DESC",
+                tuple(guids)
+                + (player_guid, current_zone_id),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, bot_guid, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid IN (" + placeholders + ")"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY bot_guid,"
+                "   effective_score DESC,"
+                "   created_at DESC",
+                tuple(guids) + (player_guid,),
+            )
+        rows = cursor.fetchall()
+        if not rows:
+            return {}
+
+        by_bot = {}
+        for row in rows:
+            by_bot.setdefault(
+                int(row['bot_guid']), []
+            ).append(row)
+
+        max_tokens = int((config or {}).get(
+            'LLMChatter.Memory.MaxInjectTokens', 400
+        ))
+
+        result = {}
+        used_ids = []
+        for guid in guids:
+            candidates = by_bot.get(guid)
+            if not candidates:
+                continue
+            selected = _select_within_token_budget(
+                candidates[:candidate_limit],
+                count, max_tokens,
+            )
+            if not selected:
+                continue
+            result[guid] = [
+                row['memory'] for row in selected
+            ]
+            used_ids.extend(
+                row['id'] for row in selected
+            )
+
+        if mark_used and used_ids:
+            id_placeholders = ','.join(
+                ['%s'] * len(used_ids)
+            )
+            cursor.execute(
+                "UPDATE llm_bot_memories"
+                " SET used = 1,"
+                " last_used_at = NOW()"
+                " WHERE id IN (%s)"
+                % id_placeholders,
+                tuple(used_ids),
+            )
+            db.commit()
+        return result
+    except Exception:
+        logger.error(
+            f"Batched memory retrieval failed for "
+            f"bots={bot_guids} player={player_guid}",
+            exc_info=True,
+        )
+        return {}
+
+
 def get_bot_memories(
     db, bot_guid, player_guid, config=None, count=3,
     exclude_first_meeting=False, current_zone_id=None,
@@ -3064,7 +3233,7 @@ def get_bot_memories(
     is reached. Only the rows actually returned are
     marked used=1 (unless mark_used=False, e.g. when a
     memory is being fetched for secondhand reference by
-    a DIFFERENT bot than the one it belongs to — that
+    a DIFFERENT bot than the one it belongs to -- that
     should not count toward this memory's own eviction
     priority).
 
@@ -3076,98 +3245,23 @@ def get_bot_memories(
     (default), ordering is byte-identical to before this
     parameter existed.
 
+    Thin wrapper over get_bot_memories_batch() with a
+    single bot, so the one-bot and party paths can never
+    disagree about ordering, limits or used-marking.
+
     Returns list of memory strings (may be empty).
     """
     try:
-        extra = (
-            " AND memory_type != 'first_meeting'"
-            if exclude_first_meeting else ""
-        )
-        candidate_limit = max(count * 3, 15)
-        cursor = db.cursor(dictionary=True)
-        if current_zone_id is not None:
-            cursor.execute(
-                "SELECT id, memory, "
-                + _effective_score_sql(config) +
-                " AS effective_score"
-                " FROM llm_bot_memories"
-                " WHERE bot_guid = %s"
-                "   AND player_guid = %s"
-                "   AND active = 1"
-                + extra +
-                " ORDER BY effective_score DESC,"
-                "   (zone_id = %s) DESC,"
-                "   created_at DESC"
-                " LIMIT %s",
-                (
-                    bot_guid, player_guid,
-                    current_zone_id, candidate_limit,
-                ),
-            )
-        else:
-            cursor.execute(
-                "SELECT id, memory, "
-                + _effective_score_sql(config) +
-                " AS effective_score"
-                " FROM llm_bot_memories"
-                " WHERE bot_guid = %s"
-                "   AND player_guid = %s"
-                "   AND active = 1"
-                + extra +
-                " ORDER BY effective_score DESC,"
-                "   created_at DESC"
-                " LIMIT %s",
-                (bot_guid, player_guid, candidate_limit),
-            )
-        candidates = cursor.fetchall()
-        if not candidates:
-            return []
-
-        max_tokens = int((config or {}).get(
-            'LLMChatter.Memory.MaxInjectTokens', 400
-        ))
-
-        # Trim the (already effective_score-ordered)
-        # candidates down to count + token budget. The
-        # first pick is always kept even if it alone
-        # would exceed budget, so a single oversized
-        # memory can't starve the result down to empty.
-        selected = []
-        token_sum = 0
-        for row in candidates:
-            if len(selected) >= count:
-                break
-            cost = estimate_tokens(row['memory'])
-            if selected and token_sum + cost > max_tokens:
-                break
-            selected.append(row)
-            token_sum += cost
-
-        if not selected:
-            return []
-
-        if mark_used:
-            ids = [row['id'] for row in selected]
-            placeholders = ','.join(
-                ['%s'] * len(ids)
-            )
-            cursor.execute(
-                "UPDATE llm_bot_memories"
-                " SET used = 1,"
-                " last_used_at = NOW()"
-                " WHERE id IN (%s)"
-                % placeholders,
-                tuple(ids),
-            )
-            db.commit()
-        return [row['memory'] for row in selected]
-    except Exception:
-        logger.error(
-            f"Memory retrieval failed for "
-            f"bot={bot_guid} player={player_guid}",
-            exc_info=True,
-        )
+        bot_guid_int = int(bot_guid)
+    except (TypeError, ValueError):
         return []
+    return get_bot_memories_batch(
+        db, [bot_guid_int], player_guid, config=config,
+        count=count,
+        exclude_first_meeting=exclude_first_meeting,
+        current_zone_id=current_zone_id,
+        mark_used=mark_used,
+    ).get(bot_guid_int, [])
 
 
 # ============================================================

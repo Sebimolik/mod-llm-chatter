@@ -130,6 +130,7 @@ from chatter_memory import (
     start_session,
     queue_memory,
     get_bot_memories,
+    get_bot_memories_batch,
     get_relationship_summary,
     flush_session_memories,
     sanitize_memory_for_prompt,
@@ -4323,16 +4324,24 @@ def _idle_conversation(
             if p_info:
                 player_guid = int(p_info['guid'])
                 if player_guid:
+                    # One SELECT + one UPDATE + one commit
+                    # for the whole party (see
+                    # get_bot_memories_batch); the per-bot
+                    # loop this replaced cost 2 queries and
+                    # a commit per bot, every idle
+                    # conversation.
+                    batched = get_bot_memories_batch(
+                        db,
+                        [b['guid'] for b in bots],
+                        player_guid,
+                        config=config,
+                        count=2,
+                        exclude_first_meeting=True,
+                        current_zone_id=zone_id,
+                    )
                     for b in bots:
-                        mems = get_bot_memories(
-                            db, b['guid'],
-                            player_guid,
-                            config=config,
-                            count=2,
-                            exclude_first_meeting=(
-                                True
-                            ),
-                            current_zone_id=zone_id,
+                        mems = batched.get(
+                            int(b['guid'])
                         )
                         if mems:
                             memories_map[
@@ -4839,11 +4848,14 @@ def check_bot_questions(db, client, config):
                 if not question_memories:
                     question_memories = None
 
-        # Standing relationship disposition (only
-        # meaningful in build_bot_question_prompt()'s
-        # LEAN MEMORY PATH; harmless no-op otherwise).
+        # Standing relationship disposition. Only
+        # build_bot_question_prompt()'s LEAN MEMORY PATH
+        # injects it, and that path only runs when this
+        # bot actually recalled something -- so without
+        # memories the row would be fetched and thrown
+        # away on every single question.
         relationship_summary = None
-        if player_info:
+        if player_info and question_memories:
             relationship_summary = (
                 get_relationship_summary(
                     db, bot_guid,
