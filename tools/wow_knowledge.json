@@ -1,41 +1,1951 @@
 [
-  {"id":"prof_alchemy","title":"Alchemy","category":"profession","content":"Alchemy creates potions, elixirs and flasks from herbs. You need Herbalism or the Auction House for materials. Trainers are in every major city. Potions heal or restore mana; elixirs and flasks give temporary stat boosts for raiding.","keywords":["alchemy","alchemist","potion","potions","elixir","elixirs","flask","flasks","herb","herbs","transmutation"],"keywords_ru":["алхимия","алхимик","зелье","зелья","эликсир","настой","флакон","травы","трансмутация"]},
-  {"id":"prof_blacksmithing","title":"Blacksmithing","category":"profession","content":"Blacksmithing makes plate armor and melee weapons, plus sharpening stones and some keys. It uses ore and bars from Mining. Trainers are in every major city and most towns.","keywords":["blacksmithing","blacksmith","plate","armor","weapon","weapons","ore","bar","mining","metal"],"keywords_ru":["кузнечное дело","кузнец","латная броня","оружие","руда","слиток","металл"]},
-  {"id":"prof_enchanting","title":"Enchanting","category":"profession","content":"Enchanting adds permanent stat bonuses to your gear and can disenchant unwanted items into dusts, essences and shards used for enchanting. It needs no gathering profession, just unwanted gear. Trainers are in major cities.","keywords":["enchanting","enchanter","enchant","disenchant","dust","shard","essence","gear","stats"],"keywords_ru":["зачарование","зачаровать","распыление","пыль","осколок","эссенция","характеристики"]},
-  {"id":"prof_engineering","title":"Engineering","category":"profession","content":"Engineering crafts gadgets, explosives, goggles and mechanical items. It is powerful but sometimes random or unreliable. It uses ore and cloth. Goggles and trinkets are highly desired. Trainers are in major cities.","keywords":["engineering","engineer","gadget","gadgets","goggles","explosive","explosives","trinket","mechanical","bomb"],"keywords_ru":["инженерное дело","инженер","очки","взрывчатка","бомба","гаджет"]},
-  {"id":"prof_tailoring","title":"Tailoring","category":"profession","content":"Tailoring makes cloth armor and bags, and some special cloths. It uses cloth drops from humanoids. Bags are always in demand. Trainers are in major cities.","keywords":["tailoring","tailor","cloth","bag","bags","robe","armor","linen","wool","silk"],"keywords_ru":["портняжное дело","портной","ткань","сумка","сумки","мантии","лен"]},
-  {"id":"prof_leatherworking","title":"Leatherworking","category":"profession","content":"Leatherworking makes leather and mail armor, plus armor kits. It uses leather from Skinning. Druids, hunters, rogues and shamans benefit most. Trainers are in major cities.","keywords":["leatherworking","leather","mail","armor","skin","skinning","hide","kit"],"keywords_ru":["кожевничество","кожа","кольчужная броня","снятие шкур","нашивка"]},
-  {"id":"prof_jewelcrafting","title":"Jewelcrafting","category":"profession","content":"Jewelcrafting cuts gems that socket into gear and crafts rings, necklaces and trinkets. It uses ores to prospect into gems. Introduced in The Burning Crusade; trainers are in Shattrath and major cities.","keywords":["jewelcrafting","jewelcrafter","gem","gems","socket","ring","necklace","trinket","prospect"],"keywords_ru":["ювелирное дело","ювелир","самоцвет","самоцветы","гнездо","кольцо","ожерелье"]},
-  {"id":"prof_inscription","title":"Inscription","category":"profession","content":"Inscription creates glyphs that modify your spells and abilities, plus scrolls and off-hand items. It uses herbs to mill into pigments. Introduced in Wrath of the Lich King; trainers are in major cities.","keywords":["inscription","scribe","glyph","glyphs","scroll","scrolls","mill","pigment","herb"],"keywords_ru":["начертание","символ","символы","свиток","свитки","пигмент","травы"]},
-  {"id":"prof_herbalism","title":"Herbalism","category":"profession","content":"Herbalism lets you gather herbs from nodes found in the world, used by Alchemy and Inscription. Herbs appear on your minimap once you learn the skill. Trainers are in major cities.","keywords":["herbalism","herbalist","herb","herbs","gather","gathering","node","plant"],"keywords_ru":["травничество","травник","травы","сбор","узел","растение"]},
-  {"id":"prof_mining","title":"Mining","category":"profession","content":"Mining lets you gather ore from mineral veins, used by Blacksmithing, Engineering and Jewelcrafting. Veins appear on your minimap once you learn the skill. Trainers are in major cities.","keywords":["mining","miner","ore","vein","node","metal","gather","copper","iron","mithril"],"keywords_ru":["горное дело","шахтер","руда","жила","металл","медь","железо","мифрил"]},
-  {"id":"prof_skinning","title":"Skinning","category":"profession","content":"Skinning lets you skin leather from dead beasts, used by Leatherworking. You can also get scraps and occasionally meat. Trainers are in major cities.","keywords":["skinning","skin","leather","hide","beast","gather"],"keywords_ru":["снятие шкур","кожа","шкура","зверь","сбор"]},
-  {"id":"prof_cooking","title":"Cooking","category":"profession","content":"Cooking is a secondary profession (everyone can learn it) that turns meat and fish into food that restores health and grants temporary stat buffs. Trainers are in major cities and many towns.","keywords":["cooking","cook","food","meat","fish","recipe","meal","buff"],"keywords_ru":["кулинария","повар","еда","мясо","рыба","рецепт","блюдо"]},
-  {"id":"prof_first_aid","title":"First Aid","category":"profession","content":"First Aid is a secondary profession (everyone can learn it) that bandages you mid-combat to restore health. It uses cloth. Trainers are in major cities.","keywords":["first aid","bandage","bandages","cloth","heal","health"],"keywords_ru":["первая помощь","бинт","бинты","ткань","лечение"]},
-  {"id":"prof_fishing","title":"Fishing","category":"profession","content":"Fishing is a secondary profession (everyone can learn it) that catches fish from water, used for Cooking or sold. It is slow but relaxing. Trainers are in major cities.","keywords":["fishing","fish","water","rod","bobber"],"keywords_ru":["рыбная ловля","рыба","вода","удочка","поплавок"]},
-
-  {"id":"class_warrior","title":"Warrior","category":"class","content":"Warriors are melee fighters who wear plate armor and can tank or deal damage. They use rage as a resource, generated by dealing and taking damage. They are slow to level but very durable.","keywords":["warrior","melee","tank","plate","rage","arms","fury","protection"],"keywords_ru":["воин","ближний бой","танк","латная броня","ярость"]},
-  {"id":"class_paladin","title":"Paladin","category":"class","content":"Paladins are holy warriors who wear plate and can tank, heal or deal damage. They use mana and have powerful auras and blessings. They can wear plate from level 40.","keywords":["paladin","holy","tank","heal","plate","aura","blessing","mana"],"keywords_ru":["паладин","свет","танк","лечение","аура","благословение"]},
-  {"id":"class_hunter","title":"Hunter","category":"class","content":"Hunters are ranged damage dealers who tame and fight alongside a pet. They wear mail and use a bow or gun. Pets can tank for them while leveling, making hunters easy to solo with.","keywords":["hunter","ranged","pet","mail","bow","gun","beast","tame"],"keywords_ru":["охотник","стрелок","питомец","лук","ружье","приручение"]},
-  {"id":"class_rogue","title":"Rogue","category":"class","content":"Rogues are stealthy melee damage dealers who wear leather and use energy plus combo points. They can pick locks and vanish. They are excellent at burst damage and crowd control.","keywords":["rogue","stealth","melee","leather","energy","combo","lockpick","dagger"],"keywords_ru":["разбойник","скрытность","ближний бой","кожа","энергия"]},
-  {"id":"class_priest","title":"Priest","category":"class","content":"Priests are healers or shadow damage dealers who wear cloth and use mana. Holy priests are among the best healers; shadow priests deal damage over time.","keywords":["priest","healer","shadow","cloth","mana","holy","discipline"],"keywords_ru":["жрец","лекарь","тьма","ткань","мана","свет"]},
-  {"id":"class_death_knight","title":"Death Knight","category":"class","content":"Death Knights are hero class available from level 55. They wear plate and use runes and runic power. They can tank or deal damage.","keywords":["death knight","hero class","plate","rune","runic","tank","level 55"],"keywords_ru":["рыцарь смерти","героический класс","латная броня","руны","сила рун"]},
-  {"id":"class_shaman","title":"Shaman","category":"class","content":"Shamans wear mail and use totems to buff allies or damage enemies. They can heal, deal melee damage or cast elemental damage. They use mana.","keywords":["shaman","totem","mail","heal","elemental","enhancement","mana"],"keywords_ru":["шаман","тотем","кольчужная броня","лечение","стихии"]},
-  {"id":"class_mage","title":"Mage","category":"class","content":"Mages are ranged damage dealers who wear cloth and use mana. They have powerful area damage, crowd control, and can conjure food, water and portals.","keywords":["mage","ranged","cloth","mana","frost","fire","arcane","portal","teleport"],"keywords_ru":["маг","стрелок","ткань","мана","лед","огонь","тайная магия","портал"]},
-  {"id":"class_warlock","title":"Warlock","category":"class","content":"Warlocks are ranged damage dealers who wear cloth and command demons. They use mana and soul shards, and can summon allies and healthstones.","keywords":["warlock","demon","cloth","mana","soul","pet","affliction","demonology","destruction"],"keywords_ru":["чернокнижник","демон","ткань","мана","душа","питомец"]},
-  {"id":"class_druid","title":"Druid","category":"class","content":"Druids are versatile shapeshifters who wear leather and can tank (bear), deal melee damage (cat), heal, or cast spells. They can shapeshift at level 10 and are excellent soloers.","keywords":["druid","shapeshift","bear","cat","leather","heal","tank","moonkin","balance"],"keywords_ru":["друид","оборотень","медведь","кошка","кожа","лечение","танк"]},
-
-  {"id":"mount_ground","title":"Ground mounts","category":"mechanics","content":"You learn riding at level 20 (75% speed) for a few gold, and again at level 40 (100% speed). Mounts are bought from your race's mount vendor. Paladins and warlocks get class mounts for free.","keywords":["mount","riding","level 20","level 40","speed","horse","wolf","kodo","raptor","ram"],"keywords_ru":["ездовое животное","верховая езда","20 уровень","40 уровень","скорость","лошадь","волк","ящер"]},
-  {"id":"mount_flying","title":"Flying mounts","category":"mechanics","content":"Flying is available in Outland and Northrend. Learn flying at level 60 (Outland) and cold weather flying at level 77 (Northrend). You must buy the flying license from a trainer.","keywords":["flying","fly","flight","outland","northrend","cold weather","level 60","level 77"],"keywords_ru":["полет","летающее средство","запределье","нордскол","60 уровень","77 уровень"]},
-  {"id":"talents","title":"Talents","category":"mechanics","content":"You gain talent points starting at level 10, one per level. Talents are spent in three trees to specialize. Dual specialization can be bought at level 40 from your class trainer.","keywords":["talent","talents","talent tree","specialization","dual spec","level 10","level 40","build"],"keywords_ru":["таланты","дерево талантов","специализация","двойная специализация","10 уровень","40 уровень"]},
-  {"id":"gold","title":"Earning gold","category":"mechanics","content":"Earn gold by questing, selling loot and gathered materials on the Auction House, and doing daily quests. Professions like mining, herbalism and skinning sell well. Don't buy every skill rank you don't need.","keywords":["gold","money","earn","rich","auction house","sell","quest","daily","farming"],"keywords_ru":["золото","деньги","заработать","аукцион","продать","задание","фарм"]},
-  {"id":"auction_house","title":"Auction House","category":"mechanics","content":"The Auction House lets you buy and sell items with other players. It is in every capital city. Gathered materials (ore, herbs, leather, cloth) usually sell well. Check prices before selling.","keywords":["auction house","auction","buy","sell","market","price","gold"],"keywords_ru":["аукцион","аукционный дом","купить","продать","цена","золото"]},
-  {"id":"bank","title":"Bank","category":"mechanics","content":"Banks store your items and gold. Visit a banker in any major city to deposit items you don't need to carry. You can buy extra bag slots.","keywords":["bank","banker","storage","deposit","bag","inventory","vault"],"keywords_ru":["банк","банкир","хранилище","вклад","сумка","инвентарь"]},
-  {"id":"flight_paths","title":"Flight paths","category":"mechanics","content":"Flight masters let you fly between discovered locations for a small fee. Discover new flight points by visiting towns and talking to their flight master.","keywords":["flight path","flight master","fly","travel","taxi","gryphon","wyvern"],"keywords_ru":["полет","распорядитель полетов","путешествие","грифон","виверна"]},
-  {"id":"hearthstone","title":"Hearthstone","category":"mechanics","content":"Your Hearthstone teleports you back to the inn you are bound to. Talk to an innkeeper to set your home location. It has a 30 minute cooldown.","keywords":["hearthstone","hearth","teleport","inn","innkeeper","home","cooldown"],"keywords_ru":["камень возвращения","телепорт","таверна","трактирщик","дом"]},
-  {"id":"dungeon_levels","title":"Dungeon level ranges","category":"dungeon","content":"Dungeons are 5-player group content at set level ranges: Ragefire Chasm and Deadmines around level 15-20, Scarlet Monastery around 30-40, Scholomance and Stratholme around 55-60, and Northrend dungeons at 70-80.","keywords":["dungeon","instance","group","level","deadmines","scarlet monastery","stratholme","northrend","ragefire"],"keywords_ru":["подземелье","данж","группа","уровень","мертвые копи","алый монастырь","стратхольм"]},
-  {"id":"raids","title":"Raids","category":"dungeon","content":"Raids are large-group content for 10 or 25 players. Classic raids include Molten Core, Blackwing Lair and Ahn'Qiraj; Burning Crusade raids include Karazhan; Wrath raids include Naxxramas, Ulduar and Icecrown Citadel.","keywords":["raid","raids","molten core","blackwing lair","karazhan","naxxramas","ulduar","icecrown","10 man","25 man"],"keywords_ru":["рейд","огненные недра","каражан","наксрамас","улдуар","цитадель ледяной короны"]},
-  {"id":"zone_levels","title":"Zone level ranges","category":"zone","content":"Zones scale by level. Starter zones are 1-10, then Barrens/Westfall/Darkshore 10-20, Stranglethorn and Hillsbrad 30-40, Tanaris and Feralas 40-50, Un'Goro and Felwood 50-60, then Outland 60-70 and Northrend 70-80.","keywords":["zone","level","barrens","westfall","darkshore","stranglethorn","tanaris","outland","northrend"],"keywords_ru":["зона","уровень","степи","западный край","темные берега","танарис","запределье","нордскол"]},
-  {"id":"dual_spec","title":"Dual specialization","category":"mechanics","content":"Dual specialization lets you keep two talent builds and swap between them. Buy it at level 40 from your class trainer for 1000 gold.","keywords":["dual spec","dual specialization","talent","respec","level 40","1000 gold","swap"],"keywords_ru":["двойная специализация","таланты","40 уровень","1000 золота"]},
-  {"id":"profession_training","title":"Learning professions","category":"profession","content":"To learn a profession, find a profession trainer in a major city and ask a guard for directions. You can have two primary professions and all three secondary ones (Cooking, First Aid, Fishing).","keywords":["profession","trainer","learn","primary","secondary","skill","apprentice"],"keywords_ru":["профессия","учитель","обучение","навык","основная","вспомогательная"]}
+{
+"id": "prof_alchemy",
+"title": "Alchemy",
+"category": "profession",
+"content": "Alchemy creates potions, elixirs and flasks from herbs. You need Herbalism or the Auction House for materials. Trainers are in every major city. Potions heal or restore mana; elixirs and flasks give temporary stat boosts for raiding.",
+"keywords": [
+"alchemy",
+"alchemist",
+"potion",
+"potions",
+"elixir",
+"elixirs",
+"flask",
+"flasks",
+"herb",
+"herbs",
+"transmutation"
+],
+"keywords_ru": [
+"алхимия",
+"алхимик",
+"зелье",
+"зелья",
+"эликсир",
+"настой",
+"флакон",
+"травы",
+"трансмутация"
+],
+"keywords_fr": [
+"alchimie",
+"potions",
+"elixirs",
+"flacons",
+"herbes"
+],
+"keywords_de": [
+"alchemie",
+"tränke",
+"elixiere",
+"fläschchen",
+"kräuter"
+],
+"keywords_es": [
+"alquimia",
+"pociones",
+"elixires",
+"frascos",
+"hierbas"
+]
+},
+{
+"id": "prof_blacksmithing",
+"title": "Blacksmithing",
+"category": "profession",
+"content": "Blacksmithing makes plate armor and melee weapons, plus sharpening stones and some keys. It uses ore and bars from Mining. Trainers are in every major city and most towns.",
+"keywords": [
+"blacksmithing",
+"blacksmith",
+"plate",
+"armor",
+"weapon",
+"weapons",
+"ore",
+"bar",
+"mining",
+"metal"
+],
+"keywords_ru": [
+"кузнечное дело",
+"кузнец",
+"латная броня",
+"оружие",
+"руда",
+"слиток",
+"металл"
+],
+"keywords_fr": [
+"forge",
+"forgeron",
+"armure",
+"arme",
+"minerai"
+],
+"keywords_de": [
+"schmiedekunst",
+"schmied",
+"rüstung",
+"waffe",
+"erz"
+],
+"keywords_es": [
+"herreria",
+"herrero",
+"armadura",
+"arma",
+"mineral"
+]
+},
+{
+"id": "prof_enchanting",
+"title": "Enchanting",
+"category": "profession",
+"content": "Enchanting adds permanent stat bonuses to your gear and can disenchant unwanted items into dusts, essences and shards used for enchanting. It needs no gathering profession, just unwanted gear. Trainers are in major cities.",
+"keywords": [
+"enchanting",
+"enchanter",
+"enchant",
+"disenchant",
+"dust",
+"shard",
+"essence",
+"gear",
+"stats"
+],
+"keywords_ru": [
+"зачарование",
+"зачаровать",
+"распыление",
+"пыль",
+"осколок",
+"эссенция",
+"характеристики"
+],
+"keywords_fr": [
+"enchantement",
+"enchanter",
+"poussiere",
+"eclat"
+],
+"keywords_de": [
+"verzauberkunst",
+"verzaubern",
+"staub",
+"splitter"
+],
+"keywords_es": [
+"encantamiento",
+"encantar",
+"polvo",
+"fragmento"
+]
+},
+{
+"id": "prof_engineering",
+"title": "Engineering",
+"category": "profession",
+"content": "Engineering crafts gadgets, explosives, goggles and mechanical items. It is powerful but sometimes random or unreliable. It uses ore and cloth. Goggles and trinkets are highly desired. Trainers are in major cities.",
+"keywords": [
+"engineering",
+"engineer",
+"gadget",
+"gadgets",
+"goggles",
+"explosive",
+"explosives",
+"trinket",
+"mechanical",
+"bomb"
+],
+"keywords_ru": [
+"инженерное дело",
+"инженер",
+"очки",
+"взрывчатка",
+"бомба",
+"гаджет"
+],
+"keywords_fr": [
+"ingenierie",
+"ingenieur",
+"lunettes",
+"explosifs"
+],
+"keywords_de": [
+"ingenieurskunst",
+"ingenieur",
+"schutzbrille",
+"sprengstoff"
+],
+"keywords_es": [
+"ingenieria",
+"ingeniero",
+"gafas",
+"explosivos"
+]
+},
+{
+"id": "prof_tailoring",
+"title": "Tailoring",
+"category": "profession",
+"content": "Tailoring makes cloth armor and bags, and some special cloths. It uses cloth drops from humanoids. Bags are always in demand. Trainers are in major cities.",
+"keywords": [
+"tailoring",
+"tailor",
+"cloth",
+"bag",
+"bags",
+"robe",
+"armor",
+"linen",
+"wool",
+"silk"
+],
+"keywords_ru": [
+"портняжное дело",
+"портной",
+"ткань",
+"сумка",
+"сумки",
+"мантии",
+"лен"
+],
+"keywords_fr": [
+"couture",
+"couturier",
+"tissu",
+"sac"
+],
+"keywords_de": [
+"schneiderei",
+"schneider",
+"stoff",
+"tasche"
+],
+"keywords_es": [
+"sastreria",
+"sastre",
+"tela",
+"bolsa"
+]
+},
+{
+"id": "prof_leatherworking",
+"title": "Leatherworking",
+"category": "profession",
+"content": "Leatherworking makes leather and mail armor, plus armor kits. It uses leather from Skinning. Druids, hunters, rogues and shamans benefit most. Trainers are in major cities.",
+"keywords": [
+"leatherworking",
+"leather",
+"mail",
+"armor",
+"skin",
+"skinning",
+"hide",
+"kit"
+],
+"keywords_ru": [
+"кожевничество",
+"кожа",
+"кольчужная броня",
+"снятие шкур",
+"нашивка"
+],
+"keywords_fr": [
+"travail du cuir",
+"cuir",
+"armure"
+],
+"keywords_de": [
+"lederverarbeitung",
+"leder",
+"rüstung"
+],
+"keywords_es": [
+"peleteria",
+"cuero",
+"armadura"
+]
+},
+{
+"id": "prof_jewelcrafting",
+"title": "Jewelcrafting",
+"category": "profession",
+"content": "Jewelcrafting cuts gems that socket into gear and crafts rings, necklaces and trinkets. It uses ores to prospect into gems. Introduced in The Burning Crusade; trainers are in Shattrath and major cities.",
+"keywords": [
+"jewelcrafting",
+"jewelcrafter",
+"gem",
+"gems",
+"socket",
+"ring",
+"necklace",
+"trinket",
+"prospect"
+],
+"keywords_ru": [
+"ювелирное дело",
+"ювелир",
+"самоцвет",
+"самоцветы",
+"гнездо",
+"кольцо",
+"ожерелье"
+],
+"keywords_fr": [
+"joaillerie",
+"gemme",
+"anneau",
+"collier"
+],
+"keywords_de": [
+"juwelenschleifen",
+"edelstein",
+"ring",
+"halskette"
+],
+"keywords_es": [
+"joyeria",
+"gema",
+"anillo",
+"collar"
+]
+},
+{
+"id": "prof_inscription",
+"title": "Inscription",
+"category": "profession",
+"content": "Inscription creates glyphs that modify your spells and abilities, plus scrolls and off-hand items. It uses herbs to mill into pigments. Introduced in Wrath of the Lich King; trainers are in major cities.",
+"keywords": [
+"inscription",
+"scribe",
+"glyph",
+"glyphs",
+"scroll",
+"scrolls",
+"mill",
+"pigment",
+"herb"
+],
+"keywords_ru": [
+"начертание",
+"символ",
+"символы",
+"свиток",
+"свитки",
+"пигмент",
+"травы"
+],
+"keywords_fr": [
+"calligraphie",
+"glyphe",
+"parchemin"
+],
+"keywords_de": [
+"inschriftenkunde",
+"glyphe",
+"schriftrolle"
+],
+"keywords_es": [
+"inscripcion",
+"glifo",
+"pergamino"
+]
+},
+{
+"id": "prof_herbalism",
+"title": "Herbalism",
+"category": "profession",
+"content": "Herbalism lets you gather herbs from nodes found in the world, used by Alchemy and Inscription. Herbs appear on your minimap once you learn the skill. Trainers are in major cities.",
+"keywords": [
+"herbalism",
+"herbalist",
+"herb",
+"herbs",
+"gather",
+"gathering",
+"node",
+"plant"
+],
+"keywords_ru": [
+"травничество",
+"травник",
+"травы",
+"сбор",
+"узел",
+"растение"
+],
+"keywords_fr": [
+"herboristerie",
+"herbe",
+"cueillette"
+],
+"keywords_de": [
+"kräuterkunde",
+"kraut",
+"sammeln"
+],
+"keywords_es": [
+"herboristeria",
+"hierba",
+"recoleccion"
+]
+},
+{
+"id": "prof_mining",
+"title": "Mining",
+"category": "profession",
+"content": "Mining lets you gather ore from mineral veins, used by Blacksmithing, Engineering and Jewelcrafting. Veins appear on your minimap once you learn the skill. Trainers are in major cities.",
+"keywords": [
+"mining",
+"miner",
+"ore",
+"vein",
+"node",
+"metal",
+"gather",
+"copper",
+"iron",
+"mithril"
+],
+"keywords_ru": [
+"горное дело",
+"шахтер",
+"руда",
+"жила",
+"металл",
+"медь",
+"железо",
+"мифрил"
+],
+"keywords_fr": [
+"minage",
+"mineur",
+"minerai",
+"veine"
+],
+"keywords_de": [
+"bergbau",
+"bergmann",
+"erz",
+"ader"
+],
+"keywords_es": [
+"mineria",
+"minero",
+"mineral",
+"veta"
+]
+},
+{
+"id": "prof_skinning",
+"title": "Skinning",
+"category": "profession",
+"content": "Skinning lets you skin leather from dead beasts, used by Leatherworking. You can also get scraps and occasionally meat. Trainers are in major cities.",
+"keywords": [
+"skinning",
+"skin",
+"leather",
+"hide",
+"beast",
+"gather"
+],
+"keywords_ru": [
+"снятие шкур",
+"кожа",
+"шкура",
+"зверь",
+"сбор"
+],
+"keywords_fr": [
+"dépeçage",
+"cuir",
+"peau"
+],
+"keywords_de": [
+"kürschnerei",
+"leder",
+"haut"
+],
+"keywords_es": [
+"desuello",
+"cuero",
+"piel"
+]
+},
+{
+"id": "prof_cooking",
+"title": "Cooking",
+"category": "profession",
+"content": "Cooking is a secondary profession (everyone can learn it) that turns meat and fish into food that restores health and grants temporary stat buffs. Trainers are in major cities and many towns.",
+"keywords": [
+"cooking",
+"cook",
+"food",
+"meat",
+"fish",
+"recipe",
+"meal",
+"buff"
+],
+"keywords_ru": [
+"кулинария",
+"повар",
+"еда",
+"мясо",
+"рыба",
+"рецепт",
+"блюдо"
+],
+"keywords_fr": [
+"cuisine",
+"nourriture",
+"viande",
+"poisson"
+],
+"keywords_de": [
+"kochkunst",
+"essen",
+"fleisch",
+"fisch"
+],
+"keywords_es": [
+"cocina",
+"comida",
+"carne",
+"pescado"
+]
+},
+{
+"id": "prof_first_aid",
+"title": "First Aid",
+"category": "profession",
+"content": "First Aid is a secondary profession (everyone can learn it) that bandages you mid-combat to restore health. It uses cloth. Trainers are in major cities.",
+"keywords": [
+"first aid",
+"bandage",
+"bandages",
+"cloth",
+"heal",
+"health"
+],
+"keywords_ru": [
+"первая помощь",
+"бинт",
+"бинты",
+"ткань",
+"лечение"
+],
+"keywords_fr": [
+"secourisme",
+"bandage"
+],
+"keywords_de": [
+"erste hilfe",
+"verband"
+],
+"keywords_es": [
+"primeros auxilios",
+"vendaje"
+]
+},
+{
+"id": "prof_fishing",
+"title": "Fishing",
+"category": "profession",
+"content": "Fishing is a secondary profession (everyone can learn it) that catches fish from water, used for Cooking or sold. It is slow but relaxing. Trainers are in major cities.",
+"keywords": [
+"fishing",
+"fish",
+"water",
+"rod",
+"bobber"
+],
+"keywords_ru": [
+"рыбная ловля",
+"рыба",
+"вода",
+"удочка",
+"поплавок"
+],
+"keywords_fr": [
+"pêche",
+"poisson",
+"eau"
+],
+"keywords_de": [
+"angeln",
+"fisch",
+"wasser"
+],
+"keywords_es": [
+"pesca",
+"pescado",
+"agua"
+]
+},
+{
+"id": "class_warrior",
+"title": "Warrior",
+"category": "class",
+"content": "Warriors are melee fighters who wear plate armor and can tank or deal damage. They use rage as a resource, generated by dealing and taking damage. They are slow to level but very durable.",
+"keywords": [
+"warrior",
+"melee",
+"tank",
+"plate",
+"rage",
+"arms",
+"fury",
+"protection"
+],
+"keywords_ru": [
+"воин",
+"ближний бой",
+"танк",
+"латная броня",
+"ярость"
+],
+"keywords_fr": [
+"guerrier",
+"melee",
+"tank"
+],
+"keywords_de": [
+"krieger",
+"nahkampf",
+"tank"
+],
+"keywords_es": [
+"guerrero",
+"cuerpo a cuerpo",
+"tanque"
+]
+},
+{
+"id": "class_paladin",
+"title": "Paladin",
+"category": "class",
+"content": "Paladins are holy warriors who wear plate and can tank, heal or deal damage. They use mana and have powerful auras and blessings. They can wear plate from level 40.",
+"keywords": [
+"paladin",
+"holy",
+"tank",
+"heal",
+"plate",
+"aura",
+"blessing",
+"mana"
+],
+"keywords_ru": [
+"паладин",
+"свет",
+"танк",
+"лечение",
+"аура",
+"благословение"
+],
+"keywords_fr": [
+"paladin",
+"tank",
+"soin"
+],
+"keywords_de": [
+"paladin",
+"tank",
+"heilung"
+],
+"keywords_es": [
+"paladin",
+"tanque",
+"curacion"
+]
+},
+{
+"id": "class_hunter",
+"title": "Hunter",
+"category": "class",
+"content": "Hunters are ranged damage dealers who tame and fight alongside a pet. They wear mail and use a bow or gun. Pets can tank for them while leveling, making hunters easy to solo with.",
+"keywords": [
+"hunter",
+"ranged",
+"pet",
+"mail",
+"bow",
+"gun",
+"beast",
+"tame"
+],
+"keywords_ru": [
+"охотник",
+"стрелок",
+"питомец",
+"лук",
+"ружье",
+"приручение"
+],
+"keywords_fr": [
+"chasseur",
+"distance",
+"familier"
+],
+"keywords_de": [
+"jäger",
+"fernkampf",
+"begleiter"
+],
+"keywords_es": [
+"cazador",
+"a distancia",
+"mascota"
+]
+},
+{
+"id": "class_rogue",
+"title": "Rogue",
+"category": "class",
+"content": "Rogues are stealthy melee damage dealers who wear leather and use energy plus combo points. They can pick locks and vanish. They are excellent at burst damage and crowd control.",
+"keywords": [
+"rogue",
+"stealth",
+"melee",
+"leather",
+"energy",
+"combo",
+"lockpick",
+"dagger"
+],
+"keywords_ru": [
+"разбойник",
+"скрытность",
+"ближний бой",
+"кожа",
+"энергия"
+],
+"keywords_fr": [
+"voleur",
+"discretion",
+"melee"
+],
+"keywords_de": [
+"schurke",
+"verstohlenheit",
+"nahkampf"
+],
+"keywords_es": [
+"picaro",
+"sigilo",
+"cuerpo a cuerpo"
+]
+},
+{
+"id": "class_priest",
+"title": "Priest",
+"category": "class",
+"content": "Priests are healers or shadow damage dealers who wear cloth and use mana. Holy priests are among the best healers; shadow priests deal damage over time.",
+"keywords": [
+"priest",
+"healer",
+"shadow",
+"cloth",
+"mana",
+"holy",
+"discipline"
+],
+"keywords_ru": [
+"жрец",
+"лекарь",
+"тьма",
+"ткань",
+"мана",
+"свет"
+],
+"keywords_fr": [
+"prêtre",
+"soigneur",
+"ombre"
+],
+"keywords_de": [
+"priester",
+"heiler",
+"schatten"
+],
+"keywords_es": [
+"sacerdote",
+"sanador",
+"sombra"
+]
+},
+{
+"id": "class_death_knight",
+"title": "Death Knight",
+"category": "class",
+"content": "Death Knights are hero class available from level 55. They wear plate and use runes and runic power. They can tank or deal damage.",
+"keywords": [
+"death knight",
+"hero class",
+"plate",
+"rune",
+"runic",
+"tank",
+"level 55"
+],
+"keywords_ru": [
+"рыцарь смерти",
+"героический класс",
+"латная броня",
+"руны",
+"сила рун"
+],
+"keywords_fr": [
+"chevalier de la mort",
+"tank"
+],
+"keywords_de": [
+"todesritter",
+"tank"
+],
+"keywords_es": [
+"caballero de la muerte",
+"tanque"
+]
+},
+{
+"id": "class_shaman",
+"title": "Shaman",
+"category": "class",
+"content": "Shamans wear mail and use totems to buff allies or damage enemies. They can heal, deal melee damage or cast elemental damage. They use mana.",
+"keywords": [
+"shaman",
+"totem",
+"mail",
+"heal",
+"elemental",
+"enhancement",
+"mana"
+],
+"keywords_ru": [
+"шаман",
+"тотем",
+"кольчужная броня",
+"лечение",
+"стихии"
+],
+"keywords_fr": [
+"chaman",
+"totem",
+"soin"
+],
+"keywords_de": [
+"schamane",
+"totem",
+"heilung"
+],
+"keywords_es": [
+"chaman",
+"totem",
+"curacion"
+]
+},
+{
+"id": "class_mage",
+"title": "Mage",
+"category": "class",
+"content": "Mages are ranged damage dealers who wear cloth and use mana. They have powerful area damage, crowd control, and can conjure food, water and portals.",
+"keywords": [
+"mage",
+"ranged",
+"cloth",
+"mana",
+"frost",
+"fire",
+"arcane",
+"portal",
+"teleport"
+],
+"keywords_ru": [
+"маг",
+"стрелок",
+"ткань",
+"мана",
+"лед",
+"огонь",
+"тайная магия",
+"портал"
+],
+"keywords_fr": [
+"mage",
+"distance",
+"portail"
+],
+"keywords_de": [
+"magier",
+"fernkampf",
+"portal"
+],
+"keywords_es": [
+"mago",
+"a distancia",
+"portal"
+]
+},
+{
+"id": "class_warlock",
+"title": "Warlock",
+"category": "class",
+"content": "Warlocks are ranged damage dealers who wear cloth and command demons. They use mana and soul shards, and can summon allies and healthstones.",
+"keywords": [
+"warlock",
+"demon",
+"cloth",
+"mana",
+"soul",
+"pet",
+"affliction",
+"demonology",
+"destruction"
+],
+"keywords_ru": [
+"чернокнижник",
+"демон",
+"ткань",
+"мана",
+"душа",
+"питомец"
+],
+"keywords_fr": [
+"démoniste",
+"démon",
+"familier"
+],
+"keywords_de": [
+"hexenmeister",
+"dämon",
+"begleiter"
+],
+"keywords_es": [
+"brujo",
+"demonio",
+"mascota"
+]
+},
+{
+"id": "class_druid",
+"title": "Druid",
+"category": "class",
+"content": "Druids are versatile shapeshifters who wear leather and can tank (bear), deal melee damage (cat), heal, or cast spells. They can shapeshift at level 10 and are excellent soloers.",
+"keywords": [
+"druid",
+"shapeshift",
+"bear",
+"cat",
+"leather",
+"heal",
+"tank",
+"moonkin",
+"balance"
+],
+"keywords_ru": [
+"друид",
+"оборотень",
+"медведь",
+"кошка",
+"кожа",
+"лечение",
+"танк"
+],
+"keywords_fr": [
+"druide",
+"métamorphose",
+"ours",
+"chat"
+],
+"keywords_de": [
+"druide",
+"verwandlung",
+"bär",
+"katze"
+],
+"keywords_es": [
+"druida",
+"transformacion",
+"oso",
+"gato"
+]
+},
+{
+"id": "mount_ground",
+"title": "Ground mounts",
+"category": "mechanics",
+"content": "You learn riding at level 20 (75% speed) for a few gold, and again at level 40 (100% speed). Mounts are bought from your race's mount vendor. Paladins and warlocks get class mounts for free.",
+"keywords": [
+"mount",
+"riding",
+"level 20",
+"level 40",
+"speed",
+"horse",
+"wolf",
+"kodo",
+"raptor",
+"ram"
+],
+"keywords_ru": [
+"ездовое животное",
+"верховая езда",
+"20 уровень",
+"40 уровень",
+"скорость",
+"лошадь",
+"волк",
+"ящер"
+],
+"keywords_fr": [
+"monture",
+"monter",
+"equitation",
+"vitesse"
+],
+"keywords_de": [
+"reittier",
+"reiten",
+"geschwindigkeit"
+],
+"keywords_es": [
+"montura",
+"montar",
+"equitacion",
+"velocidad"
+]
+},
+{
+"id": "mount_flying",
+"title": "Flying mounts",
+"category": "mechanics",
+"content": "Flying is available in Outland and Northrend. Learn flying at level 60 (Outland) and cold weather flying at level 77 (Northrend). You must buy the flying license from a trainer.",
+"keywords": [
+"flying",
+"fly",
+"flight",
+"outland",
+"northrend",
+"cold weather",
+"level 60",
+"level 77"
+],
+"keywords_ru": [
+"полет",
+"летающее средство",
+"запределье",
+"нордскол",
+"60 уровень",
+"77 уровень"
+],
+"keywords_fr": [
+"vol",
+"voler",
+"outreterre",
+"northrend"
+],
+"keywords_de": [
+"fliegen",
+"flug",
+"scherbenwelt",
+"nordend"
+],
+"keywords_es": [
+"volar",
+"vuelo",
+"terrallende",
+"northrend"
+]
+},
+{
+"id": "talents",
+"title": "Talents",
+"category": "mechanics",
+"content": "You gain talent points starting at level 10, one per level. Talents are spent in three trees to specialize. Dual specialization can be bought at level 40 from your class trainer.",
+"keywords": [
+"talent",
+"talents",
+"talent tree",
+"specialization",
+"dual spec",
+"level 10",
+"level 40",
+"build"
+],
+"keywords_ru": [
+"таланты",
+"дерево талантов",
+"специализация",
+"двойная специализация",
+"10 уровень",
+"40 уровень"
+],
+"keywords_fr": [
+"talents",
+"specialisation",
+"double specialisation"
+],
+"keywords_de": [
+"talente",
+"spezialisierung"
+],
+"keywords_es": [
+"talentos",
+"especializacion",
+"doble especializacion"
+]
+},
+{
+"id": "gold",
+"title": "Earning gold",
+"category": "mechanics",
+"content": "Earn gold by questing, selling loot and gathered materials on the Auction House, and doing daily quests. Professions like mining, herbalism and skinning sell well. Don't buy every skill rank you don't need.",
+"keywords": [
+"gold",
+"money",
+"earn",
+"rich",
+"auction house",
+"sell",
+"quest",
+"daily",
+"farming"
+],
+"keywords_ru": [
+"золото",
+"деньги",
+"заработать",
+"аукцион",
+"продать",
+"задание",
+"фарм"
+],
+"keywords_fr": [
+"or",
+"argent",
+"gagner",
+"hotel des ventes"
+],
+"keywords_de": [
+"gold",
+"geld",
+"verdienen"
+],
+"keywords_es": [
+"oro",
+"dinero",
+"ganar",
+"casa de subastas"
+]
+},
+{
+"id": "auction_house",
+"title": "Auction House",
+"category": "mechanics",
+"content": "The Auction House lets you buy and sell items with other players. It is in every capital city. Gathered materials (ore, herbs, leather, cloth) usually sell well. Check prices before selling.",
+"keywords": [
+"auction house",
+"auction",
+"buy",
+"sell",
+"market",
+"price",
+"gold"
+],
+"keywords_ru": [
+"аукцион",
+"аукционный дом",
+"купить",
+"продать",
+"цена",
+"золото"
+],
+"keywords_fr": [
+"hotel des ventes",
+"vendre",
+"acheter"
+],
+"keywords_de": [
+"auktionshaus",
+"verkaufen",
+"kaufen"
+],
+"keywords_es": [
+"casa de subastas",
+"vender",
+"comprar"
+]
+},
+{
+"id": "bank",
+"title": "Bank",
+"category": "mechanics",
+"content": "Banks store your items and gold. Visit a banker in any major city to deposit items you don't need to carry. You can buy extra bag slots.",
+"keywords": [
+"bank",
+"banker",
+"storage",
+"deposit",
+"bag",
+"inventory",
+"vault"
+],
+"keywords_ru": [
+"банк",
+"банкир",
+"хранилище",
+"вклад",
+"сумка",
+"инвентарь"
+],
+"keywords_fr": [
+"banque",
+"depot",
+"stockage"
+],
+"keywords_de": [
+"bank",
+"lager",
+"aufbewahren"
+],
+"keywords_es": [
+"banco",
+"almacenar",
+"guardar"
+]
+},
+{
+"id": "flight_paths",
+"title": "Flight paths",
+"category": "mechanics",
+"content": "Flight masters let you fly between discovered locations for a small fee. Discover new flight points by visiting towns and talking to their flight master.",
+"keywords": [
+"flight path",
+"flight master",
+"fly",
+"travel",
+"taxi",
+"gryphon",
+"wyvern"
+],
+"keywords_ru": [
+"полет",
+"распорядитель полетов",
+"путешествие",
+"грифон",
+"виверна"
+],
+"keywords_fr": [
+"maitre de vol",
+"voyage",
+"voler"
+],
+"keywords_de": [
+"flugmeister",
+"reisen",
+"fliegen"
+],
+"keywords_es": [
+"maestro de vuelo",
+"viajar",
+"volar"
+]
+},
+{
+"id": "hearthstone",
+"title": "Hearthstone",
+"category": "mechanics",
+"content": "Your Hearthstone teleports you back to the inn you are bound to. Talk to an innkeeper to set your home location. It has a 30 minute cooldown.",
+"keywords": [
+"hearthstone",
+"hearth",
+"teleport",
+"inn",
+"innkeeper",
+"home",
+"cooldown"
+],
+"keywords_ru": [
+"камень возвращения",
+"телепорт",
+"таверна",
+"трактирщик",
+"дом"
+],
+"keywords_fr": [
+"pierre de foyer",
+"auberge",
+"teleportation"
+],
+"keywords_de": [
+"ruhestein",
+"gasthaus",
+"teleport"
+],
+"keywords_es": [
+"piedra de hogar",
+"posada",
+"teletransporte"
+]
+},
+{
+"id": "dungeon_levels",
+"title": "Dungeon level ranges",
+"category": "dungeon",
+"content": "Dungeons are 5-player group content at set level ranges: Ragefire Chasm and Deadmines around level 15-20, Scarlet Monastery around 30-40, Scholomance and Stratholme around 55-60, and Northrend dungeons at 70-80.",
+"keywords": [
+"dungeon",
+"instance",
+"group",
+"level",
+"deadmines",
+"scarlet monastery",
+"stratholme",
+"northrend",
+"ragefire"
+],
+"keywords_ru": [
+"подземелье",
+"данж",
+"группа",
+"уровень",
+"мертвые копи",
+"алый монастырь",
+"стратхольм"
+],
+"keywords_fr": [
+"donjon",
+"instance",
+"groupe"
+],
+"keywords_de": [
+"instanz",
+"dungeon",
+"gruppe"
+],
+"keywords_es": [
+"mazmorra",
+"instancia",
+"grupo"
+]
+},
+{
+"id": "raids",
+"title": "Raids",
+"category": "dungeon",
+"content": "Raids are large-group content for 10 or 25 players. Classic raids include Molten Core, Blackwing Lair and Ahn'Qiraj; Burning Crusade raids include Karazhan; Wrath raids include Naxxramas, Ulduar and Icecrown Citadel.",
+"keywords": [
+"raid",
+"raids",
+"molten core",
+"blackwing lair",
+"karazhan",
+"naxxramas",
+"ulduar",
+"icecrown",
+"10 man",
+"25 man"
+],
+"keywords_ru": [
+"рейд",
+"огненные недра",
+"каражан",
+"наксрамас",
+"улдуар",
+"цитадель ледяной короны"
+],
+"keywords_fr": [
+"raid",
+"groupe",
+"naxxramas"
+],
+"keywords_de": [
+"schlachtzug",
+"raid",
+"gruppe"
+],
+"keywords_es": [
+"banda",
+"raid",
+"grupo"
+]
+},
+{
+"id": "zone_levels",
+"title": "Zone level ranges",
+"category": "zone",
+"content": "Zones scale by level. Starter zones are 1-10, then Barrens/Westfall/Darkshore 10-20, Stranglethorn and Hillsbrad 30-40, Tanaris and Feralas 40-50, Un'Goro and Felwood 50-60, then Outland 60-70 and Northrend 70-80.",
+"keywords": [
+"zone",
+"level",
+"barrens",
+"westfall",
+"darkshore",
+"stranglethorn",
+"tanaris",
+"outland",
+"northrend"
+],
+"keywords_ru": [
+"зона",
+"уровень",
+"степи",
+"западный край",
+"темные берега",
+"танарис",
+"запределье",
+"нордскол"
+],
+"keywords_fr": [
+"zone",
+"niveau",
+"northrend"
+],
+"keywords_de": [
+"gebiet",
+"stufe",
+"zone"
+],
+"keywords_es": [
+"zona",
+"nivel",
+"northrend"
+]
+},
+{
+"id": "dual_spec",
+"title": "Dual specialization",
+"category": "mechanics",
+"content": "Dual specialization lets you keep two talent builds and swap between them. Buy it at level 40 from your class trainer for 1000 gold.",
+"keywords": [
+"dual spec",
+"dual specialization",
+"talent",
+"respec",
+"level 40",
+"1000 gold",
+"swap"
+],
+"keywords_ru": [
+"двойная специализация",
+"таланты",
+"40 уровень",
+"1000 золота"
+],
+"keywords_fr": [
+"double specialisation",
+"talents"
+],
+"keywords_de": [
+"doppelte spezialisierung"
+],
+"keywords_es": [
+"doble especializacion",
+"talentos"
+]
+},
+{
+"id": "profession_training",
+"title": "Learning professions",
+"category": "profession",
+"content": "To learn a profession, find a profession trainer in a major city and ask a guard for directions. You can have two primary professions and all three secondary ones (Cooking, First Aid, Fishing).",
+"keywords": [
+"profession",
+"trainer",
+"learn",
+"primary",
+"secondary",
+"skill",
+"apprentice"
+],
+"keywords_ru": [
+"профессия",
+"учитель",
+"обучение",
+"навык",
+"основная",
+"вспомогательная"
+],
+"keywords_fr": [
+"profession",
+"maitre",
+"apprendre"
+],
+"keywords_de": [
+"beruf",
+"lehrer",
+"lernen"
+],
+"keywords_es": [
+"profesion",
+"maestro",
+"aprender"
+]
+},
+{
+"id": "dungeon_deadmines",
+"title": "Deadmines",
+"category": "dungeon",
+"content": "Deadmines is a 5-player dungeon in Westfall for levels 15-22. It is in the Defias brotherhood's mine and ends with the boss Edwin VanCleef. Good early gear and the Defias questline rewards.",
+"keywords": [
+"deadmines",
+"westfall",
+"defias",
+"van cleef",
+"level 15"
+],
+"keywords_ru": [
+"мертвые копи",
+"западный край",
+"дефиас",
+"15 уровень"
+],
+"keywords_fr": [
+"mines mortes",
+"westfall",
+"defias"
+],
+"keywords_de": [
+"todesminen",
+"westfall",
+"defias"
+],
+"keywords_es": [
+"minas muertas",
+"westfall",
+"defias"
+]
+},
+{
+"id": "dungeon_scarlet",
+"title": "Scarlet Monastery",
+"category": "dungeon",
+"content": "Scarlet Monastery is a 4-wing dungeon in Tirisfal Glades for levels 30-40. It has good cloth and caster gear, plus the famous Scarlet Crusade lore. Wings: Graveyard, Library, Armory, Cathedral.",
+"keywords": [
+"scarlet monastery",
+"tirisfal",
+"level 30",
+"armory",
+"cathedral",
+"graveyard",
+"library"
+],
+"keywords_ru": [
+"алый монастырь",
+"тирисфальские леса",
+"30 уровень",
+"арсенал",
+"собор",
+"кладбище",
+"библиотека"
+],
+"keywords_fr": [
+"monastere ecarlate",
+"tirisfal"
+],
+"keywords_de": [
+"scharlachrotes kloster",
+"tirisfal"
+],
+"keywords_es": [
+"monasterio escarlata",
+"tirisfal"
+]
+},
+{
+"id": "dungeon_stratholme",
+"title": "Stratholme",
+"category": "dungeon",
+"content": "Stratholme is a 5-player dungeon in the Eastern Plaguelands for levels 55-60. It is the ruined city from the Third War, filled with undead. Baron Rivendare drops the rare Deathcharger mount.",
+"keywords": [
+"stratholme",
+"eastern plaguelands",
+"level 55",
+"undead",
+"rivendare",
+"deathcharger"
+],
+"keywords_ru": [
+"стратхольм",
+"восточные чумные земли",
+"55 уровень",
+"нежить",
+"ривендер"
+],
+"keywords_fr": [
+"stratholme",
+"maleterres de lest"
+],
+"keywords_de": [
+"stratholme",
+"östliche pestländer"
+],
+"keywords_es": [
+"stratholme",
+"tierras de la peste"
+]
+},
+{
+"id": "dungeon_utgarde",
+"title": "Utgarde Keep",
+"category": "dungeon",
+"content": "Utgarde Keep is a 5-player dungeon in Howling Fjord, Northrend, for levels 70-72. It is the first dungeon most players do in Wrath of the Lich King.",
+"keywords": [
+"utgarde",
+"howling fjord",
+"northrend",
+"level 70"
+],
+"keywords_ru": [
+"утгард",
+"ревущий фьорд",
+"нордскол",
+"70 уровень"
+],
+"keywords_fr": [
+"donjon utgarde",
+"fjord hurlant"
+],
+"keywords_de": [
+"burg utgard",
+"heulender fjord"
+],
+"keywords_es": [
+"fortaleza utgard",
+"fiordo aquilonal"
+]
+},
+{
+"id": "zone_elwynn",
+"title": "Elwynn Forest",
+"category": "zone",
+"content": "Elwynn Forest is the human starter zone for levels 1-10, around Stormwind. Peaceful woods, farms and the Defias threat.",
+"keywords": [
+"elwynn",
+"stormwind",
+"human",
+"level 1",
+"starter"
+],
+"keywords_ru": [
+"элвинский лес",
+"штормград",
+"человек",
+"1 уровень"
+],
+"keywords_fr": [
+"foret d elwynn",
+"stormwind"
+],
+"keywords_de": [
+"elwynnwald",
+"sturmwind"
+],
+"keywords_es": [
+"bosque de elwynn",
+"ventormenta"
+]
+},
+{
+"id": "zone_westfall",
+"title": "Westfall",
+"category": "zone",
+"content": "Westfall is a level 10-20 zone south of Elwynn, known for its farms, the Defias brotherhood and the Deadmines.",
+"keywords": [
+"westfall",
+"level 10",
+"defias",
+"deadmines"
+],
+"keywords_ru": [
+"западный край",
+"10 уровень",
+"дефиас"
+],
+"keywords_fr": [
+"westfall",
+"marche de louest"
+],
+"keywords_de": [
+"westfall"
+],
+"keywords_es": [
+"westfall",
+"los prados del oeste"
+]
+},
+{
+"id": "zone_barrens",
+"title": "The Barrens",
+"category": "zone",
+"content": "The Barrens is a large Horde zone for levels 10-25, known for its savanna, quillboars and the Wailing Caverns. It is a classic Horde leveling zone.",
+"keywords": [
+"barrens",
+"horde",
+"level 10",
+"wailing caverns",
+"quillboar"
+],
+"keywords_ru": [
+"степи",
+"орда",
+"10 уровень",
+"пещеры стенаний"
+],
+"keywords_fr": [
+"tarides",
+"horde"
+],
+"keywords_de": [
+"brachland",
+"horde"
+],
+"keywords_es": [
+"los baldios",
+"horda"
+]
+},
+{
+"id": "zone_stranglethorn",
+"title": "Stranglethorn Vale",
+"category": "zone",
+"content": "Stranglethorn Vale is a level 30-45 jungle zone known for trolls, pirates, and the Booty Bay goblin town. It has many PvP encounters.",
+"keywords": [
+"stranglethorn",
+"booty bay",
+"level 30",
+"troll",
+"jungle"
+],
+"keywords_ru": [
+"тернистая долина",
+"пиратская бухта",
+"30 уровень",
+"тролль",
+"джунгли"
+],
+"keywords_fr": [
+"vallee de strangleronce",
+"baie du butin"
+],
+"keywords_de": [
+"schlingendorntal",
+"beutebucht"
+],
+"keywords_es": [
+"valle de tuercespina",
+"bahia del botin"
+]
+},
+{
+"id": "mech_bags",
+"title": "Bags",
+"category": "mechanics",
+"content": "Bags expand your inventory. You start with a 16-slot backpack and can equip four extra bags. Bigger bags (14-18 slots) are crafted by tailors or bought at the Auction House.",
+"keywords": [
+"bag",
+"bags",
+"inventory",
+"backpack",
+"slots",
+"storage"
+],
+"keywords_ru": [
+"сумка",
+"сумки",
+"инвентарь",
+"рюкзак",
+"ячейки"
+],
+"keywords_fr": [
+"sac",
+"sacs",
+"inventaire"
+],
+"keywords_de": [
+"tasche",
+"taschen",
+"inventar"
+],
+"keywords_es": [
+"bolsa",
+"bolsas",
+"inventario"
+]
+},
+{
+"id": "mech_reputation",
+"title": "Reputation",
+"category": "mechanics",
+"content": "Reputation tracks your standing with factions, from Hated to Exalted. Earn it through quests and kills. High reputation unlocks special rewards, discounts and mounts.",
+"keywords": [
+"reputation",
+"faction",
+"exalted",
+"honored",
+"revered",
+"grind"
+],
+"keywords_ru": [
+"репутация",
+"фракция",
+"превознесение",
+"уважение"
+],
+"keywords_fr": [
+"reputation",
+"faction",
+"exalte"
+],
+"keywords_de": [
+"ruf",
+"fraktion",
+"ehrfürchtig"
+],
+"keywords_es": [
+"reputacion",
+"faccion",
+"exaltado"
+]
+},
+{
+"id": "mech_rest_xp",
+"title": "Rest XP",
+"category": "mechanics",
+"content": "Rest XP doubles experience from kills while you are logged out in an inn or capital city. It builds up over time. Log out in an inn to earn it.",
+"keywords": [
+"rest",
+"rested",
+"inn",
+"experience",
+"double xp",
+"bonus"
+],
+"keywords_ru": [
+"отдых",
+"таверна",
+"опыт",
+"двойной опыт"
+],
+"keywords_fr": [
+"repos",
+"auberge",
+"experience"
+],
+"keywords_de": [
+"ruhe",
+"gasthaus",
+"erfahrung"
+],
+"keywords_es": [
+"descanso",
+"posada",
+"experiencia"
+]
+},
+{
+"id": "mech_battlegrounds",
+"title": "Battlegrounds",
+"category": "mechanics",
+"content": "Battlegrounds are PvP arenas like Warsong Gulch (10-19 and up), Arathi Basin, and Alterac Valley. Join from the PvP menu. They reward honor points and marks.",
+"keywords": [
+"battleground",
+"pvp",
+"warsong",
+"arathi",
+"alterac",
+"honor"
+],
+"keywords_ru": [
+"поле боя",
+"пвп",
+"ущелье песни войны",
+"низина арати",
+"альтерак"
+],
+"keywords_fr": [
+"champ de bataille",
+"jcp",
+"joug de guerre"
+],
+"keywords_de": [
+"schlachtfeld",
+"pvp"
+],
+"keywords_es": [
+"campo de batalla",
+"jce",
+"juj"
+]
+},
+{
+"id": "mech_glyphs",
+"title": "Glyphs",
+"category": "mechanics",
+"content": "Glyphs modify your spells and abilities. You unlock glyph slots at level 15, 30, 50, 70 and 80. Glyphs are made by Scribes (Inscription).",
+"keywords": [
+"glyph",
+"glyphs",
+"inscription",
+"scribe",
+"spell",
+"ability"
+],
+"keywords_ru": [
+"символ",
+"символы",
+"начертание",
+"заклинание"
+],
+"keywords_fr": [
+"glyphe",
+"calligraphie"
+],
+"keywords_de": [
+"glyphe",
+"inschriftenkunde"
+],
+"keywords_es": [
+"glifo",
+"inscripcion"
+]
+},
+{
+"id": "mech_daily_quests",
+"title": "Daily quests",
+"category": "mechanics",
+"content": "Daily quests are repeatable quests that reset every day and reward gold, reputation or tokens. They are marked with a blue exclamation mark and appear at level 70 in Outland and Northrend.",
+"keywords": [
+"daily",
+"daily quest",
+"repeatable",
+"gold",
+"reputation",
+"tokens"
+],
+"keywords_ru": [
+"ежедневные задания",
+"повторяемые",
+"золото",
+"репутация"
+],
+"keywords_fr": [
+"journalieres",
+"quotidiennes",
+"repetables"
+],
+"keywords_de": [
+"tägliche quests"
+],
+"keywords_es": [
+"diarias",
+"misiones diarias",
+"repetibles"
+]
+}
 ]

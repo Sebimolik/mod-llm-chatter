@@ -31,6 +31,13 @@ _QUESTION_WORDS = {
     "как", "что", "где", "кто", "почему", "когда", "какой",
     "какая", "какое", "какие", "куда", "зачем", "можно",
     "подскажи", "расскажи", "сколько",
+    # fr / de / es question words
+    "comment", "combien", "pourquoi", "quand", "quelle",
+    "quel", "quels", "quelles", "qui", "que", "quoi",
+    "wie", "wo", "was", "warum", "wann", "welche",
+    "welcher", "welches", "wer", "kommentar",
+    "como", "cuando", "cuanto", "cuanta", "donde",
+    "cual", "cuales", "quien", "quienes", "porque",
 }
 
 _STOPWORDS = _QUESTION_WORDS | {
@@ -42,7 +49,31 @@ _STOPWORDS = _QUESTION_WORDS | {
     "стать", "научиться", "научится", "могу", "смогу",
     "сможет", "получить", "стоит", "стоят", "заработать",
     "нужна", "нужен", "хочу", "хочешь",
+    # fr articles/prepositions
+    "la", "le", "les", "de", "des", "du", "un", "une", "et",
+    "ou", "est", "sont", "je", "tu", "il", "elle", "nous",
+    "vous", "pour", "avec", "dans", "sur", "apprendre",
+    "obtenir", "trouver", "acheter", "vendre", "avoir",
+    # de articles/prepositions
+    "der", "die", "das", "ein", "eine", "einen", "und",
+    "oder", "fur", "mit", "ich", "du", "man", "ist", "sind",
+    "lernen", "bekommen", "finden", "kaufen", "verkaufen",
+    # es articles/prepositions
+    "el", "los", "las", "una", "uno", "unos", "unas", "del",
+    "y", "es", "son", "yo", "tu", "para", "con", "aprender",
+    "obtener", "encontrar", "comprar", "vender", "tener",
 }
+
+
+_ACCENT_MAP = str.maketrans({
+    'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a', 'ã': 'a',
+    'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+    'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+    'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o', 'õ': 'o',
+    'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+    'ç': 'c', 'ñ': 'n', 'ß': 'ss',
+    'ý': 'y', 'ÿ': 'y',
+})
 
 _knowledge = None
 
@@ -67,7 +98,8 @@ def _load_knowledge():
 
 
 def _normalize(text):
-    return set(re.sub(r"[^\w\s]", " ", str(text).lower()).split())
+    t = str(text).lower().translate(_ACCENT_MAP)
+    return set(re.sub(r"[^\w\s]", " ", t).split())
 
 
 def is_gameplay_question(text):
@@ -129,10 +161,12 @@ def retrieve_wow_knowledge(text, max_items=3, threshold=1):
     scored = []
     for entry in entries:
         hay = _normalize(entry.get("title", ""))
-        for kw in entry.get("keywords", []) + entry.get(
-            "keywords_ru", []
-        ):
-            hay |= _normalize(kw)
+        # Collect every keywords_* list (en, ru, fr, de, es, ...)
+        # so adding a new language is purely a data change.
+        for key, val in entry.items():
+            if key.startswith("keywords") and isinstance(val, list):
+                for kw in val:
+                    hay |= _normalize(kw)
         overlap = sum(
             1 for q in q_tokens if _token_matches(q, hay)
         )
