@@ -157,6 +157,14 @@ _IMPORTANCE_RUBRIC = (
 DEFAULT_DECAY_MAX_IMPORTANCE = 3
 DEFAULT_DECAY_DAYS = 30
 
+# Condensation defaults (see LLMChatter.Memory.Condensation.*
+# in conf.dist and _maybe_trigger_condensation() /
+# _condense_low_value_memories() below).
+DEFAULT_CONDENSATION_TRIGGER_PERCENT = 80
+DEFAULT_CONDENSATION_PROTECT_FLOOR = 7
+DEFAULT_CONDENSATION_MIN_CANDIDATES = 4
+DEFAULT_CONDENSATION_MAX_DIGESTS = 2
+
 
 def _effective_score_sql(config=None):
     """Build the decay-aware "effective importance" SQL
@@ -215,6 +223,30 @@ relationship_executor = ThreadPoolExecutor(
 # LLMChatter.Memory.Relationship.* in the conf.dist for the
 # tunables that are).
 _RELATIONSHIP_MAX_INPUT_CHARS = 6000
+
+# Separate, single-worker pool for low-value-memory
+# condensation (see _maybe_trigger_condensation() /
+# _condense_low_value_memories() below). Kept independent
+# from both memory_executor (primary memory-generation
+# throughput) and relationship_executor -- condensation makes
+# its own LLM call and should never queue behind, or compete
+# with, either of those.
+condensation_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="condense",
+)
+
+# Set of (bot_guid, player_guid) pairs that currently have a
+# condensation job in flight (submitted to
+# condensation_executor but not yet finished). Guards against
+# duplicate submission when multiple concurrent inserts for
+# the same pair independently cross the
+# LLMChatter.Memory.Condensation.TriggerPercent threshold in
+# _maybe_trigger_condensation() -- cleared in
+# _condense_low_value_memories()'s finally block so a failed
+# run never permanently blocks future attempts.
+_condensing_pairs = set()
+_condensing_lock = threading.Lock()
 
 # ============================================================
 # THREAD-SAFE SESSION TRACKER
@@ -663,23 +695,24 @@ def _count_active_memories(cursor, bot_guid, player_guid):
     return row[0] if row else 0
 
 
-def _evict_one_used(
-    cursor, conn, bot_guid, player_guid, config=None,
-):
-    """Evict the least valuable memory to make room.
+def _top_row_exclusion_sql(score_sql):
+    """SQL fragment excluding a bot-player pair's single
+    highest-effective_score active row.
 
-    Prefers the lowest decay-aware effective_score
-    used=1 row (created_at ASC breaks ties), falling
-    back to the lowest-scoring row regardless of used
-    status so a pool full of unread memories can't
-    deadlock the cap. Both queries exclude the pair's
-    single highest-scoring row, so a bot never forgets
-    its most valuable memory about a player.
+    Shared by _evict_one_used() (never evict a bot's most
+    valuable memory of a player) and
+    _get_condensation_candidates() (never condense it away
+    either) so the "most valuable memory is always
+    protected" guarantee lives in exactly one place instead
+    of two near-identical copies of this subquery.
 
-    Returns True if a row was deleted.
+    MySQL requires the extra subquery wrapping since you
+    can't otherwise select from the same table you're
+    filtering against. Requires two extra (bot_guid,
+    player_guid) query parameters supplied by the caller, in
+    addition to whatever its own WHERE clause already needs.
     """
-    score_sql = _effective_score_sql(config)
-    top_row_subquery = (
+    return (
         " AND id != (SELECT id FROM ("
         "SELECT id FROM llm_bot_memories"
         " WHERE bot_guid = %s"
@@ -691,6 +724,26 @@ def _evict_one_used(
         " LIMIT 1"
         ") t)"
     )
+
+
+def _evict_one_used(
+    cursor, conn, bot_guid, player_guid, config=None,
+):
+    """Evict the least valuable memory to make room.
+
+    Prefers the lowest decay-aware effective_score
+    used=1 row (created_at ASC breaks ties), falling
+    back to the lowest-scoring row regardless of used
+    status so a pool full of unread memories can't
+    deadlock the cap. Both queries exclude the pair's
+    single highest-scoring row (see
+    _top_row_exclusion_sql()), so a bot never forgets
+    its most valuable memory about a player.
+
+    Returns True if a row was deleted.
+    """
+    score_sql = _effective_score_sql(config)
+    top_row_subquery = _top_row_exclusion_sql(score_sql)
     cursor.execute(
         "DELETE FROM llm_bot_memories"
         " WHERE bot_guid = %s"
@@ -811,7 +864,459 @@ def _ensure_cap_and_insert(
             session["vibe"] = mood
             session["vibe_set_at"] = time.time()
 
+    # Proactive condensation trigger: check the pair's
+    # active count AFTER the insert above (and any eviction
+    # that made room for it) so this reads the pool's real
+    # current size, not a pre-insert snapshot.
+    new_count = _count_active_memories(
+        cursor, bot_guid, player_guid
+    )
+    _maybe_trigger_condensation(
+        config, bot_guid, player_guid, new_count, max_per,
+    )
+
     return True
+
+
+# ============================================================
+# CONDENSATION (background, low-value memory folding)
+# ============================================================
+#
+# Proactively folds a bot-player pair's low-value memories
+# into 1-2 higher-quality digests BEFORE the hard row cap is
+# hit, since a reactive trigger (checking at the cap) would
+# race against _ensure_cap_and_insert()'s synchronous
+# eviction above -- eviction always wins that race (it runs
+# inline, condensation would need an LLM round-trip), so by
+# the time a reactive condensation pass finished, eviction
+# would already have deleted the very rows it meant to fold.
+# ============================================================
+
+def _insert_memory_row(
+    cursor, bot_guid, player_guid, group_id,
+    memory_type, memory_text, mood, emote,
+    active, session_start, importance, zone_id=None,
+    used=0,
+):
+    """Insert one llm_bot_memories row directly, bypassing
+    _ensure_cap_and_insert()'s cap/threshold checks.
+
+    Used by _condense_low_value_memories() to insert digest
+    rows: routing those through the public
+    _ensure_cap_and_insert() would re-trigger the cap and
+    condensation-threshold checks recursively while a
+    condensation pass is already in flight for this exact
+    pair. Does NOT commit -- the caller controls the
+    transaction boundary (digest insert(s) + source deletes
+    share one commit, see _condense_low_value_memories()).
+    """
+    cursor.execute(
+        "INSERT INTO llm_bot_memories"
+        " (bot_guid, player_guid,"
+        "  group_id, memory_type,"
+        "  memory, mood, emote,"
+        "  active, used, session_start,"
+        "  importance_score, zone_id)"
+        " VALUES"
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (
+            bot_guid, player_guid,
+            group_id, memory_type,
+            memory_text, mood, emote,
+            active, used, session_start,
+            importance, zone_id,
+        ),
+    )
+
+
+def _get_condensation_candidates(
+    cursor, bot_guid, player_guid, config,
+):
+    """Fetch this pair's condensation candidates: active
+    rows scored below
+    LLMChatter.Memory.Condensation.ProtectFloor, excluding
+    the pair's single highest-effective_score row (same
+    guard _evict_one_used() uses, via
+    _top_row_exclusion_sql()), ordered by effective_score
+    ascending (least valuable first).
+    """
+    score_sql = _effective_score_sql(config)
+    protect_floor = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.ProtectFloor',
+        DEFAULT_CONDENSATION_PROTECT_FLOOR,
+    ))
+    cursor.execute(
+        "SELECT id, group_id, memory, importance_score, "
+        + score_sql + " AS effective_score"
+        " FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        "   AND importance_score < %s"
+        + _top_row_exclusion_sql(score_sql) +
+        " ORDER BY effective_score ASC, created_at ASC",
+        (
+            bot_guid, player_guid, protect_floor,
+            bot_guid, player_guid,
+        ),
+    )
+    return cursor.fetchall()
+
+
+def _build_condensation_prompt(candidates, max_digests):
+    """Build the LLM prompt for condensing a batch of
+    low-value memories into 1-max_digests higher-level
+    digest memories.
+
+    Follows the same prompt-building convention as
+    chatter_guild_player._maybe_summarize_session():
+    explicit fact-preservation instructions, a hard length
+    limit, and a "never invent/embellish" rule. Reuses
+    _IMPORTANCE_RUBRIC verbatim so a digest's suggested
+    importance stays on the same 1-10 scale as every other
+    memory-generation prompt in this file -- the caller
+    (_condense_low_value_memories()) then clamps that
+    suggestion to min(suggested, max(source_importances))
+    before storing it.
+    """
+    memory_list = "\n".join(
+        f"{i + 1}. "
+        f"{sanitize_memory_for_prompt(row['memory'])}"
+        for i, row in enumerate(candidates)
+    )
+    prompt = (
+        f"Here are {len(candidates)} separate low-value "
+        "memories a bot has about a player in World of "
+        "Warcraft.\n"
+        f"Fold them into 1-{max_digests} higher-level "
+        "memories that preserve named entities, places, "
+        "bosses, and important facts. Discard redundant "
+        "or filler ones. Never invent, infer, or embellish "
+        "facts not present in the memories below.\n"
+        "Each resulting memory must be 1-2 sentences, "
+        "first person, hard limit 500 characters.\n\n"
+        f"Memories:\n{memory_list}\n\n"
+    )
+    prompt += _IMPORTANCE_RUBRIC
+    prompt += (
+        "Respond in JSON with a \"digests\" array of 1 "
+        f"to {max_digests} objects, each with keys "
+        "\"memory\" (string), \"importance\" (integer "
+        "1-10 using the rubric above), and optionally "
+        "\"mood\" (one word):\n"
+        '{"digests": [{"memory": "...", "importance": 5, '
+        '"mood": "contemplative"}]}\n\n'
+        "Rules:\n"
+        f"- Return 1 to {max_digests} objects in the "
+        "\"digests\" array, never more\n"
+        "- No quotes inside the memory text\n"
+        "- Just the JSON, nothing else"
+    )
+
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
+    lang_rule = get_language_rule()
+    if lang_rule:
+        prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
+
+    return prompt
+
+
+def _maybe_trigger_condensation(
+    config, bot_guid, player_guid, active_count, max_per,
+):
+    """Proactively submit a background condensation pass
+    once a bot-player pair's active memory count crosses
+    LLMChatter.Memory.Condensation.TriggerPercent of the
+    row cap.
+
+    Called from _ensure_cap_and_insert() right after a
+    successful insert. Non-blocking: submit-and-return,
+    mirroring _maybe_queue_relationship_update()'s queuing
+    shape -- never awaited here, and never allowed to slow
+    down or fail the insert it's piggybacking on (any
+    unexpected error here is a bug, not something that
+    should be silently swallowed at this call site, so this
+    function stays simple and side-effect-only rather than
+    wrapping itself in a try/except).
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Condensation.Enable', 1,
+    )):
+        return
+    if max_per <= 0:
+        return
+    trigger_percent = int(config.get(
+        'LLMChatter.Memory.Condensation.TriggerPercent',
+        DEFAULT_CONDENSATION_TRIGGER_PERCENT,
+    ))
+    if active_count * 100 < max_per * trigger_percent:
+        return
+
+    pair = (bot_guid, player_guid)
+    with _condensing_lock:
+        if pair in _condensing_pairs:
+            logger.debug(
+                "Condensation already in flight for "
+                "bot=%s player=%s, skipping duplicate "
+                "trigger", bot_guid, player_guid,
+            )
+            return
+        _condensing_pairs.add(pair)
+
+    logger.info(
+        "Condensation triggered for bot=%s player=%s "
+        "(%d/%d active memories, >= %d%% trigger)",
+        bot_guid, player_guid, active_count, max_per,
+        trigger_percent,
+    )
+    condensation_executor.submit(
+        _condense_low_value_memories,
+        config, bot_guid, player_guid,
+    )
+
+
+def _condense_low_value_memories(
+    config, bot_guid, player_guid,
+):
+    """Fold a bot-player pair's low-value memories into 1-2
+    higher-quality digest memories via a single LLM call.
+
+    Submitted by _maybe_trigger_condensation() once the
+    pair's active memory count crosses
+    LLMChatter.Memory.Condensation.TriggerPercent of the
+    cap -- runs on the dedicated condensation_executor
+    (single worker), never memory_executor, so a slow LLM
+    call here can never compete with primary
+    memory-generation throughput.
+
+    Candidate selection (_get_condensation_candidates()):
+    active rows scored below
+    LLMChatter.Memory.Condensation.ProtectFloor, excluding
+    the pair's single highest-effective_score row (the same
+    guard _evict_one_used() uses to protect a bot's most
+    valuable memory of a player). Requires at least
+    LLMChatter.Memory.Condensation.MinCandidates eligible
+    rows; skips silently otherwise -- this pair just isn't
+    ready yet, and the trigger fires again next time a
+    qualifying insert crosses the threshold.
+
+    On success: inserts up to
+    LLMChatter.Memory.Condensation.MaxDigests digest rows
+    (memory_type='condensed') and deletes the source rows,
+    all inside one DB transaction (mysql-connector
+    autocommit defaults to off, same as every other write
+    path in this file -- the two writes below share a single
+    conn.commit()), so a crash between insert and delete can
+    never lose memories without gaining their replacement.
+    Each digest's importance_score is bounded by
+    min(llm_suggested_score, max(source_importances)) so a
+    digest can never look more important than the single
+    most important memory it absorbed -- since every source
+    is already below ProtectFloor by construction, this also
+    guarantees a digest can never itself cross the protect
+    floor, keeping it eligible for a future condensation
+    round too.
+
+    On failure (LLM call fails, response missing/
+    unparseable, or zero usable digests): logs and aborts.
+    Deliberately NO fallback deletion of source rows here --
+    unlike the original design this replaces, a malformed
+    response must never cause data loss.
+
+    Returns True if at least one digest was inserted and its
+    sources removed, False otherwise (including "not enough
+    candidates" and "condensation attempted but failed").
+    """
+    conn = None
+    try:
+        conn = get_db_connection(config)
+        cursor = conn.cursor(dictionary=True)
+
+        candidates = _get_condensation_candidates(
+            cursor, bot_guid, player_guid, config,
+        )
+        min_candidates = int(config.get(
+            'LLMChatter.Memory.Condensation.MinCandidates',
+            DEFAULT_CONDENSATION_MIN_CANDIDATES,
+        ))
+        if len(candidates) < min_candidates:
+            logger.debug(
+                "Skipping condensation for bot=%s "
+                "player=%s: only %d eligible candidate(s) "
+                "(need at least %d)",
+                bot_guid, player_guid, len(candidates),
+                min_candidates,
+            )
+            return False
+
+        max_digests = int(config.get(
+            'LLMChatter.Memory.Condensation.MaxDigests',
+            DEFAULT_CONDENSATION_MAX_DIGESTS,
+        ))
+        prompt = _build_condensation_prompt(
+            candidates, max_digests,
+        )
+        client = get_llm_client(config)
+
+        response = None
+        try:
+            response = call_llm(
+                client, prompt, config,
+                max_tokens_override=int(config.get(
+                    'LLMChatter.Memory.Condensation'
+                    '.MaxTokens', 300,
+                )),
+                context=(
+                    f"memory-condense:{bot_guid}"
+                    f":{player_guid}"
+                ),
+                label='memory_condensation',
+                metadata={
+                    'bot_guid': bot_guid,
+                    'player_guid': player_guid,
+                    'candidate_count': len(candidates),
+                },
+            )
+        except Exception:
+            logger.error(
+                "Condensation LLM call failed for "
+                f"bot={bot_guid} player={player_guid}",
+                exc_info=True,
+            )
+
+        if not response:
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: no LLM response; %d source "
+                "memories left untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        data = extract_json_object(
+            response, required_key='digests',
+        )
+        digests_raw = (
+            data.get('digests') if data else None
+        )
+        if (
+            not isinstance(digests_raw, list)
+            or not digests_raw
+        ):
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: response missing/unparseable "
+                "'digests'; %d source memories left "
+                "untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        max_source_importance = max(
+            int(c['importance_score']) for c in candidates
+        )
+        # group_id is informational metadata only (NOT NULL
+        # column) -- candidates may span different
+        # group_ids across rejoining sessions, the first
+        # candidate's is good enough.
+        group_id = candidates[0]['group_id']
+
+        validated = []
+        for item in digests_raw[:max_digests]:
+            if not isinstance(item, dict):
+                continue
+            memory_text = item.get('memory')
+            if not isinstance(memory_text, str):
+                continue
+            memory_text = memory_text.strip()
+            if not memory_text or len(memory_text) > 500:
+                continue
+            suggested = _coerce_importance(
+                item.get('importance')
+            )
+            # Hard bound: a digest can never look more
+            # important than the single most important
+            # memory it absorbed.
+            importance = min(
+                suggested, max_source_importance,
+            )
+            mood = item.get('mood')
+            if (
+                not isinstance(mood, str)
+                or not mood.strip()
+            ):
+                mood = 'contemplative'
+            else:
+                mood = mood.strip()[:32]
+            validated.append({
+                'memory': memory_text,
+                'importance': importance,
+                'mood': mood,
+            })
+
+        if not validated:
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: zero usable digests parsed "
+                "from response; %d source memories left "
+                "untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        candidate_ids = [c['id'] for c in candidates]
+        placeholders = ','.join(
+            ['%s'] * len(candidate_ids)
+        )
+
+        # Insert digest(s), then delete sources, sharing
+        # ONE commit -- see docstring above.
+        for digest in validated:
+            _insert_memory_row(
+                cursor, bot_guid, player_guid, group_id,
+                'condensed', digest['memory'],
+                digest['mood'], None, active=1, used=0,
+                session_start=time.time(),
+                importance=digest['importance'],
+                zone_id=None,
+            )
+        cursor.execute(
+            "DELETE FROM llm_bot_memories"
+            f" WHERE id IN ({placeholders})",
+            tuple(candidate_ids),
+        )
+        conn.commit()
+
+        logger.info(
+            "Condensed %d memories into %d digest(s) for "
+            "bot=%s player=%s",
+            len(candidate_ids), len(validated),
+            bot_guid, player_guid,
+        )
+        return True
+
+    except Exception:
+        logger.error(
+            "Memory condensation failed for bot=%s "
+            f"player={player_guid}",
+            exc_info=True,
+        )
+        return False
+    finally:
+        with _condensing_lock:
+            _condensing_pairs.discard(
+                (bot_guid, player_guid)
+            )
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def insert_first_meeting_memory(
