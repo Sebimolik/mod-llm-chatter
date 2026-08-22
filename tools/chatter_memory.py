@@ -724,6 +724,10 @@ def _resolve_location(db, config, group_id):
             return format_location_label(z, a), zone_id
         return "", zone_id
     except Exception:
+        logger.debug(
+            "location resolution failed for "
+            "group=%s", group_id, exc_info=True,
+        )
         return "", None
     finally:
         if own_db and db:
@@ -1764,6 +1768,10 @@ def _execute_shared_event_memory(
             )
             zone_id = zone_id or None
         except Exception:
+            logger.debug(
+                "zone resolution failed for group=%s",
+                group_id, exc_info=True,
+            )
             zone_id = None
 
         moods = MEMORY_MOODS.get(
