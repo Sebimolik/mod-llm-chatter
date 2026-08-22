@@ -698,7 +698,28 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql
 
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260822_memory_condensed_type.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260822_memory_importance_check_constraint.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260823_memory_zone_context.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260824_llm_bot_relationships.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260826_gear_mount_change_event_types.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260827_memory_gear_mount_change_types.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_relationship_timestamp_watermark.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260829_memory_condensation_generation.sql
 
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
@@ -750,7 +771,28 @@ mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260821_memory_importance_and_altbot_flag.sql
 
 mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260822_memory_condensed_type.sql
+
+mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260822_memory_importance_check_constraint.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260823_memory_zone_context.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260824_llm_bot_relationships.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260826_gear_mount_change_event_types.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260827_memory_gear_mount_change_types.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_relationship_timestamp_watermark.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260829_memory_condensation_generation.sql
 ```
 
 Migrations are idempotent — safe to run on an already
