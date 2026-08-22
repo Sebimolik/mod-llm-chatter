@@ -262,6 +262,28 @@ LLMChatter.Provider = anthropic
 #
 LLMChatter.Model = claude-haiku-4-5-20251001
 
+#
+#   LLMChatter.QuickAnalyze.Provider
+#       Optional separate provider for cheap "internal" LLM
+#       work that no player ever reads verbatim: addressee
+#       detection, stored memories, memory digests and
+#       relationship summaries. Leave empty to reuse
+#       LLMChatter.Provider.
+#       Default: (empty)
+#
+LLMChatter.QuickAnalyze.Provider =
+
+#
+#   LLMChatter.QuickAnalyze.Model
+#       Model used for that internal work. Point this at the
+#       cheapest model your provider offers -- it typically
+#       carries the memory/relationship traffic. Leave empty
+#       to fall back to LLMChatter.Model (i.e. no change in
+#       behaviour or cost).
+#       Default: (empty)
+#
+LLMChatter.QuickAnalyze.Model =
+
 ###############################################################################
 # ANTHROPIC SETTINGS [BRIDGE] (only needed if Provider = anthropic)
 ###############################################################################
@@ -2357,6 +2379,21 @@ LLMChatter.Memory.SessionMinutes = 3
 #       Default: 30
 #
 LLMChatter.Memory.MaxPerBotPlayer = 30
+
+#
+#   LLMChatter.Memory.UseQuickModel
+#       Route memory generation, shared-event memories,
+#       condensation digests and relationship summaries to
+#       LLMChatter.QuickAnalyze.Model instead of
+#       LLMChatter.Model. That text is stored and re-injected
+#       as context, never spoken to a player verbatim, so the
+#       cheap model is normally the right call. Set to 0 to
+#       force this work back onto the main model if stored
+#       memories read noticeably worse.
+#       No effect when LLMChatter.QuickAnalyze.Model is empty.
+#       Default: 1
+#
+LLMChatter.Memory.UseQuickModel = 1
 
 #
 #   LLMChatter.Memory.IdentityVersion

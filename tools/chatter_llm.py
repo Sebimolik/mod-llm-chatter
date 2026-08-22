@@ -346,10 +346,23 @@ def call_llm(
     *,
     label: str = '',
     metadata: dict = None,
+    use_quick_model: bool = False,
 ) -> str:
     """Call LLM API.
 
     Supports Anthropic, OpenAI, Google, OpenRouter, and Ollama.
+
+    use_quick_model: route this call to the cheap
+    QuickAnalyze provider/model (see
+    _resolve_quick_target()) instead of LLMChatter.Model.
+    Intended for text a player never reads verbatim --
+    stored memories, digests, dispositions. Falls back to
+    the main client/model transparently when QuickAnalyze
+    is not configured, so callers can pass it
+    unconditionally. Everything else (retry-free error
+    handling, token accounting, request logging, the
+    max_tokens/temperature budget) is shared with a normal
+    call.
     """
     provider = config.get(
         'LLMChatter.Provider', 'anthropic'
@@ -365,6 +378,10 @@ def call_llm(
         'LLMChatter.Model', default_model
     )
     model = resolve_model(model)
+    if use_quick_model:
+        client, provider, model = (
+            _resolve_quick_target(client, config)
+        )
     if max_tokens_override is not None:
         max_tokens = max_tokens_override
     else:
@@ -585,31 +602,23 @@ def _get_quick_analyze_client(config):
         return _quick_analyze_client, qa_provider
 
 
-def quick_llm_analyze(
-    client: Any,
-    config: dict,
-    prompt: str,
-    max_tokens: int = 50,
-    *,
-    label: str = '',
-    metadata: dict = None,
-) -> Optional[str]:
-    """Fast LLM call for pre-processing analysis.
+def _resolve_quick_target(client, config):
+    """Resolve the client/provider/model for cheap
+    "internal" LLM work (QuickAnalyze).
 
-    Uses the configured QuickAnalyze provider/model,
-    or defaults to the fastest model on the main
-    provider (Haiku for Anthropic, gpt-4o-mini for
-    OpenAI, Gemini Flash for Google, OpenRouter's
-    configured model, main model for Ollama).
+    Returns (client, provider, model). When QuickAnalyze is
+    not configured on this server the fallback is fully
+    transparent: the caller's own client, the main
+    provider, and -- for providers where the configured
+    model IS the only sensible choice (Google, OpenRouter/
+    OpenAI-compatible, Ollama) -- LLMChatter.Model itself.
+    So an unconfigured server behaves exactly as if the
+    call had gone through the main path.
 
-    Useful for tasks like:
-    - Determining which bot a player is addressing
-    - Classifying message intent or sentiment
-    - Summarizing context before a full prompt
-
-    Returns raw text response, or None on error.
+    Shared by quick_llm_analyze() and by
+    call_llm(use_quick_model=True) so there is exactly one
+    definition of "the cheap model".
     """
-    # Check for separate quick analyze provider
     qa_client, provider = (
         _get_quick_analyze_client(config)
     )
@@ -620,7 +629,6 @@ def quick_llm_analyze(
         active_client = client
         using_quick_provider = False
 
-    # Resolve model
     qa_model = config.get(
         'LLMChatter.QuickAnalyze.Model', ''
     ).strip()
@@ -653,7 +661,36 @@ def quick_llm_analyze(
             'LLMChatter.Model',
             DEFAULT_ANTHROPIC_MODEL
         )
-    model = resolve_model(model)
+    return active_client, provider, resolve_model(model)
+
+
+def quick_llm_analyze(
+    client: Any,
+    config: dict,
+    prompt: str,
+    max_tokens: int = 50,
+    *,
+    label: str = '',
+    metadata: dict = None,
+) -> Optional[str]:
+    """Fast LLM call for pre-processing analysis.
+
+    Uses the configured QuickAnalyze provider/model,
+    or defaults to the fastest model on the main
+    provider (Haiku for Anthropic, gpt-4o-mini for
+    OpenAI, Gemini Flash for Google, OpenRouter's
+    configured model, main model for Ollama).
+
+    Useful for tasks like:
+    - Determining which bot a player is addressing
+    - Classifying message intent or sentiment
+    - Summarizing context before a full prompt
+
+    Returns raw text response, or None on error.
+    """
+    active_client, provider, model = (
+        _resolve_quick_target(client, config)
+    )
 
     t0 = time.monotonic()
     result = None

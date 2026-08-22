@@ -190,6 +190,28 @@ RELATIONSHIP_WATERMARK_EPOCH = datetime.datetime(1970, 1, 1)
 _CONDENSATION_MAX_INPUT_CHARS = 6000
 
 
+def _memory_uses_quick_model(config):
+    """Whether internal memory-side LLM work should run on
+    the cheap QuickAnalyze model.
+
+    Memory generation, shared-event memories, condensation
+    digests and relationship summaries all produce text a
+    player never reads verbatim -- it is stored, later
+    re-injected as context, and re-worded by the main model
+    before anything reaches chat. So these default to the
+    cheap model. LLMChatter.Memory.UseQuickModel = 0 forces
+    them back onto LLMChatter.Model for admins who find the
+    stored text noticeably worse.
+
+    No-op on servers with no LLMChatter.QuickAnalyze.Model
+    configured: call_llm() then falls back to the main
+    model anyway.
+    """
+    return str((config or {}).get(
+        'LLMChatter.Memory.UseQuickModel', 1
+    )).strip() not in ('0', 'false', 'no')
+
+
 def _effective_score_sql(config=None):
     """Build the decay-aware "effective importance" SQL
     expression used by get_bot_memories() and
@@ -1311,6 +1333,9 @@ def _condense_low_value_memories(
                     f":{player_guid}"
                 ),
                 label='memory_condensation',
+                use_quick_model=_memory_uses_quick_model(
+                    config
+                ),
                 metadata={
                     'bot_guid': bot_guid,
                     'player_guid': player_guid,
@@ -1923,6 +1948,9 @@ def _call_llm_for_memory(
             max_tokens_override=120,
             context=f"memory:{bot_name}:{memory_type}",
             label='memory_generation',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
         )
         if not response:
             return None, None, None
@@ -2052,6 +2080,9 @@ def _generate_shared_event_memory(
             max_tokens_override=260,
             context=f"shared-memory:{memory_type}",
             label='shared_memory_generation',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
         )
         if not response:
             return None, None, None
@@ -2706,6 +2737,9 @@ def _maybe_update_relationship(
                 f"{player_guid}"
             ),
             label='relationship_update',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
             metadata={
                 'bot_guid': bot_guid,
                 'player_guid': player_guid,
