@@ -1550,7 +1550,15 @@ def get_language_rule() -> str:
         "that character's stated gender. Past-tense "
         "verbs about yourself are the most common "
         "mistake — check each one. Never fall back "
-        "to masculine forms as a default."
+        "to masculine forms as a default. "
+        "Naturalness: write natural, idiomatic "
+        f"{_language} — avoid word-for-word metaphors "
+        "and stilted constructions no native speaker "
+        "would actually say; if a phrase sounds odd "
+        "when read back, rephrase it plainly. Prefer "
+        "direct, concrete speech over abstract or "
+        "poetic imagery unless it genuinely fits the "
+        "moment."
     )
 
 
