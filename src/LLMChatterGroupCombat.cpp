@@ -1322,15 +1322,21 @@ void HandleGroupPlayerCompleteQuestImpl(
     );
 }
 
-// Per-player last-reacted-to gear entry -- used both to
-// avoid repeat reactions to the exact same item (e.g.
+// Per-player-per-slot last-reacted-to gear entry --
+// keyed by (playerGuid, equipment slot) rather than
+// just playerGuid, since Player::_LoadInventory() calls
+// QuickEquipItem() once per already-equipped slot during
+// the login bulk re-equip pass, and this hook fires for
+// every one of those calls -- keying on the player alone
+// would compare each slot's item against whatever slot
+// happened to be processed immediately before it instead
+// of that slot's own prior value. This map is used both
+// to avoid repeat reactions to the exact same item (e.g.
 // swapping back to a previously-worn piece) and, via the
-// "no baseline yet" branch below, to silently absorb the
-// bulk re-equip-from-DB pass that fires once per already-
-// equipped slot at login (Player::_LoadInventory calls
-// QuickEquipItem() for every stored item, which reaches
-// this same OnPlayerEquip hook).
-static std::unordered_map<ObjectGuid::LowType, uint32>
+// "no baseline yet" branch below, to silently absorb that
+// bulk re-equip pass slot-by-slot.
+static std::unordered_map<ObjectGuid::LowType,
+    std::unordered_map<uint8, uint32>>
     _lastReactedGearEntry;
 static std::unordered_map<uint32, time_t>
     _groupGearChangeCooldowns;
@@ -1370,15 +1376,18 @@ void HandleGroupPlayerEquipImpl(
         player->GetGUID().GetCounter();
     uint32 itemEntry = it->GetEntry();
 
-    auto baseIt =
-        _lastReactedGearEntry.find(playerGuid);
-    if (baseIt == _lastReactedGearEntry.end())
+    auto& slotBaselines =
+        _lastReactedGearEntry[playerGuid];
+    auto baseIt = slotBaselines.find(slot);
+    if (baseIt == slotBaselines.end())
     {
-        // First equip observed for this player this
+        // First equip observed for this slot this
         // process lifetime -- almost certainly the
-        // login re-equip pass, not a real gear change.
-        // Record the baseline silently.
-        _lastReactedGearEntry[playerGuid] = itemEntry;
+        // login re-equip pass (or a previously-empty
+        // slot being filled for the first time), not a
+        // real gear change. Record the baseline
+        // silently.
+        slotBaselines[slot] = itemEntry;
         return;
     }
 
