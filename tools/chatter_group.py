@@ -3437,7 +3437,8 @@ def build_idle_conversation_prompt(
     # speaker assignment (bot_names[i % num_bots]).
     mood_sequence = (
         generate_conversation_mood_sequence(
-            msg_count, mode
+            msg_count, mode,
+            session_vibe=session_vibe,
         )
     )
     length_sequence = (
@@ -3915,14 +3916,17 @@ def _idle_single_statement(
         bot_row['trait2'],
         bot_row['trait3'],
     ]
-    # Per-bot stored tone takes precedence (existing
-    # personalization); a live group vibe (see
-    # get_session_vibe()) is the next fallback before a
-    # fully random tone roll further down the prompt
-    # builder.
-    stored_tone = bot_row.get('tone') or get_session_vibe(
+    # A live group vibe (see get_session_vibe()) wins over
+    # the bot's stored tone while it lasts: the stored tone
+    # is a permanent personality trait, the vibe is a
+    # situational signal from something that just happened
+    # (a wipe, a big kill), and the situation should colour
+    # the next few minutes of chatter. Once the vibe expires
+    # this falls straight back to the stored tone, then to a
+    # random roll further down the prompt builder.
+    stored_tone = get_session_vibe(
         group_id, config,
-    )
+    ) or bot_row.get('tone')
 
     # Get class/race from characters table
     cursor = db.cursor(dictionary=True)

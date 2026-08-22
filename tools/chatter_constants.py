@@ -8262,6 +8262,140 @@ RP_MOODS = [
     "playfully smug",
 ]
 
+
+# =============================================================================
+# SESSION VIBE -> CONVERSATION MOOD MAPPING
+# =============================================================================
+# A session vibe is the mood of a recent high-importance memory
+# (see get_session_vibe() in chatter_memory.py). Those moods come
+# from MEMORY_MOODS and are a different vocabulary than the
+# per-message conversation moods above, so they are mapped through
+# a small set of emotional families first. Unknown vibes simply map
+# to nothing and the mood sequence stays fully random.
+VIBE_MOOD_FAMILIES = {
+    # elation after a win
+    "triumphant": "triumphant",
+    "exhilarated": "triumphant",
+    "victorious": "triumphant",
+    "gleeful": "triumphant",
+    "elated": "triumphant",
+    "jubilant": "triumphant",
+    "accomplished": "triumphant",
+    "proud": "triumphant",
+    "delighted": "triumphant",
+    "excited": "triumphant",
+    "satisfied": "triumphant",
+    "pleased": "triumphant",
+    "glad": "triumphant",
+    "cheerful": "triumphant",
+    "inspired": "triumphant",
+    # knocked down, regrouping
+    "humbled": "somber",
+    "rueful": "somber",
+    "stoic": "somber",
+    "resilient": "somber",
+    "determined": "somber",
+    "breathless": "somber",
+    "relieved": "somber",
+    "moved": "somber",
+    "frustrated": "somber",
+    "disappointed": "somber",
+    # danger, urgency, aggression
+    "alarmed": "tense",
+    "alert": "tense",
+    "cautious": "tense",
+    "focused": "tense",
+    "eager": "tense",
+    "adventurous": "tense",
+    "fierce": "tense",
+    "ruthless": "tense",
+    # affection and camaraderie
+    "warm": "warm",
+    "fond": "warm",
+    "grateful": "warm",
+    "affectionate": "warm",
+    "respectful": "warm",
+    "engaged": "warm",
+    "approving": "warm",
+    "admiring": "warm",
+    "impressed": "warm",
+    # quiet, reflective
+    "nostalgic": "wistful",
+    "wistful": "wistful",
+    "contemplative": "wistful",
+    "reflective": "wistful",
+    "thoughtful": "wistful",
+    "awed": "wistful",
+    # wondering about something
+    "curious": "curious",
+    "intrigued": "curious",
+    "surprised": "curious",
+    # levity
+    "playful": "amused",
+    "amused": "amused",
+    "grimly amused": "amused",
+    "envious": "amused",
+}
+
+# Family -> the subset of MOODS / RP_MOODS that reads as compatible
+# with that family. Every string below must exist in the matching
+# pool above, otherwise the LLM gets a mood it was never told about.
+VIBE_FAMILY_MOODS = {
+    "normal": {
+        "triumphant": [
+            "proud", "enthusiastic", "showing off",
+            "happy", "competitive",
+        ],
+        "somber": [
+            "disappointed", "self-deprecating", "tired",
+            "deadpan", "philosophical",
+        ],
+        "tense": [
+            "impatient", "competitive", "dramatic",
+            "questioning", "helpful",
+        ],
+        "warm": [
+            "grateful", "happy", "helpful", "enthusiastic",
+        ],
+        "wistful": [
+            "nostalgic", "philosophical", "neutral", "deadpan",
+        ],
+        "curious": [
+            "questioning", "confused", "surprised", "geeky",
+        ],
+        "amused": [
+            "joking around", "finding everything hilarious",
+            "cracking wise", "dry and snarky",
+        ],
+    },
+    "roleplay": {
+        "triumphant": [
+            "playfully smug", "content", "impressed", "hopeful",
+        ],
+        "somber": [
+            "gruff", "tired", "gallows humor",
+            "matter-of-fact", "thoughtful",
+        ],
+        "tense": [
+            "wary", "restless", "cautious",
+            "suspicious", "irritated",
+        ],
+        "warm": [
+            "grateful", "friendly", "content", "impressed",
+        ],
+        "wistful": [
+            "nostalgic", "thoughtful", "calm", "content",
+        ],
+        "curious": [
+            "curious", "thoughtful", "impressed", "distracted",
+        ],
+        "amused": [
+            "amused", "dry humor", "wisecracking",
+            "playfully smug",
+        ],
+    },
+}
+
 RP_CREATIVE_TWISTS = [
     "Use a casual saying from your culture",
     "Mention something from your past briefly",

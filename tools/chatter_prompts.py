@@ -19,6 +19,7 @@ from chatter_constants import (
     RP_MESSAGE_CATEGORIES, RP_LENGTH_HINTS,
     PERSONALITY_SPICES, RP_PERSONALITY_SPICES,
     CLASS_NAMES, RACE_NAMES, CLASS_ROLE_MAP,
+    VIBE_MOOD_FAMILIES, VIBE_FAMILY_MOODS,
 )
 from chatter_shared import (
     get_chatter_mode, build_race_class_context,
@@ -147,12 +148,57 @@ def pick_random_message_category(mode: str = 'normal') -> str:
     return random.choice(pool)
 
 
+# How fast a session vibe stops steering the mood
+# sequence: message 1 is always vibe-aligned, then the
+# odds fall off by this factor per message so the group
+# drifts back to normal instead of holding one mood for
+# a whole exchange.
+VIBE_MOOD_BIAS_DECAY = 0.55
+
+
+def get_vibe_mood_pool(session_vibe, mode: str = 'normal'):
+    """Map a session vibe to compatible conversation moods.
+
+    Session vibes are MEMORY_MOODS values (e.g. "humbled",
+    "triumphant", "grimly amused"); conversation moods are a
+    separate vocabulary. Returns None when the vibe is empty
+    or unrecognised, meaning "no bias, roll normally".
+    """
+    if not session_vibe:
+        return None
+    key = str(session_vibe).strip().lower().replace('_', ' ')
+    family = VIBE_MOOD_FAMILIES.get(key)
+    if not family:
+        return None
+    by_mode = VIBE_FAMILY_MOODS.get(
+        'roleplay' if mode == 'roleplay' else 'normal', {}
+    )
+    return by_mode.get(family) or None
+
+
 def generate_conversation_mood_sequence(
-    message_count: int, mode: str = 'normal'
+    message_count: int, mode: str = 'normal',
+    session_vibe=None,
 ) -> List[str]:
-    """Generate a mood sequence for a conversation."""
+    """Generate a mood sequence for a conversation.
+
+    With an active session vibe the sequence opens on a
+    vibe-compatible mood and then decays back toward a
+    fully random roll (see VIBE_MOOD_BIAS_DECAY).
+    """
     pool = RP_MOODS if mode == 'roleplay' else MOODS
-    return [random.choice(pool) for _ in range(message_count)]
+    vibe_pool = get_vibe_mood_pool(session_vibe, mode)
+    if not vibe_pool:
+        return [random.choice(pool) for _ in range(message_count)]
+    moods = []
+    bias = 1.0
+    for _ in range(message_count):
+        if random.random() < bias:
+            moods.append(random.choice(vibe_pool))
+        else:
+            moods.append(random.choice(pool))
+        bias *= VIBE_MOOD_BIAS_DECAY
+    return moods
 
 
 # Conversation length labels â€” short descriptions
