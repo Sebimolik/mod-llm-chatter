@@ -336,7 +336,8 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
         'dungeon', 'party_member', 'player_message',
         'first_meeting', 'quest_complete', 'achievement',
         'level_up', 'bg_win', 'bg_loss',
-        'discovery', 'pvp_kill', 'gear_change', 'mount_change'
+        'discovery', 'pvp_kill', 'gear_change', 'mount_change',
+        'condensed'
     ) NOT NULL,
     `memory`        TEXT         NOT NULL,
     `importance_score` TINYINT UNSIGNED NOT NULL DEFAULT 5,
