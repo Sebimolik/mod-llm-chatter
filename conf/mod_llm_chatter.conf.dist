@@ -943,9 +943,9 @@ LLMChatter.GroupChatter.ConversationBias = 50
 #       Idle chatter tone selection is then biased toward
 #       that vibe instead of a fully random roll. Range 1-10
 #       (matches importance_score).
-#       Default: 7
+#       Default: 5
 #
-LLMChatter.GroupChatter.VibeImportanceThreshold = 7
+LLMChatter.GroupChatter.VibeImportanceThreshold = 5
 
 #
 #   LLMChatter.GroupChatter.VibeDurationSeconds

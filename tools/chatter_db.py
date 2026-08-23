@@ -1731,3 +1731,90 @@ def fail_event(db, event_id, event_type, reason,
         exc_info=exc_info,
     )
     mark_event(db, event_id, 'skipped')
+
+
+# =====================================================================
+# Group session vibe persistence (llm_group_vibe)
+# =====================================================================
+#
+# The group's ambient "vibe" (a short-lived mood cue set when an
+# important memory lands, see get_session_vibe() in
+# chatter_memory.py) is persisted here so it survives bridge
+# restarts and the in-memory session CLEANUP wipe. All three
+# helpers are fail-open at the call site: callers wrap them in
+# try/except and log, so a DB hiccup never breaks a memory write
+# or a tone roll.
+# =====================================================================
+
+def upsert_group_vibe(
+    config, group_id, vibe, mood, importance,
+):
+    """Persist (or refresh) a group's session vibe row.
+
+    set_at is the unix second the vibe was (re)set, used by
+    get_session_vibe() to apply lazy expiry: a vibe only
+    survives VibeDurationSeconds from when it was SET, so a
+    bridge restart cannot extend its lifetime.
+    """
+    conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO llm_group_vibe"
+            " (group_id, vibe, mood, importance,"
+            "  set_at, updated_at)"
+            " VALUES (%s,%s,%s,%s,%s, NOW())"
+            " ON DUPLICATE KEY UPDATE"
+            "   vibe = VALUES(vibe),"
+            "   mood = VALUES(mood),"
+            "   importance = VALUES(importance),"
+            "   set_at = VALUES(set_at),"
+            "   updated_at = NOW()",
+            (
+                group_id, vibe, mood, importance,
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+
+
+def get_group_vibe(config, group_id):
+    """Return (vibe, set_at) for a group, or None.
+
+    set_at is the unix second the vibe was set. Only the
+    vibe (not the raw mood) is needed by readers.
+    """
+    conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT vibe, set_at FROM llm_group_vibe"
+            " WHERE group_id = %s",
+            (group_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        if not row:
+            return None
+        return row[0], int(row[1])
+    finally:
+        conn.close()
+
+
+def delete_group_vibe(config, group_id):
+    """Remove a group's persisted vibe (expired/stale)."""
+    conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM llm_group_vibe"
+            " WHERE group_id = %s",
+            (group_id,),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()

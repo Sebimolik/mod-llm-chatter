@@ -376,3 +376,20 @@ CREATE TABLE IF NOT EXISTS `llm_bot_relationships` (
     `updated_at`                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`bot_guid`, `player_guid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Group session vibe persistence (survives bridge restarts /
+-- in-memory session CLEANUP wipe). UPSERTed by
+-- _ensure_cap_and_insert() when a memory's importance_score
+-- crosses LLMChatter.GroupChatter.VibeImportanceThreshold;
+-- lazily expired/deleted by get_session_vibe() once
+-- VibeDurationSeconds have elapsed since set_at.
+CREATE TABLE IF NOT EXISTS `llm_group_vibe` (
+    `group_id`   INT UNSIGNED NOT NULL,
+    `vibe`       VARCHAR(64)  NOT NULL,
+    `mood`       VARCHAR(32)  NOT NULL,
+    `importance` TINYINT UNSIGNED NOT NULL DEFAULT 5,
+    `set_at`     INT UNSIGNED NOT NULL,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`group_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

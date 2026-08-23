@@ -22,6 +22,8 @@ from typing import Dict, Optional
 
 from chatter_db import (
     get_db_connection, get_group_location,
+    delete_group_vibe, get_group_vibe,
+    upsert_group_vibe,
 )
 from chatter_shared import (
     get_zone_name, get_dungeon_flavor,
@@ -387,27 +389,76 @@ def get_session_vibe(group_id, config=None):
     elapsed -- callers just re-check the timestamp on
     every read instead of anything clearing it eagerly.
 
+    Persisted: each important memory also UPSERTs the vibe
+    into llm_group_vibe (see upsert_group_vibe() in
+    chatter_db.py), so the cue survives bridge restarts
+    and the in-memory session CLEANUP wipe. Reads fast-path
+    the in-memory value, then fall back to the DB row when
+    it is missing/expired, re-seeding the in-memory session
+    so repeat reads stay cheap. Expiry is anchored to the
+    ORIGINAL set_at timestamp, so a restart cannot extend a
+    vibe's lifetime.
+
     Used by idle-chatter tone selection to bias toward a
     recent emotionally-significant memory instead of a
     fully random tone roll.
     """
     session = _active_sessions.get(group_id)
-    if not session:
-        return None
-    vibe = session.get("vibe")
-    vibe_set_at = session.get("vibe_set_at")
-    if not vibe or not vibe_set_at:
-        return None
+    vibe = None
+    vibe_set_at = None
+    if session is not None:
+        vibe = session.get("vibe")
+        vibe_set_at = session.get("vibe_set_at")
     duration = float((config or {}).get(
         'LLMChatter.GroupChatter'
         '.VibeDurationSeconds', 600,
     ))
-    if time.time() - vibe_set_at >= duration:
+    now = time.time()
+    if vibe and vibe_set_at:
+        if now - vibe_set_at < duration:
+            # Fast path: live in-memory value wins.
+            # MEMORY_MOODS entries are occasionally
+            # snake_case (e.g. "grimly_amused") --
+            # normalize to a plain phrase for use as a
+            # prompt tone.
+            return vibe.replace('_', ' ')
+        # In-memory copy expired: fall through to the DB
+        # row, which carries the original set_at (a
+        # restart cannot extend the vibe's lifetime).
+    if not config:
         return None
-    # MEMORY_MOODS entries are occasionally
-    # snake_case (e.g. "grimly_amused") -- normalize
-    # to a plain phrase for use as a prompt tone.
-    return vibe.replace('_', ' ')
+    try:
+        row = get_group_vibe(config, group_id)
+    except Exception:
+        logger.warning(
+            "Failed to load persisted group vibe for"
+            " group %s", group_id,
+            exc_info=True,
+        )
+        return None
+    if row is None:
+        return None
+    persisted_vibe, set_at = row
+    if now - set_at >= duration:
+        # Stale row: delete so a later read does not
+        # reload an expired vibe, then report None.
+        try:
+            delete_group_vibe(config, group_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete stale group vibe for"
+                " group %s", group_id,
+                exc_info=True,
+            )
+        return None
+    # Repopulate the in-memory session so subsequent
+    # reads fast-path again (cheap field writes, no lock:
+    # same reasoning as the write side in
+    # _ensure_cap_and_insert()).
+    if session is not None:
+        session["vibe"] = persisted_vibe
+        session["vibe_set_at"] = set_at
+    return persisted_vibe.replace('_', ' ')
 
 
 def teardown_group_session(group_id):
@@ -923,6 +974,21 @@ def _ensure_cap_and_insert(
         if session is not None:
             session["vibe"] = mood
             session["vibe_set_at"] = time.time()
+            # Persist so the vibe survives a bridge
+            # restart / session CLEANUP wipe. Fail-open:
+            # a DB hiccup must never break the memory
+            # insert this block is part of.
+            try:
+                upsert_group_vibe(
+                    config, group_id, mood, mood,
+                    importance,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist group vibe for"
+                    " group %s", group_id,
+                    exc_info=True,
+                )
 
     # Proactive condensation trigger: needs the pair's
     # active count AFTER the insert above (and any eviction
