@@ -1756,6 +1756,13 @@ def upsert_group_vibe(
     survives VibeDurationSeconds from when it was SET, so a
     bridge restart cannot extend its lifetime.
     """
+    # Coerce against the unsigned column types: a malformed
+    # score or out-of-range group id must not fail the INSERT
+    # under strict mode and silently drop the vibe. Fail-open:
+    # the caller logs any exception.
+    importance = max(0, min(255, int(importance)))
+    if group_id < 0 or group_id > 0xFFFFFFFF:
+        return
     conn = get_db_connection(config)
     try:
         cursor = conn.cursor()
@@ -1781,13 +1788,17 @@ def upsert_group_vibe(
         conn.close()
 
 
-def get_group_vibe(config, group_id):
+def get_group_vibe(config, group_id, conn=None):
     """Return (vibe, set_at) for a group, or None.
 
     set_at is the unix second the vibe was set. Only the
-    vibe (not the raw mood) is needed by readers.
+    vibe (not the raw mood) is needed by readers. An optional
+    caller-owned connection avoids a fresh connect per read on
+    the hot tone-selection path.
     """
-    conn = get_db_connection(config)
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
     try:
         cursor = conn.cursor()
         cursor.execute(
@@ -1801,20 +1812,27 @@ def get_group_vibe(config, group_id):
             return None
         return row[0], int(row[1])
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
-def delete_group_vibe(config, group_id):
-    """Remove a group's persisted vibe (expired/stale)."""
-    conn = get_db_connection(config)
+def delete_group_vibe(config, group_id, set_at, conn=None):
+    """Remove a group's persisted vibe only if it still
+    carries the set_at we observed, so a concurrently-written
+    newer vibe is never deleted. Accepts an optional
+    caller-owned connection."""
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
     try:
         cursor = conn.cursor()
         cursor.execute(
             "DELETE FROM llm_group_vibe"
-            " WHERE group_id = %s",
-            (group_id,),
+            " WHERE group_id = %s AND set_at = %s",
+            (group_id, set_at),
         )
         conn.commit()
         cursor.close()
     finally:
-        conn.close()
+        if own:
+            conn.close()

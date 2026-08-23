@@ -409,10 +409,19 @@ def get_session_vibe(group_id, config=None):
     if session is not None:
         vibe = session.get("vibe")
         vibe_set_at = session.get("vibe_set_at")
-    duration = float((config or {}).get(
-        'LLMChatter.GroupChatter'
-        '.VibeDurationSeconds', 600,
-    ))
+    # Defensive parse: an empty/non-numeric/NaN duration
+    # must not crash the tone path or silently disable
+    # decay (NaN makes every comparison False).
+    duration = 600.0
+    try:
+        _d = float((config or {}).get(
+            'LLMChatter.GroupChatter.VibeDurationSeconds',
+            600,
+        ))
+        if _d == _d and abs(_d) != float('inf'):
+            duration = _d
+    except (TypeError, ValueError):
+        pass
     now = time.time()
     if vibe and vibe_set_at:
         if now - vibe_set_at < duration:
@@ -427,8 +436,39 @@ def get_session_vibe(group_id, config=None):
         # restart cannot extend the vibe's lifetime).
     if not config:
         return None
+
+    # DB fallback: one shared connection for read + delete.
+    conn = None
     try:
-        row = get_group_vibe(config, group_id)
+        conn = get_db_connection(config)
+        row = get_group_vibe(config, group_id, conn=conn)
+        if row is None:
+            if session is not None:
+                session.pop('vibe', None)
+                session.pop('vibe_set_at', None)
+            return None
+        persisted_vibe, set_at = row
+        if now - set_at >= duration:
+            # Stale row: delete conditionally on the set_at
+            # we read so a concurrently-written newer vibe
+            # survives.
+            try:
+                delete_group_vibe(config, group_id, set_at,
+                                  conn=conn)
+            except Exception:
+                logger.warning(
+                    "Failed to delete stale group vibe for"
+                    " group %s", group_id,
+                    exc_info=True,
+                )
+            if session is not None:
+                session.pop('vibe', None)
+                session.pop('vibe_set_at', None)
+            return None
+        if session is not None:
+            session["vibe"] = persisted_vibe
+            session["vibe_set_at"] = set_at
+        return persisted_vibe.replace('_', ' ')
     except Exception:
         logger.warning(
             "Failed to load persisted group vibe for"
@@ -436,29 +476,12 @@ def get_session_vibe(group_id, config=None):
             exc_info=True,
         )
         return None
-    if row is None:
-        return None
-    persisted_vibe, set_at = row
-    if now - set_at >= duration:
-        # Stale row: delete so a later read does not
-        # reload an expired vibe, then report None.
-        try:
-            delete_group_vibe(config, group_id)
-        except Exception:
-            logger.warning(
-                "Failed to delete stale group vibe for"
-                " group %s", group_id,
-                exc_info=True,
-            )
-        return None
-    # Repopulate the in-memory session so subsequent
-    # reads fast-path again (cheap field writes, no lock:
-    # same reasoning as the write side in
-    # _ensure_cap_and_insert()).
-    if session is not None:
-        session["vibe"] = persisted_vibe
-        session["vibe_set_at"] = set_at
-    return persisted_vibe.replace('_', ' ')
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def teardown_group_session(group_id):
