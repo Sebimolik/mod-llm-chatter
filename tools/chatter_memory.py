@@ -990,7 +990,7 @@ def _ensure_cap_and_insert(
     # writes are safe enough for a best-effort vibe cue.
     vibe_threshold = int(config.get(
         'LLMChatter.GroupChatter'
-        '.VibeImportanceThreshold', 7,
+        '.VibeImportanceThreshold', 5,
     ))
     if importance >= vibe_threshold:
         session = _active_sessions.get(group_id)
