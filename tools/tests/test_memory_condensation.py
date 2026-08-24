@@ -267,6 +267,32 @@ def test_cap_candidates_by_chars_always_keeps_first_row():
 
 
 # ============================================================
+# _build_condensation_prompt: identity + gender rules
+# ============================================================
+
+def test_condensation_prompt_includes_bot_and_player_gender_rules():
+    rows = [_row(1, 'Saw a rare bird.', 2)]
+    prompt = chatter_memory._build_condensation_prompt(
+        rows, 1,
+        player_name='Di', player_gender='male',
+        bot_name='Stella', bot_race='Blood Elf',
+        bot_class='Priest', bot_gender='female',
+    )
+    assert 'You are Stella, a female Blood Elf Priest.' in prompt
+    assert 'grammatically male' in prompt
+    assert 'grammatically female' in prompt
+
+
+def test_condensation_prompt_without_identity_has_no_gender_rules():
+    rows = [_row(1, 'Saw a rare bird.', 2)]
+    prompt = chatter_memory._build_condensation_prompt(
+        rows, 1,
+    )
+    assert 'You are ' not in prompt
+    assert 'grammatically' not in prompt
+
+
+# ============================================================
 # _condense_low_value_memories: digest clamping + atomicity
 # ============================================================
 

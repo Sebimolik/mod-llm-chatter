@@ -31,6 +31,7 @@ from chatter_shared import (
     build_bot_identity,
     estimate_tokens,
     get_gender_label,
+    get_race_name, get_class_name,
     append_json_instruction,
 )
 from chatter_text import (
@@ -1191,6 +1192,8 @@ def _cap_candidates_by_chars(candidates, max_chars):
 def _build_condensation_prompt(
     candidates, max_digests,
     player_name="", player_gender="",
+    bot_name="", bot_race="", bot_class="",
+    bot_gender="",
 ):
     """Build the LLM prompt for condensing a batch of
     low-value memories into 1-max_digests higher-level
@@ -1212,7 +1215,16 @@ def _build_condensation_prompt(
         f"{sanitize_memory_for_prompt(row['memory'])}"
         for i, row in enumerate(candidates)
     )
+    identity = ""
+    if bot_name:
+        identity = (
+            build_bot_identity(
+                bot_name, bot_race, bot_class, bot_gender,
+            )
+            + "\n"
+        )
     prompt = (
+        f"{identity}"
         f"Here are {len(candidates)} separate low-value "
         "memories a bot has about a player in World of "
         "Warcraft.\n"
@@ -1246,6 +1258,13 @@ def _build_condensation_prompt(
             f" correct gender agreement for any"
             f" pronouns and past-tense verbs"
             f" referring to them\n"
+        )
+    if bot_name and bot_gender:
+        rules += (
+            f"- You are writing as {bot_name},"
+            f" grammatically {bot_gender} — keep"
+            f" your own first-person past-tense verbs"
+            f" and adjectives in that gender\n"
         )
     rules += "- Just the JSON, nothing else"
     prompt += (
@@ -1439,6 +1458,38 @@ def _condense_low_value_memories(
             )
             return False
 
+        # Resolve bot identity so digests keep the bot's own
+        # race/class/gender consistent (same defensive pattern
+        # as the player lookup). Failure just omits the rules.
+        bot_name = ""
+        bot_race = ""
+        bot_class = ""
+        bot_gender = ""
+        try:
+            bc = conn.cursor(dictionary=True)
+            bc.execute(
+                "SELECT name, race, class, gender FROM"
+                " characters WHERE guid = %s",
+                (bot_guid,),
+            )
+            br = bc.fetchone()
+            if br:
+                bot_name = br['name']
+                if br.get('race') is not None:
+                    bot_race = get_race_name(br['race'])
+                if br.get('class') is not None:
+                    bot_class = get_class_name(br['class'])
+                if br.get('gender') is not None:
+                    bot_gender = get_gender_label(
+                        br['gender']
+                    )
+            bc.close()
+        except Exception:
+            logger.debug(
+                "Could not resolve bot identity for"
+                " guid=%s", bot_guid,
+            )
+
         # Resolve player name/gender so digests keep correct
         # grammatical gender (same lookup _execute_generate_memory
         # uses for fresh memories). A failure just omits the rules.
@@ -1474,6 +1525,10 @@ def _condense_low_value_memories(
             candidates, max_digests,
             player_name=player_name,
             player_gender=player_gender,
+            bot_name=bot_name,
+            bot_race=bot_race,
+            bot_class=bot_class,
+            bot_gender=bot_gender,
         )
         client = get_llm_client(config)
 
