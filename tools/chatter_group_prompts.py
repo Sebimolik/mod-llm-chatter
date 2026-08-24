@@ -817,7 +817,9 @@ def build_kill_reaction_prompt(
             f"Your party just killed {creature_name}. "
             f"Just a regular mob, nothing special. "
             f"Make a brief, casual offhand remark "
-            f"about it - don't be too excited."
+            f"about it - don't be too excited, and "
+            f"don't tally kills as a count (no "
+            f"'one less X' phrasing)."
         )
 
     if is_rp:
