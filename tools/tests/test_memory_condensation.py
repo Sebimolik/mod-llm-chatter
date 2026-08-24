@@ -484,9 +484,7 @@ def test_condensation_leaves_sources_untouched_on_bad_response():
     assert db.commits == 0
     inserts_or_deletes = [
         q for q, _ in db.executed
-        if not q.startswith(
-            "SELECT id, group_id, memory, importance_score,"
-        )
+        if not q.startswith("SELECT ")
     ]
     assert inserts_or_deletes == []
 

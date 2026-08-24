@@ -1188,7 +1188,10 @@ def _cap_candidates_by_chars(candidates, max_chars):
     return kept
 
 
-def _build_condensation_prompt(candidates, max_digests):
+def _build_condensation_prompt(
+    candidates, max_digests,
+    player_name="", player_gender="",
+):
     """Build the LLM prompt for condensing a batch of
     low-value memories into 1-max_digests higher-level
     digest memories.
@@ -1223,6 +1226,28 @@ def _build_condensation_prompt(candidates, max_digests):
         f"Memories:\n{memory_list}\n\n"
     )
     prompt += _IMPORTANCE_RUBRIC
+    rules = (
+        "Rules:\n"
+        f"- Return 1 to {max_digests} objects in the "
+        "\"digests\" array, never more\n"
+        "- No quotes inside the memory text\n"
+    )
+    if player_name:
+        rules += (
+            f"- When a digest involves the player, refer"
+            f" to them by name ({player_name}) — never"
+            f" use generic terms like 'a traveler' or"
+            f" 'someone'\n"
+        )
+    if player_name and player_gender:
+        rules += (
+            f"- The player ({player_name}) is"
+            f" grammatically {player_gender} — use"
+            f" correct gender agreement for any"
+            f" pronouns and past-tense verbs"
+            f" referring to them\n"
+        )
+    rules += "- Just the JSON, nothing else"
     prompt += (
         "Respond in JSON with a \"digests\" array of 1 "
         f"to {max_digests} objects, each with keys "
@@ -1231,12 +1256,8 @@ def _build_condensation_prompt(candidates, max_digests):
         "\"mood\" (one word):\n"
         '{"digests": [{"memory": "...", "importance": 5, '
         '"mood": "contemplative"}]}\n\n'
-        "Rules:\n"
-        f"- Return 1 to {max_digests} objects in the "
-        "\"digests\" array, never more\n"
-        "- No quotes inside the memory text\n"
-        "- Just the JSON, nothing else"
     )
+    prompt += rules
 
     from chatter_shared import (
         get_language_rule, get_lore_guardrail_rule,
@@ -1418,12 +1439,41 @@ def _condense_low_value_memories(
             )
             return False
 
+        # Resolve player name/gender so digests keep correct
+        # grammatical gender (same lookup _execute_generate_memory
+        # uses for fresh memories). A failure just omits the rules.
+        player_name = ""
+        player_gender = ""
+        try:
+            pc = conn.cursor(dictionary=True)
+            pc.execute(
+                "SELECT name, gender FROM"
+                " characters WHERE guid = %s",
+                (player_guid,),
+            )
+            pr = pc.fetchone()
+            if pr:
+                player_name = pr['name']
+                if pr.get('gender') is not None:
+                    player_gender = get_gender_label(
+                        pr['gender']
+                    )
+            pc.close()
+        except Exception:
+            logger.debug(
+                "Could not resolve player_name/"
+                "player_gender for guid=%s",
+                player_guid,
+            )
+
         max_digests = int(config.get(
             'LLMChatter.Memory.Condensation.MaxDigests',
             DEFAULT_CONDENSATION_MAX_DIGESTS,
         ))
         prompt = _build_condensation_prompt(
             candidates, max_digests,
+            player_name=player_name,
+            player_gender=player_gender,
         )
         client = get_llm_client(config)
 
