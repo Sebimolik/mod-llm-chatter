@@ -33,6 +33,7 @@ from chatter_shared import (
     select_conversation_message_count,
     get_subzone_name, get_subzone_lore,
     get_vibe_mood_word, get_vibe_source_phrase,
+    get_vibe_line_templates, get_bot_mood_line,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,10 +191,13 @@ def build_session_vibe_line(
     get_session_vibe_details()) and asks for the feeling to show
     in the delivery rather than be stated.
 
-    The mood word and the event phrase are localized (see
-    get_vibe_mood_word() / get_vibe_source_phrase()); the
-    surrounding instruction stays English like the rest of the
-    prompt scaffolding.
+    The whole sentence is localized -- scaffolding included --
+    via get_vibe_line_templates(), with the mood word and event
+    phrase (get_vibe_mood_word() / get_vibe_source_phrase())
+    already inflected for the template they land in. An English
+    frame with foreign words slotted into it was grammatical in
+    neither language; an unmapped language renders the full
+    English sentence instead.
 
     Args:
         vibe: the vibe/mood word, e.g. "humbled"
@@ -209,26 +213,31 @@ def build_session_vibe_line(
     mood_word = get_vibe_mood_word(vibe)
     if not mood_word:
         return ""
+    templates = get_vibe_line_templates()
     phrase = get_vibe_source_phrase(source_type)
     if phrase:
-        line = (
-            f"The group is still {mood_word} after {phrase}."
+        line = templates['sourced'].format(
+            mood=mood_word, event=phrase,
         )
     else:
-        line = (
-            "The group's mood right now is "
-            f"{mood_word}, after something that just happened."
-        )
+        line = templates['sourceless'].format(mood=mood_word)
     if distinct_from_bot_mood:
-        line += (
-            " That is the whole party's weather, not your own"
-            " mood above -- yours may honestly differ."
-        )
-    line += (
-        " Let it color how you speak -- the feeling should"
-        " show in your delivery, never be announced."
-    )
+        line += templates['distinct']
+    line += templates['instruction']
     return line
+
+
+def build_bot_mood_line(mood_label, alongside_vibe=False):
+    """Render this bot's own mood line for a reaction prompt.
+
+    Thin presentation wrapper over get_bot_mood_line(): the label
+    and the mood word are localized together, so this line never
+    reintroduces the English-frame problem next to a localized
+    vibe sentence. Returns "" when there is no mood to report.
+    """
+    return get_bot_mood_line(
+        mood_label, alongside_vibe=alongside_vibe,
+    )
 
 
 def generate_conversation_mood_sequence(

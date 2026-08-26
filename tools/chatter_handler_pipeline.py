@@ -38,7 +38,9 @@ from chatter_group_state import (
 )
 from chatter_raid_base import dual_worker_dispatch
 from chatter_memory import get_session_vibe_details
-from chatter_prompts import build_session_vibe_line
+from chatter_prompts import (
+    build_session_vibe_line, build_bot_mood_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,8 @@ def build_mood_and_vibe_suffix(group_id, bot_guid, config):
     They can legitimately disagree -- a cheerful bot in a
     shaken party is characterization, not a bug -- so neither
     suppresses the other; the wording keeps them distinct
-    instead of leaving the model to guess. Kept to one extra
+    instead of leaving the model to guess. Both lines render
+    wholly in the configured language. Kept to one extra
     sentence: this goes into every reaction prompt.
 
     Returns "" when the bot is neutral and no vibe is live.
@@ -72,10 +75,11 @@ def build_mood_and_vibe_suffix(group_id, bot_guid, config):
     )
     suffix = ""
     if has_mood:
-        suffix += (
-            f"\nYour own mood: {mood_label}"
-            if vibe_line
-            else f"\nCurrent mood: {mood_label}"
+        # Localized label *and* word (build_bot_mood_line):
+        # an English "Your own mood:" over a localized vibe
+        # sentence is the same hybrid defect in miniature.
+        suffix += "\n" + build_bot_mood_line(
+            mood_label, alongside_vibe=bool(vibe_line),
         )
     if vibe_line:
         suffix += f"\n{vibe_line}"

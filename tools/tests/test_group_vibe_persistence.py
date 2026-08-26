@@ -72,6 +72,7 @@ _install_non_strict_stubs()
 
 import chatter_constants  # noqa: E402
 import chatter_db  # noqa: E402
+import chatter_group_state  # noqa: E402
 import chatter_handler_pipeline  # noqa: E402
 import chatter_memory  # noqa: E402
 import chatter_prompts  # noqa: E402
@@ -959,6 +960,32 @@ def test_unmapped_key_inside_a_mapped_locale_falls_back():
         ) == 'flabbergasted'
 
 
+# Scaffolding words that must never survive into a localized
+# render. The shipped-then-fixed defect was an English frame with
+# localized words dropped into it ("The group is still
+# присмиревшие after недавнего вайпа"), so these are asserted
+# against directly.
+_ENGLISH_SCAFFOLDING = (
+    "The group",
+    "Let it color",
+    "your own mood",
+    "may honestly differ",
+    "never be announced",
+    "something that just happened",
+    " after ",
+    "Your own mood",
+    "Current mood",
+)
+
+
+def _has_english_scaffolding(text):
+    lowered = text.lower()
+    return [
+        word for word in _ENGLISH_SCAFFOLDING
+        if word.lower() in lowered
+    ]
+
+
 def test_russian_vibe_line_is_localized_end_to_end():
     with _Language('RU'):
         line = chatter_prompts.build_session_vibe_line(
@@ -966,8 +993,144 @@ def test_russian_vibe_line_is_localized_end_to_end():
         )
     assert 'присмиревшие' in line
     assert 'недавнего вайпа' in line
-    # Instruction scaffolding stays English by design.
-    assert 'The group is still' in line
+    # The whole sentence is Russian now, scaffolding included:
+    # "после" governs the genitive phrase, unlike English
+    # "after", which was the grammatical defect being fixed.
+    assert line.startswith('Все в отряде всё ещё')
+    assert 'после недавнего вайпа' in line
+    assert not _has_english_scaffolding(line)
+
+
+def test_every_locale_renders_all_three_variants():
+    """Known source, NULL source, and the distinctness clause
+    all render non-empty in every supported language."""
+    for code, locale in _LOCALES.items():
+        with _Language(code):
+            sourced = chatter_prompts.build_session_vibe_line(
+                'humbled', 'wipe',
+            )
+            sourceless = chatter_prompts.build_session_vibe_line(
+                'humbled', None,
+            )
+            distinct = chatter_prompts.build_session_vibe_line(
+                'humbled', 'wipe',
+                distinct_from_bot_mood=True,
+            )
+        for variant in (sourced, sourceless, distinct):
+            assert variant.strip(), (code, variant)
+            assert '{' not in variant, (code, variant)
+        # Every variant is genuinely different from English.
+        with _Language('US'):
+            assert sourced != (
+                chatter_prompts.build_session_vibe_line(
+                    'humbled', 'wipe',
+                )
+            ), code
+        # The distinctness clause really is an addition.
+        assert len(distinct) > len(sourced), code
+        assert distinct != sourced, code
+
+
+def test_localized_renders_carry_no_english_scaffolding():
+    """The exact regression that shipped: an English frame with
+    localized words slotted into it."""
+    for code in _LOCALES:
+        with _Language(code):
+            for vibe, source in (
+                ('humbled', 'wipe'),
+                ('triumphant', None),
+                ('proud', 'bg_win'),
+            ):
+                for distinct in (False, True):
+                    line = (
+                        chatter_prompts.build_session_vibe_line(
+                            vibe, source,
+                            distinct_from_bot_mood=distinct,
+                        )
+                    )
+                    leaked = _has_english_scaffolding(line)
+                    assert not leaked, (code, leaked, line)
+            for alongside in (False, True):
+                mood_line = chatter_prompts.build_bot_mood_line(
+                    'cheerful', alongside_vibe=alongside,
+                )
+                leaked = _has_english_scaffolding(mood_line)
+                assert not leaked, (code, leaked, mood_line)
+
+
+def test_unmapped_locale_renders_the_full_english_sentence():
+    with _Language('US'):
+        assert chatter_prompts.build_session_vibe_line(
+            'humbled', 'wipe',
+        ) == (
+            "The group is still humbled after a recent wipe."
+            " Let it color how you speak -- the feeling should"
+            " show in your delivery, never be announced."
+        )
+        assert chatter_prompts.build_session_vibe_line(
+            'humbled', None,
+        ) == (
+            "The group's mood right now is humbled, after"
+            " something that just happened. Let it color how"
+            " you speak -- the feeling should show in your"
+            " delivery, never be announced."
+        )
+        assert chatter_prompts.build_bot_mood_line(
+            'cheerful', alongside_vibe=True,
+        ) == "Your own mood: cheerful"
+        assert chatter_prompts.build_bot_mood_line(
+            'cheerful',
+        ) == "Current mood: cheerful"
+
+
+def test_localized_template_maps_cover_the_same_keys():
+    english = set(chatter_constants.VIBE_LINE_TEMPLATES)
+    for locale, table in (
+        chatter_shared._VIBE_LINE_TEMPLATE_LOCALE_MAPS.items()
+    ):
+        assert set(table) == english, locale
+    english = set(chatter_constants.BOT_MOOD_LINE_TEMPLATES)
+    for locale, table in (
+        chatter_shared
+        ._BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS.items()
+    ):
+        assert set(table) == english, locale
+    labels = {
+        label for _, _, label
+        in chatter_group_state.MOOD_LABELS
+    }
+    for locale, table in (
+        chatter_shared._BOT_MOOD_WORD_LOCALE_MAPS.items()
+    ):
+        assert set(table) == labels, locale
+
+
+def test_bot_mood_line_is_localized_in_every_locale():
+    for code, locale in _LOCALES.items():
+        with _Language(code):
+            own = chatter_prompts.build_bot_mood_line(
+                'cheerful', alongside_vibe=True,
+            )
+            current = chatter_prompts.build_bot_mood_line(
+                'cheerful',
+            )
+        expected_word = (
+            chatter_shared
+            ._BOT_MOOD_WORD_LOCALE_MAPS[locale]['cheerful']
+        )
+        assert expected_word in own, code
+        assert expected_word in current, code
+        assert own != current, code
+        assert 'cheerful' not in own, code
+
+
+def test_bot_mood_line_falls_back_for_an_unknown_label():
+    with _Language('RU'):
+        line = chatter_prompts.build_bot_mood_line('bewildered')
+    # Localized label, English word -- never a blank line.
+    assert line == "Текущее настроение: bewildered"
+    assert chatter_prompts.build_bot_mood_line(None) == ""
+    assert chatter_prompts.build_bot_mood_line('') == ""
 
 
 # ---------------------------------------------------------
@@ -1011,6 +1174,21 @@ def test_reaction_suffix_is_empty_when_nothing_applies():
     assert _suffix('neutral', None, None) == ""
 
 
+def test_reaction_suffix_is_localized_end_to_end():
+    """Mood label and vibe sentence render in the same
+    language -- an English "Your own mood:" over a localized
+    vibe sentence is the same hybrid defect in miniature."""
+    for code in _LOCALES:
+        with _Language(code):
+            out = _suffix('cheerful', 'humbled', 'wipe')
+        leaked = _has_english_scaffolding(out)
+        assert not leaked, (code, leaked, out)
+        assert 'cheerful' not in out, code
+        assert 'humbled' not in out, code
+        assert out.startswith("\n"), code
+        assert len(out.strip().splitlines()) == 2, code
+
+
 def main() -> int:
     tests = [
         test_upsert_then_read_round_trip,
@@ -1047,10 +1225,17 @@ def main() -> int:
         test_unmapped_language_falls_back_to_english,
         test_unmapped_key_inside_a_mapped_locale_falls_back,
         test_russian_vibe_line_is_localized_end_to_end,
+        test_every_locale_renders_all_three_variants,
+        test_localized_renders_carry_no_english_scaffolding,
+        test_unmapped_locale_renders_the_full_english_sentence,
+        test_localized_template_maps_cover_the_same_keys,
+        test_bot_mood_line_is_localized_in_every_locale,
+        test_bot_mood_line_falls_back_for_an_unknown_label,
         test_reaction_suffix_injects_the_vibe_when_active,
         test_reaction_suffix_omits_the_vibe_when_none_is_active,
         test_reaction_suffix_vibe_only_for_a_neutral_bot,
         test_reaction_suffix_is_empty_when_nothing_applies,
+        test_reaction_suffix_is_localized_end_to_end,
     ]
     for test in tests:
         test()

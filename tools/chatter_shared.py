@@ -33,6 +33,16 @@ from chatter_constants import (
     VIBE_SOURCE_PHRASES_KO,
     VIBE_MOOD_WORDS_RU, VIBE_MOOD_WORDS_FR, VIBE_MOOD_WORDS_DE,
     VIBE_MOOD_WORDS_ES, VIBE_MOOD_WORDS_PT, VIBE_MOOD_WORDS_KO,
+    VIBE_LINE_TEMPLATES, VIBE_LINE_TEMPLATES_RU,
+    VIBE_LINE_TEMPLATES_FR, VIBE_LINE_TEMPLATES_DE,
+    VIBE_LINE_TEMPLATES_ES, VIBE_LINE_TEMPLATES_PT,
+    VIBE_LINE_TEMPLATES_KO,
+    BOT_MOOD_LINE_TEMPLATES, BOT_MOOD_LINE_TEMPLATES_RU,
+    BOT_MOOD_LINE_TEMPLATES_FR, BOT_MOOD_LINE_TEMPLATES_DE,
+    BOT_MOOD_LINE_TEMPLATES_ES, BOT_MOOD_LINE_TEMPLATES_PT,
+    BOT_MOOD_LINE_TEMPLATES_KO,
+    BOT_MOOD_WORDS_RU, BOT_MOOD_WORDS_FR, BOT_MOOD_WORDS_DE,
+    BOT_MOOD_WORDS_ES, BOT_MOOD_WORDS_PT, BOT_MOOD_WORDS_KO,
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
@@ -1698,7 +1708,8 @@ _VIBE_TEXT_EXTRA_LOCALE_CODES = {
 
 
 def _get_vibe_text_locale_code() -> Optional[str]:
-    """Locale code for the session-vibe wording tables.
+    """Locale code for the session-vibe and per-bot mood
+    wording tables.
 
     get_language_locale_code() first (so RU/FR/DE/ES/KO behave
     exactly like every other localized lookup), then the
@@ -1708,6 +1719,96 @@ def _get_vibe_text_locale_code() -> Optional[str]:
         get_language_locale_code()
         or _VIBE_TEXT_EXTRA_LOCALE_CODES.get(_language)
     )
+
+
+_VIBE_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_LINE_TEMPLATES_RU,
+    "frFR": VIBE_LINE_TEMPLATES_FR,
+    "deDE": VIBE_LINE_TEMPLATES_DE,
+    "esES": VIBE_LINE_TEMPLATES_ES,
+    "ptBR": VIBE_LINE_TEMPLATES_PT,
+    "koKR": VIBE_LINE_TEMPLATES_KO,
+}
+
+_BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": BOT_MOOD_LINE_TEMPLATES_RU,
+    "frFR": BOT_MOOD_LINE_TEMPLATES_FR,
+    "deDE": BOT_MOOD_LINE_TEMPLATES_DE,
+    "esES": BOT_MOOD_LINE_TEMPLATES_ES,
+    "ptBR": BOT_MOOD_LINE_TEMPLATES_PT,
+    "koKR": BOT_MOOD_LINE_TEMPLATES_KO,
+}
+
+_BOT_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": BOT_MOOD_WORDS_RU,
+    "frFR": BOT_MOOD_WORDS_FR,
+    "deDE": BOT_MOOD_WORDS_DE,
+    "esES": BOT_MOOD_WORDS_ES,
+    "ptBR": BOT_MOOD_WORDS_PT,
+    "koKR": BOT_MOOD_WORDS_KO,
+}
+
+
+def get_vibe_line_templates() -> Dict[str, str]:
+    """Whole-sentence session-vibe templates for the configured
+    language.
+
+    The entire line is localized, scaffolding included: an English
+    frame with localized words dropped into it reads as broken
+    grammar in both languages (see VIBE_LINE_TEMPLATES in
+    chatter_constants.py). Same locale-fallback pattern as
+    get_zone_flavor(); an unmapped locale, or a key a locale table
+    happens to be missing, falls back to the English template.
+    """
+    locale = _get_vibe_text_locale_code()
+    localized = (
+        _VIBE_LINE_TEMPLATE_LOCALE_MAPS.get(locale)
+        if locale else None
+    )
+    if not localized:
+        return dict(VIBE_LINE_TEMPLATES)
+    merged = dict(VIBE_LINE_TEMPLATES)
+    merged.update(localized)
+    return merged
+
+
+def get_bot_mood_line(
+    mood_label: Optional[str], alongside_vibe: bool = False,
+) -> str:
+    """Render the per-bot mood line in the configured language.
+
+    Companion to get_vibe_line_templates(): the label and the mood
+    word are localized together, so a localized vibe sentence is
+    never introduced by an English "Your own mood:" label.
+
+    mood_label is a get_bot_mood_label() value (see MOOD_LABELS in
+    chatter_group_state.py); an unmapped label keeps its English
+    word rather than blanking the line. alongside_vibe picks the
+    wording that tells the two mood axes apart. Returns "" when
+    there is no mood to report.
+    """
+    if not mood_label:
+        return ""
+    key = str(mood_label).strip().lower().replace('_', ' ')
+    if not key:
+        return ""
+    locale = _get_vibe_text_locale_code()
+    word = key
+    templates = BOT_MOOD_LINE_TEMPLATES
+    if locale:
+        localized_words = _BOT_MOOD_WORD_LOCALE_MAPS.get(locale)
+        if localized_words and key in localized_words:
+            word = localized_words[key]
+        localized_tpl = (
+            _BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS.get(locale)
+        )
+        if localized_tpl:
+            templates = localized_tpl
+    slot = 'own' if alongside_vibe else 'current'
+    template = templates.get(
+        slot, BOT_MOOD_LINE_TEMPLATES[slot]
+    )
+    return template.format(mood=word)
 
 
 def get_vibe_source_phrase(source_type: Optional[str]) -> Optional[str]:

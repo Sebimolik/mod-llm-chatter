@@ -8434,9 +8434,12 @@ VIBE_SOURCE_PHRASES = {
 # Resolved through _VIBE_SOURCE_PHRASE_LOCALE_MAPS /
 # get_vibe_source_phrase() in chatter_shared.py; any locale or key
 # not covered falls back to the English table above.
-# Each phrase is shaped to read as the object of "after" (Russian
-# genitive, German dative, French/Spanish infinitive or noun phrase),
-# since the surrounding instruction scaffolding stays English.
+# Each phrase is shaped for the slot it fills in its own language's
+# sentence template (see VIBE_LINE_TEMPLATES_* below): Russian
+# genitive after "после", German dative after "nach",
+# French/Spanish infinitive or noun phrase after "après"/"tras".
+# The surrounding sentence is localized too, so these fragments
+# never sit inside an English frame.
 # Confidence: game terms use the official client localizations
 # ("поле боя", "ездовое животное", "haut fait", "Schlachtfeld",
 # "campo de batalla"); the surrounding wording is best-effort
@@ -8588,8 +8591,8 @@ VIBE_MOOD_WORDS_RU = {
     'surprised': "удивлённые",
     'thoughtful': "вдумчивые",
     'triumphant': "торжествующие",
-    'victorious': "победители",
-    'warm': "тёплые",
+    'victorious': "упивающиеся победой",
+    'warm': "полные тепла друг к другу",
     'wistful': "с лёгкой грустью",
 }
 
@@ -8652,7 +8655,7 @@ VIBE_MOOD_WORDS_FR = {
 }
 
 VIBE_MOOD_WORDS_DE = {
-    'accomplished': "mit dem Gefühl vollbrachter Arbeit",
+    'accomplished': "zufrieden mit dem Geleisteten",
     'admiring': "bewundernd",
     'adventurous': "abenteuerlustig",
     'affectionate': "herzlich zugetan",
@@ -8934,6 +8937,296 @@ VIBE_MOOD_WORDS_KO = {
     'victorious': "승리한",
     'warm': "따뜻한",
     'wistful': "아련한",
+}
+
+
+
+# =============================================================================
+# SESSION VIBE -> LOCALIZED SENTENCE TEMPLATES
+# =============================================================================
+# Whole-sentence session-vibe templates, one complete set per
+# language. An English frame with localized words slotted into it
+# ("The group is still присмиревшие after недавнего вайпа") is
+# coherent in neither language: each fragment was written to carry
+# the case/particles its own language's preposition governs
+# (Russian genitive after "после", German dative after "nach",
+# Korean noun particles), and none of those govern anything after
+# English "after". So the whole line -- scaffolding included --
+# renders in the target language, or entirely in English.
+#
+# Keys:
+#   'sourced'     -- {mood} + {event}, used when llm_group_vibe
+#                    .source_type maps to a known event phrase
+#   'sourceless'  -- {mood} only, for legacy/NULL/unmapped sources
+#   'distinct'    -- appended when a per-bot mood line sits above
+#   'instruction' -- the "show it, don't announce it" tail
+# 'distinct' and 'instruction' start with a space: they are
+# concatenated onto the sentence above them.
+#
+# Each template is built around the form its language's mood words
+# and event phrases already have, so the inserted words are
+# grammatically correct where they land:
+#   RU  plural nominative subject ("Все в отряде ... {mood}") takes
+#       the plural mood words; "после" takes the genitive phrases.
+#   FR/ES/PT  plural subject ("Les membres du groupe ...") takes the
+#       masculine-plural mood words; "après"/"tras"/"depois de"
+#       take the noun-or-infinitive phrases.
+#   DE  "nach {event}" keeps the dative event phrases in the slot
+#       that actually governs dative, and the mood words stay
+#       uninflected predicate adjectives.
+#   KO  the mood words are adnominal forms, so they modify a head
+#       noun ("{mood} 분위기"), and the event nouns take "이후로".
+# Resolved through _VIBE_LINE_TEMPLATE_LOCALE_MAPS /
+# get_vibe_line_templates() in chatter_shared.py; an unmapped
+# locale falls back to this English set in full.
+VIBE_LINE_TEMPLATES = {
+    'sourced': "The group is still {mood} after {event}.",
+    'sourceless': (
+        "The group's mood right now is {mood}, after"
+        " something that just happened."
+    ),
+    'distinct': (
+        " That is the whole party's weather, not your own"
+        " mood above -- yours may honestly differ."
+    ),
+    'instruction': (
+        " Let it color how you speak -- the feeling should"
+        " show in your delivery, never be announced."
+    ),
+}
+
+# Confidence: hand-written prose, not sourced from Blizzard text --
+# these sentences have no official localization to draw on. RU/FR/
+# DE/ES are written with reasonable confidence; PT/KO are
+# best-effort and worth a native review. No proper nouns appear.
+VIBE_LINE_TEMPLATES_RU = {
+    'sourced': "Все в отряде всё ещё {mood} после {event}.",
+    'sourceless': (
+        "Сейчас все в отряде {mood} — что-то только что"
+        " произошло."
+    ),
+    'distinct': (
+        " Это настроение всего отряда, а не твоё собственное,"
+        " указанное выше, — они вполне могут не совпадать."
+    ),
+    'instruction': (
+        " Пусть это окрашивает твою речь: чувство должно"
+        " проявляться в подаче, а не проговариваться вслух."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_FR = {
+    'sourced': (
+        "Les membres du groupe sont encore {mood} après"
+        " {event}."
+    ),
+    'sourceless': (
+        "Les membres du groupe sont {mood} en ce moment,"
+        " après quelque chose qui vient de se passer."
+    ),
+    'distinct': (
+        " C'est l'ambiance de tout le groupe, pas ton humeur"
+        " personnelle indiquée plus haut : les deux peuvent"
+        " très bien diverger."
+    ),
+    'instruction': (
+        " Laisse cela teinter ta façon de parler : le"
+        " sentiment doit transparaître dans le ton, jamais"
+        " être annoncé."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_DE = {
+    'sourced': "Die Gruppe ist nach {event} noch immer {mood}.",
+    'sourceless': (
+        "Die Gruppe ist gerade {mood}, nach etwas, das eben"
+        " passiert ist."
+    ),
+    'distinct': (
+        " Das ist die Stimmung der ganzen Gruppe, nicht deine"
+        " eigene von oben -- die beiden dürfen durchaus"
+        " auseinandergehen."
+    ),
+    'instruction': (
+        " Lass das deine Redeweise färben: Das Gefühl soll im"
+        " Ton mitschwingen, nie ausgesprochen werden."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_ES = {
+    'sourced': (
+        "Los miembros del grupo siguen {mood} tras {event}."
+    ),
+    'sourceless': (
+        "Los miembros del grupo están {mood} ahora mismo,"
+        " tras algo que acaba de pasar."
+    ),
+    'distinct': (
+        " Ese es el ambiente de todo el grupo, no tu propio"
+        " estado de ánimo de arriba: los dos pueden diferir"
+        " perfectamente."
+    ),
+    'instruction': (
+        " Deja que eso tiña tu forma de hablar: el"
+        " sentimiento debe notarse en el tono, nunca"
+        " anunciarse."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_PT = {
+    'sourced': (
+        "Os membros do grupo continuam {mood} depois de"
+        " {event}."
+    ),
+    'sourceless': (
+        "Os membros do grupo estão {mood} agora, depois de"
+        " algo que acabou de acontecer."
+    ),
+    'distinct': (
+        " Esse é o clima do grupo inteiro, não o seu próprio"
+        " humor indicado acima: os dois podem divergir"
+        " tranquilamente."
+    ),
+    'instruction': (
+        " Deixe isso tingir o seu jeito de falar: o"
+        " sentimento deve transparecer no tom, nunca ser"
+        " anunciado."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_KO = {
+    'sourced': "{event} 이후로 파티 전체가 아직 {mood} 분위기다.",
+    'sourceless': (
+        "방금 무슨 일이 있었는지, 파티 전체가 {mood} 분위기다."
+    ),
+    'distinct': (
+        " 그건 파티 전체의 분위기이지 위에 적힌 네 기분이 아니다."
+        " 둘은 얼마든지 다를 수 있다."
+    ),
+    'instruction': (
+        " 그 감정이 말투에 배어 나오게 하되, 절대 말로 설명하지"
+        " 마라."
+    ),
+}
+
+
+# =============================================================================
+# PER-BOT MOOD LINE -> LOCALIZED PROMPT WORDING
+# =============================================================================
+# The companion line to the session vibe above: this bot's own mood
+# drift (see MOOD_LABELS in chatter_group_state.py), rendered next
+# to the vibe sentence in build_mood_and_vibe_suffix(). A localized
+# vibe sentence sitting under an English "Your own mood: cheerful"
+# label reintroduces the same hybrid problem in miniature, so the
+# label and the word are localized together, as one template per
+# language.
+#
+# Keys: 'own' when a vibe line sits alongside (the two moods need
+# telling apart), 'current' when this is the only mood line.
+# {mood} is filled from the tables below.
+BOT_MOOD_LINE_TEMPLATES = {
+    'own': "Your own mood: {mood}",
+    'current': "Current mood: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_RU = {
+    'own': "Твоё собственное настроение: {mood}",
+    'current': "Текущее настроение: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_FR = {
+    'own': "Ton humeur à toi : {mood}",
+    'current': "Humeur actuelle : {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_DE = {
+    'own': "Deine eigene Stimmung: {mood}",
+    'current': "Aktuelle Stimmung: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_ES = {
+    'own': "Tu propio estado de ánimo: {mood}",
+    'current': "Estado de ánimo actual: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_PT = {
+    'own': "O seu próprio humor: {mood}",
+    'current': "Humor atual: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_KO = {
+    'own': "너 자신의 기분: {mood}",
+    'current': "현재 기분: {mood}",
+}
+
+# Localized per-bot mood words. Keys are the labels produced by
+# get_bot_mood_label() (MOOD_LABELS in chatter_group_state.py).
+# Unlike the group-vibe words these describe a single bot, so they
+# are singular, and each set is inflected for the label template it
+# is dropped into: RU neuter singular (agreeing with
+# "настроение"), FR feminine singular ("humeur"), ES/PT masculine
+# singular ("estado de ánimo" / "humor"), DE uninflected predicate
+# adjectives, KO nominalized forms that stand alone after a colon.
+# Confidence: hand-written prose with no official source; PT/KO
+# lower confidence than RU/FR/DE/ES.
+BOT_MOOD_WORDS_RU = {
+    'miserable': "подавленное",
+    'gloomy': "мрачное",
+    'tired': "усталое",
+    'neutral': "ровное",
+    'content': "довольное",
+    'cheerful': "жизнерадостное",
+    'ecstatic': "восторженное",
+}
+
+BOT_MOOD_WORDS_FR = {
+    'miserable': "exécrable",
+    'gloomy': "morose",
+    'tired': "fatiguée",
+    'neutral': "neutre",
+    'content': "satisfaite",
+    'cheerful': "guillerette",
+    'ecstatic': "euphorique",
+}
+
+BOT_MOOD_WORDS_DE = {
+    'miserable': "elend",
+    'gloomy': "düster",
+    'tired': "müde",
+    'neutral': "neutral",
+    'content': "zufrieden",
+    'cheerful': "fröhlich",
+    'ecstatic': "überglücklich",
+}
+
+BOT_MOOD_WORDS_ES = {
+    'miserable': "pésimo",
+    'gloomy': "sombrío",
+    'tired': "cansado",
+    'neutral': "neutral",
+    'content': "contento",
+    'cheerful': "alegre",
+    'ecstatic': "eufórico",
+}
+
+BOT_MOOD_WORDS_PT = {
+    'miserable': "péssimo",
+    'gloomy': "sombrio",
+    'tired': "cansado",
+    'neutral': "neutro",
+    'content': "contente",
+    'cheerful': "animado",
+    'ecstatic': "eufórico",
+}
+
+BOT_MOOD_WORDS_KO = {
+    'miserable': "비참함",
+    'gloomy': "침울함",
+    'tired': "지쳐 있음",
+    'neutral': "평범함",
+    'content': "만족스러움",
+    'cheerful': "쾌활함",
+    'ecstatic': "황홀함",
 }
 
 
