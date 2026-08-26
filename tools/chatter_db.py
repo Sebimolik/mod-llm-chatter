@@ -1429,6 +1429,16 @@ def cleanup_stale_groups(db) -> int:
                 "WHERE group_id = %s",
                 (gid,),
             )
+            # Drop any persisted session vibe. Group ids are
+            # reissued after a worldserver restart, so leaving
+            # this row behind lets a disbanded group's mood
+            # bleed into an unrelated party that inherits its
+            # id while the vibe is still inside its window.
+            cursor.execute(
+                "DELETE FROM llm_group_vibe "
+                "WHERE group_id = %s",
+                (gid,),
+            )
             # Clear in-memory session state
             try:
                 from chatter_memory import (
@@ -1644,6 +1654,7 @@ def cleanup_all_session_data(db):
     - llm_group_bot_traits
     - llm_group_chat_history
     - llm_group_cached_responses
+    - llm_group_vibe
     - llm_general_chat_history
     - llm_guild_session_history
     - llm_guild_chat_sessions
@@ -1661,6 +1672,9 @@ def cleanup_all_session_data(db):
         )
         cursor.execute(
             "DELETE FROM llm_group_cached_responses"
+        )
+        cursor.execute(
+            "DELETE FROM llm_group_vibe"
         )
         cursor.execute(
             "DELETE FROM llm_general_chat_history"

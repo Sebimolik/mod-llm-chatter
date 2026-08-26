@@ -1975,8 +1975,16 @@ def main():
                     'LLMChatter.Memory'
                     '.SessionMinutes', 15
                 ))
+                # Startup recovery trims each pair back to
+                # the configured cap; without this it used a
+                # hardcoded 30 and would delete real memories
+                # on any server that raised the limit.
+                max_per = int(config.get(
+                    'LLMChatter.Memory'
+                    '.MaxPerBotPlayer', 30
+                ))
                 activate_orphaned_memories(
-                    db, session_min
+                    db, session_min, max_per,
                 )
                 rehydrate_active_sessions(db)
         except Exception:
