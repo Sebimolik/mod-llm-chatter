@@ -386,6 +386,11 @@ CREATE TABLE IF NOT EXISTS `llm_bot_relationships` (
 CREATE TABLE IF NOT EXISTS `llm_group_vibe` (
     `group_id`   INT UNSIGNED NOT NULL,
     `vibe`       VARCHAR(64)  NOT NULL,
+    -- memory_type of the memory that set the vibe, so the prompt can
+    -- name the cause ("still humbled after a recent wipe") and not
+    -- just the mood. NULL = unknown cause (legacy rows, unmapped
+    -- types); the prompt falls back to sourceless phrasing.
+    `source_type` VARCHAR(32) NULL,
     `importance` TINYINT UNSIGNED NOT NULL DEFAULT 5,
     `set_at`     INT UNSIGNED NOT NULL,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

@@ -377,9 +377,9 @@ def start_session(
             ].update(members)
 
 
-def get_session_vibe(group_id, config=None):
-    """Return the group's current ambient session vibe,
-    or None.
+def get_session_vibe_details(group_id, config=None):
+    """Return (vibe, source_type) for the group's current
+    ambient session vibe, or (None, None).
 
     Lazy decay, no background timer: the vibe is written
     by _ensure_cap_and_insert() whenever a new memory's
@@ -389,6 +389,12 @@ def get_session_vibe(group_id, config=None):
     LLMChatter.GroupChatter.VibeDurationSeconds have
     elapsed -- callers just re-check the timestamp on
     every read instead of anything clearing it eagerly.
+
+    source_type is the memory_type of the memory that set
+    the vibe (llm_group_vibe.source_type), which lets the
+    prompt name the cause instead of only the mood. It is
+    None for rows written before that column existed, so
+    callers must still render something sensible without it.
 
     Persisted: each important memory also UPSERTs the vibe
     into llm_group_vibe (see upsert_group_vibe() in
@@ -400,16 +406,19 @@ def get_session_vibe(group_id, config=None):
     ORIGINAL set_at timestamp, so a restart cannot extend a
     vibe's lifetime.
 
-    Used by idle-chatter tone selection to bias toward a
-    recent emotionally-significant memory instead of a
-    fully random tone roll.
+    Used by idle-chatter tone selection and by the group
+    reaction pipeline to bias the whole party's delivery
+    toward a recent emotionally-significant memory instead
+    of a fully random tone roll.
     """
     session = _active_sessions.get(group_id)
     vibe = None
     vibe_set_at = None
+    vibe_source = None
     if session is not None:
         vibe = session.get("vibe")
         vibe_set_at = session.get("vibe_set_at")
+        vibe_source = session.get("vibe_source")
     # Defensive parse: an empty/non-numeric/NaN duration
     # must not crash the tone path or silently disable
     # decay (NaN makes every comparison False).
@@ -431,12 +440,12 @@ def get_session_vibe(group_id, config=None):
             # snake_case (e.g. "grimly_amused") --
             # normalize to a plain phrase for use as a
             # prompt tone.
-            return vibe.replace('_', ' ')
+            return vibe.replace('_', ' '), vibe_source
         # In-memory copy expired: fall through to the DB
         # row, which carries the original set_at (a
         # restart cannot extend the vibe's lifetime).
     if not config:
-        return None
+        return None, None
 
     # DB fallback: one shared connection for read + delete.
     conn = None
@@ -447,8 +456,9 @@ def get_session_vibe(group_id, config=None):
             if session is not None:
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
-            return None
-        persisted_vibe, set_at = row
+                session.pop('vibe_source', None)
+            return None, None
+        persisted_vibe, set_at, persisted_source = row
         if now - set_at >= duration:
             # Stale row: delete conditionally on the set_at
             # we read so a concurrently-written newer vibe
@@ -465,24 +475,37 @@ def get_session_vibe(group_id, config=None):
             if session is not None:
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
-            return None
+                session.pop('vibe_source', None)
+            return None, None
         if session is not None:
             session["vibe"] = persisted_vibe
             session["vibe_set_at"] = set_at
-        return persisted_vibe.replace('_', ' ')
+            session["vibe_source"] = persisted_source
+        return persisted_vibe.replace('_', ' '), persisted_source
     except Exception:
         logger.warning(
             "Failed to load persisted group vibe for"
             " group %s", group_id,
             exc_info=True,
         )
-        return None
+        return None, None
     finally:
         if conn is not None:
             try:
                 conn.close()
             except Exception:
                 pass
+
+
+def get_session_vibe(group_id, config=None):
+    """Return just the group's current ambient session vibe
+    word, or None.
+
+    Thin wrapper over get_session_vibe_details() for the
+    callers that only steer a tone roll and have no use for
+    the triggering memory_type.
+    """
+    return get_session_vibe_details(group_id, config)[0]
 
 
 def teardown_group_session(group_id):
@@ -1006,6 +1029,9 @@ def _ensure_cap_and_insert(
         if session is not None:
             session["vibe"] = mood
             session["vibe_set_at"] = time.time()
+            # The triggering memory_type: lets the prompt
+            # name the cause, not just the mood.
+            session["vibe_source"] = memory_type
         # Persist so the vibe survives a bridge restart /
         # session CLEANUP wipe. Reuses this function's
         # connection rather than opening a second one on
@@ -1014,7 +1040,7 @@ def _ensure_cap_and_insert(
         try:
             upsert_group_vibe(
                 config, group_id, mood, importance,
-                conn=conn,
+                source_type=memory_type, conn=conn,
             )
         except Exception:
             logger.warning(

@@ -1761,7 +1761,8 @@ def fail_event(db, event_id, event_type, reason,
 # =====================================================================
 
 def upsert_group_vibe(
-    config, group_id, vibe, importance, conn=None,
+    config, group_id, vibe, importance,
+    source_type=None, conn=None,
 ):
     """Persist (or refresh) a group's session vibe row.
 
@@ -1769,6 +1770,12 @@ def upsert_group_vibe(
     get_session_vibe() to apply lazy expiry: a vibe only
     survives VibeDurationSeconds from when it was SET, so a
     bridge restart cannot extend its lifetime.
+
+    source_type is the memory_type of the memory that set the
+    vibe, so the prompt can name the cause ("still humbled
+    after a recent wipe") instead of only the mood. NULL is
+    allowed and means "unknown cause": the read side falls
+    back to sourceless phrasing.
 
     Accepts an optional caller-owned connection: the only
     caller sits on the hot memory-write path and already
@@ -1790,16 +1797,19 @@ def upsert_group_vibe(
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO llm_group_vibe"
-            " (group_id, vibe, importance,"
+            " (group_id, vibe, source_type, importance,"
             "  set_at, updated_at)"
-            " VALUES (%s,%s,%s,%s, NOW())"
+            " VALUES (%s,%s,%s,%s,%s, NOW())"
             " ON DUPLICATE KEY UPDATE"
             "   vibe = VALUES(vibe),"
+            "   source_type = VALUES(source_type),"
             "   importance = VALUES(importance),"
             "   set_at = VALUES(set_at),"
             "   updated_at = NOW()",
             (
-                group_id, vibe, importance,
+                group_id, vibe,
+                (str(source_type)[:32] if source_type else None),
+                importance,
                 int(time.time()),
             ),
         )
@@ -1811,9 +1821,11 @@ def upsert_group_vibe(
 
 
 def get_group_vibe(config, group_id, conn=None):
-    """Return (vibe, set_at) for a group, or None.
+    """Return (vibe, set_at, source_type) for a group, or None.
 
-    set_at is the unix second the vibe was set. An optional
+    set_at is the unix second the vibe was set. source_type is
+    the memory_type that triggered it, or None for legacy rows
+    written before the column existed. An optional
     caller-owned connection avoids a fresh connect per read on
     the hot tone-selection path.
     """
@@ -1823,7 +1835,8 @@ def get_group_vibe(config, group_id, conn=None):
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT vibe, set_at FROM llm_group_vibe"
+            "SELECT vibe, set_at, source_type"
+            " FROM llm_group_vibe"
             " WHERE group_id = %s",
             (group_id,),
         )
@@ -1831,7 +1844,7 @@ def get_group_vibe(config, group_id, conn=None):
         cursor.close()
         if not row:
             return None
-        return row[0], int(row[1])
+        return row[0], int(row[1]), row[2]
     finally:
         if own:
             conn.close()
