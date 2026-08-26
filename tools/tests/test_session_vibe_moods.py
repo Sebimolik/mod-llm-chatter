@@ -148,7 +148,8 @@ def test_vibe_reaches_the_idle_conversation_prompt():
         session_vibe_source='wipe',
     )
     assert (
-        "The group is still humbled after a recent wipe."
+        "The group is still humbled after being cut down"
+        " to the last of them."
         in prompt
     )
     assert "Overall tone:" not in prompt

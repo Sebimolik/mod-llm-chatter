@@ -1773,7 +1773,8 @@ def upsert_group_vibe(
 
     source_type is the memory_type of the memory that set the
     vibe, so the prompt can name the cause ("still humbled
-    after a recent wipe") instead of only the mood. NULL is
+    after being cut down to the last of them") instead of
+    only the mood. NULL is
     allowed and means "unknown cause": the read side falls
     back to sourceless phrasing.
 

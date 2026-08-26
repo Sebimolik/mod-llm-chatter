@@ -8403,26 +8403,35 @@ VIBE_FAMILY_MOODS = {
 # specific line about. llm_group_vibe.source_type records the
 # memory_type of the memory that set the vibe, and these tables turn
 # that into a short event phrase so the prompt can name the cause
-# ("still humbled after a recent wipe"). Keys are the
-# llm_bot_memories.memory_type ENUM values; anything missing falls
-# back to the sourceless phrasing in build_session_vibe_line().
+# ("still humbled after being cut down to the last of them"). Keys
+# are the llm_bot_memories.memory_type ENUM values; anything missing
+# falls back to the sourceless phrasing in build_session_vibe_line().
+#
+# The phrases are written in-world, in the words a Warcraft
+# character would actually use. Player-side vocabulary -- "wipe",
+# "boss", "level", "achievement", "PvP", "party chat" -- names
+# nothing that exists inside the fiction, and whatever register the
+# instruction is written in is the register the model answers in, so
+# meta wording here surfaces as meta wording in the bot's line. No
+# proper nouns appear either: one phrase covers every occurrence of
+# its event type, anywhere in the world.
 VIBE_SOURCE_PHRASES = {
-    'wipe': "a recent wipe",
-    'boss_kill': "bringing down a boss",
-    'rare_kill': "running down a rare beast",
-    'achievement': "earning an achievement",
-    'level_up': "a hard-won level",
-    'quest_complete': "finishing a quest",
-    'dungeon': "the last stretch of the dungeon",
-    'bg_win': "winning a battleground",
-    'bg_loss': "losing a battleground",
-    'pvp_kill': "cutting down an enemy player",
-    'discovery': "stumbling on somewhere new",
-    'player_message': "something said in party chat",
-    'party_member': "a moment shared with someone in the party",
-    'gear_change': "someone's new gear",
-    'mount_change': "someone's new mount",
-    'first_meeting': "meeting someone new",
+    'wipe': "being cut down to the last of them",
+    'boss_kill': "felling a terrible foe",
+    'rare_kill': "hunting down a rare and dangerous beast",
+    'achievement': "a feat worth remembering",
+    'level_up': "hard-won growth in skill",
+    'quest_complete': "seeing a task through to the end",
+    'dungeon': "the last stretch of those depths",
+    'bg_win': "winning the day in battle",
+    'bg_loss': "losing the day in battle",
+    'pvp_kill': "besting an enemy in combat",
+    'discovery': "setting eyes on unfamiliar country",
+    'player_message': "something said among them",
+    'party_member': "a moment shared with one of their own",
+    'gear_change': "someone's new arms and armor",
+    'mount_change': "someone's new steed",
+    'first_meeting': "falling in with someone new",
     'ambient': "a quiet moment on the road",
     'condensed': "everything they have been through together",
 }
@@ -8440,90 +8449,94 @@ VIBE_SOURCE_PHRASES = {
 # French/Spanish infinitive or noun phrase after "après"/"tras".
 # The surrounding sentence is localized too, so these fragments
 # never sit inside an English frame.
-# Confidence: game terms use the official client localizations
-# ("поле боя", "ездовое животное", "haut fait", "Schlachtfeld",
-# "campo de batalla"); the surrounding wording is best-effort
-# hand-written prose, not sourced from Blizzard text.
+# Like the English table, these are in-world wordings rather than
+# translations of player jargon -- "вайп"/"Wipe"/"wipe" and the
+# other loanwords they replaced were meta vocabulary in every
+# language.
+# Confidence: the few surviving game terms use the official client
+# localizations ("Reittier", "monture", "montura", "montaria",
+# "탈것"); everything else is best-effort hand-written prose, not
+# sourced from Blizzard text.
 VIBE_SOURCE_PHRASES_RU = {
-    'wipe': "недавнего вайпа",
-    'boss_kill': "убийства босса",
-    'rare_kill': "охоты на редкого зверя",
-    'achievement': "полученного достижения",
-    'level_up': "тяжело давшегося уровня",
-    'quest_complete': "завершённого задания",
-    'dungeon': "последнего отрезка подземелья",
-    'bg_win': "победы на поле боя",
-    'bg_loss': "поражения на поле боя",
-    'pvp_kill': "расправы над вражеским игроком",
-    'discovery': "находки нового места",
-    'player_message': "сказанного в чате отряда",
-    'party_member': "общего момента с товарищем по отряду",
-    'gear_change': "чьей-то новой экипировки",
-    'mount_change': "чьего-то нового ездового животного",
+    'wipe': "того, как их всех перебили",
+    'boss_kill': "падения могучего врага",
+    'rare_kill': "охоты на редкого и опасного зверя",
+    'achievement': "подвига, о котором стоит помнить",
+    'level_up': "тяжело давшегося роста мастерства",
+    'quest_complete': "доведённого до конца дела",
+    'dungeon': "того, что они прошли в тех подземельях",
+    'bg_win': "победы в большом сражении",
+    'bg_loss': "поражения в большом сражении",
+    'pvp_kill': "победы над врагом в схватке",
+    'discovery': "того, как перед ними открылись незнакомые земли",
+    'player_message': "сказанного между ними",
+    'party_member': "мгновения, разделённого с товарищем",
+    'gear_change': "чьего-то нового оружия и доспехов",
+    'mount_change': "чьего-то нового скакуна",
     'first_meeting': "знакомства с новым спутником",
     'ambient': "тихой минуты в пути",
     'condensed': "всего пережитого вместе",
 }
 
 VIBE_SOURCE_PHRASES_FR = {
-    'wipe': "un wipe récent",
-    'boss_kill': "avoir abattu un boss",
-    'rare_kill': "avoir traqué une bête rare",
-    'achievement': "un haut fait décroché",
-    'level_up': "un niveau durement gagné",
-    'quest_complete': "une quête bouclée",
-    'dungeon': "la dernière portion du donjon",
-    'bg_win': "une victoire en champ de bataille",
-    'bg_loss': "une défaite en champ de bataille",
-    'pvp_kill': "avoir abattu un joueur ennemi",
-    'discovery': "être tombé sur un endroit inconnu",
-    'player_message': "quelque chose dit dans le canal de groupe",
-    'party_member': "un moment partagé avec un membre du groupe",
-    'gear_change': "le nouvel équipement de quelqu'un",
+    'wipe': "être tombés jusqu'au dernier",
+    'boss_kill': "avoir abattu un adversaire redoutable",
+    'rare_kill': "avoir traqué une bête rare et dangereuse",
+    'achievement': "un exploit dont on se souviendra",
+    'level_up': "des progrès durement acquis",
+    'quest_complete': "avoir mené une tâche à son terme",
+    'dungeon': "la dernière portion de ces souterrains",
+    'bg_win': "une bataille remportée",
+    'bg_loss': "une bataille perdue",
+    'pvp_kill': "avoir eu raison d'un ennemi au combat",
+    'discovery': "avoir posé les yeux sur des terres inconnues",
+    'player_message': "ce qui s'est dit entre eux",
+    'party_member': "un moment partagé avec l'un des leurs",
+    'gear_change': "l'armement neuf de quelqu'un",
     'mount_change': "la nouvelle monture de quelqu'un",
-    'first_meeting': "une nouvelle rencontre",
+    'first_meeting': "une nouvelle rencontre en chemin",
     'ambient': "un moment calme sur la route",
     'condensed': "tout ce qu'ils ont traversé ensemble",
 }
 
 VIBE_SOURCE_PHRASES_DE = {
-    'wipe': "einem kürzlichen Wipe",
-    'boss_kill': "dem Fall eines Bosses",
-    'rare_kill': "der Jagd auf eine seltene Bestie",
-    'achievement': "einem errungenen Erfolg",
-    'level_up': "einer hart erkämpften Stufe",
-    'quest_complete': "einer abgeschlossenen Quest",
-    'dungeon': "dem letzten Abschnitt des Dungeons",
-    'bg_win': "einem Sieg im Schlachtfeld",
-    'bg_loss': "einer Niederlage im Schlachtfeld",
-    'pvp_kill': "dem Niederstrecken eines feindlichen Spielers",
-    'discovery': "einem neu entdeckten Ort",
-    'player_message': "etwas, das im Gruppenchat gesagt wurde",
-    'party_member': "einem gemeinsamen Moment mit jemandem aus der Gruppe",
-    'gear_change': "jemandes neuer Ausrüstung",
+    'wipe': "dem Fall der ganzen Schar",
+    'boss_kill': "dem Fall eines furchtbaren Gegners",
+    'rare_kill': "der Jagd auf eine seltene, gefährliche Bestie",
+    'achievement': "einer unvergesslichen Tat",
+    'level_up': "einem hart erkämpften Zuwachs an Können",
+    'quest_complete': "einem zu Ende gebrachten Auftrag",
+    'dungeon': "dem letzten Abschnitt in jenen Tiefen",
+    'bg_win': "einer gewonnenen Schlacht",
+    'bg_loss': "einer verlorenen Schlacht",
+    'pvp_kill': "dem Sieg über einen Feind im Kampf",
+    'discovery': "dem Anblick unbekannten Landes",
+    'player_message': "einem Wortwechsel unter ihnen",
+    'party_member': "einem gemeinsamen Moment mit einem der Ihren",
+    'gear_change': "jemandes neuer Waffe und Rüstung",
     'mount_change': "jemandes neuem Reittier",
     'first_meeting': "einer neuen Bekanntschaft",
     'ambient': "einem ruhigen Moment unterwegs",
-    'condensed': "allem, was sie zusammen durchgestanden haben",
+    'condensed': "allem gemeinsam Durchgestandenen",
 }
 
 VIBE_SOURCE_PHRASES_ES = {
-    'wipe': "un wipe reciente",
-    'boss_kill': "abatir a un jefe",
-    'rare_kill': "cazar a una bestia rara",
-    'achievement': "conseguir un logro",
-    'level_up': "un nivel ganado a pulso",
-    'quest_complete': "terminar una misión",
-    'dungeon': "el último tramo de la mazmorra",
-    'bg_win': "ganar un campo de batalla",
-    'bg_loss': "perder un campo de batalla",
-    'pvp_kill': "acabar con un jugador enemigo",
-    'discovery': "dar con un lugar nuevo",
-    'player_message': "algo dicho en el chat de grupo",
-    'party_member': "un momento compartido con alguien del grupo",
-    'gear_change': "el equipo nuevo de alguien",
+    'wipe': "caer todos hasta el último",
+    'boss_kill': "abatir a un enemigo temible",
+    'rare_kill': "dar caza a una bestia rara y peligrosa",
+    'achievement': "una hazaña digna de recordar",
+    'level_up': "un avance ganado a pulso",
+    'quest_complete': "llevar un encargo hasta el final",
+    'dungeon': "el último tramo de aquellas profundidades",
+    'bg_win': "una batalla ganada",
+    'bg_loss': "una batalla perdida",
+    'pvp_kill': "vencer a un enemigo en combate",
+    'discovery': "poner los ojos en tierras desconocidas",
+    'player_message': "lo que se dijo entre ellos",
+    'party_member': "un momento compartido con uno de los suyos",
+    'gear_change': "las armas nuevas de alguien",
     'mount_change': "la nueva montura de alguien",
-    'first_meeting': "conocer a alguien nuevo",
+    'first_meeting': "conocer a alguien nuevo en el camino",
     'ambient': "un momento tranquilo en el camino",
     'condensed': "todo lo que han pasado juntos",
 }
@@ -8778,47 +8791,47 @@ VIBE_MOOD_WORDS_ES = {
 # baseline to run ahead of.
 # Confidence: PT/KO are best-effort hand-written renderings by a
 # non-native writer -- lower confidence than the RU/FR/DE/ES tables
-# above and worth a native review; the game terms they do contain
-# ("campo de batalha", "masmorra", "전장", "던전", "업적", "탈것")
-# follow the usual client vocabulary.
+# above and worth a native review; the one game term they still
+# contain ("montaria", "탈것") follows the usual client vocabulary,
+# and the rest is in-world prose rather than player jargon.
 VIBE_SOURCE_PHRASES_PT = {
-    'wipe': "um wipe recente",
-    'boss_kill': "derrubar um chefe",
-    'rare_kill': "caçar uma fera rara",
-    'achievement': "ganhar uma conquista",
-    'level_up': "um nível ganho a duras penas",
-    'quest_complete': "concluir uma missão",
-    'dungeon': "o último trecho da masmorra",
-    'bg_win': "vencer um campo de batalha",
-    'bg_loss': "perder um campo de batalha",
-    'pvp_kill': "derrubar um jogador inimigo",
-    'discovery': "dar de cara com um lugar novo",
-    'player_message': "algo dito no chat do grupo",
-    'party_member': "um momento partilhado com alguém do grupo",
-    'gear_change': "o equipamento novo de alguém",
+    'wipe': "caírem todos até o último",
+    'boss_kill': "derrubar um inimigo temível",
+    'rare_kill': "caçar uma fera rara e perigosa",
+    'achievement': "um feito digno de memória",
+    'level_up': "um avanço conquistado a duras penas",
+    'quest_complete': "levar uma tarefa até o fim",
+    'dungeon': "o último trecho daquelas profundezas",
+    'bg_win': "uma batalha vencida",
+    'bg_loss': "uma batalha perdida",
+    'pvp_kill': "vencer um inimigo em combate",
+    'discovery': "avistar terras desconhecidas",
+    'player_message': "o que se disse entre eles",
+    'party_member': "um momento partilhado com um dos seus",
+    'gear_change': "as armas novas de alguém",
     'mount_change': "a montaria nova de alguém",
-    'first_meeting': "conhecer alguém novo",
+    'first_meeting': "conhecer alguém novo na estrada",
     'ambient': "um momento tranquilo na estrada",
     'condensed': "tudo o que passaram juntos",
 }
 
 VIBE_SOURCE_PHRASES_KO = {
-    'wipe': "방금 전의 전멸",
-    'boss_kill': "우두머리를 쓰러뜨린 일",
-    'rare_kill': "희귀한 야수를 사냥한 일",
-    'achievement': "업적을 달성한 일",
-    'level_up': "힘겹게 올린 레벨",
-    'quest_complete': "퀘스트를 완료한 일",
-    'dungeon': "던전의 마지막 구간",
-    'bg_win': "전장에서 거둔 승리",
-    'bg_loss': "전장에서 당한 패배",
-    'pvp_kill': "적 플레이어를 쓰러뜨린 일",
-    'discovery': "새로운 장소를 발견한 일",
-    'player_message': "파티 대화에서 나온 이야기",
-    'party_member': "파티원과 나눈 순간",
-    'gear_change': "누군가의 새 장비",
+    'wipe': "다 함께 쓰러진 일",
+    'boss_kill': "무서운 적을 쓰러뜨린 일",
+    'rare_kill': "희귀하고 위험한 야수를 사냥한 일",
+    'achievement': "기억에 남을 위업",
+    'level_up': "힘겹게 얻은 성장",
+    'quest_complete': "맡은 일을 끝까지 해낸 일",
+    'dungeon': "그 깊은 곳에서 넘긴 마지막 고비",
+    'bg_win': "싸움에서 거둔 승리",
+    'bg_loss': "싸움에서 당한 패배",
+    'pvp_kill': "적을 싸움에서 꺾은 일",
+    'discovery': "낯선 땅을 처음 본 일",
+    'player_message': "서로 주고받은 이야기",
+    'party_member': "동료와 나눈 한순간",
+    'gear_change': "누군가의 새 무기와 갑옷",
     'mount_change': "누군가의 새 탈것",
-    'first_meeting': "새로운 사람과의 첫 만남",
+    'first_meeting': "길에서 만난 새로운 이",
     'ambient': "길 위의 조용한 한때",
     'condensed': "함께 겪어온 모든 일",
 }
@@ -8969,8 +8982,11 @@ VIBE_MOOD_WORDS_KO = {
 #   RU  plural nominative subject ("Все в отряде ... {mood}") takes
 #       the plural mood words; "после" takes the genitive phrases.
 #   FR/ES/PT  plural subject ("Les membres du groupe ...") takes the
-#       masculine-plural mood words; "après"/"tras"/"depois de"
-#       take the noun-or-infinitive phrases.
+#       masculine-plural mood words; "après"/"tras"/"após" take
+#       the noun-or-infinitive phrases. Portuguese uses "após"
+#       rather than "depois de" precisely because "de" would have
+#       to contract with an article inside the slot ("depois do
+#       último trecho"), which a template cannot do from outside.
 #   DE  "nach {event}" keeps the dative event phrases in the slot
 #       that actually governs dative, and the mood words stay
 #       uninflected predicate adjectives.
@@ -9075,12 +9091,11 @@ VIBE_LINE_TEMPLATES_ES = {
 
 VIBE_LINE_TEMPLATES_PT = {
     'sourced': (
-        "Os membros do grupo continuam {mood} depois de"
-        " {event}."
+        "Os membros do grupo continuam {mood} após {event}."
     ),
     'sourceless': (
-        "Os membros do grupo estão {mood} agora, depois de"
-        " algo que acabou de acontecer."
+        "Os membros do grupo estão {mood} agora, após algo"
+        " que acabou de acontecer."
     ),
     'distinct': (
         " Esse é o clima do grupo inteiro, não o seu próprio"

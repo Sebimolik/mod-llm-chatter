@@ -779,7 +779,8 @@ def test_vibe_line_names_a_known_cause():
         'humbled', 'wipe',
     )
     assert line.startswith(
-        "The group is still humbled after a recent wipe."
+        "The group is still humbled after being cut down"
+        " to the last of them."
     )
     # Colors the delivery without announcing the mood.
     assert 'never be announced' in line
@@ -793,7 +794,7 @@ def test_vibe_line_without_a_source_still_renders():
         'humbled', None,
     )
     assert 'humbled' in line
-    assert 'after a recent wipe' not in line
+    assert 'after being cut down' not in line
     assert 'color how you speak' in line
 
 
@@ -940,7 +941,7 @@ def test_unmapped_language_falls_back_to_english():
     with _Language('US'):
         assert chatter_shared.get_vibe_source_phrase(
             'wipe',
-        ) == "a recent wipe"
+        ) == "being cut down to the last of them"
         assert chatter_shared.get_vibe_mood_word(
             'humbled',
         ) == 'humbled'
@@ -963,8 +964,8 @@ def test_unmapped_key_inside_a_mapped_locale_falls_back():
 # Scaffolding words that must never survive into a localized
 # render. The shipped-then-fixed defect was an English frame with
 # localized words dropped into it ("The group is still
-# присмиревшие after недавнего вайпа"), so these are asserted
-# against directly.
+# присмиревшие after того, как их всех перебили"), so these
+# are asserted against directly.
 _ENGLISH_SCAFFOLDING = (
     "The group",
     "Let it color",
@@ -992,12 +993,12 @@ def test_russian_vibe_line_is_localized_end_to_end():
             'humbled', 'wipe',
         )
     assert 'присмиревшие' in line
-    assert 'недавнего вайпа' in line
+    assert 'того, как их всех перебили' in line
     # The whole sentence is Russian now, scaffolding included:
     # "после" governs the genitive phrase, unlike English
     # "after", which was the grammatical defect being fixed.
     assert line.startswith('Все в отряде всё ещё')
-    assert 'после недавнего вайпа' in line
+    assert 'после того, как их всех перебили' in line
     assert not _has_english_scaffolding(line)
 
 
@@ -1058,12 +1059,40 @@ def test_localized_renders_carry_no_english_scaffolding():
                 assert not leaked, (code, leaked, mood_line)
 
 
+_META_GAME_TERMS = (
+    'wipe', 'boss', 'level up', 'achievement',
+    'pvp', 'xp', 'loot', 'aggro', 'respawn',
+)
+
+
+def _has_meta_game_vocabulary(text):
+    lowered = text.lower()
+    return [
+        term for term in _META_GAME_TERMS
+        if term in lowered
+    ]
+
+
+def test_event_phrases_avoid_meta_game_vocabulary():
+    """Bots have no in-fiction concept of a wipe, a boss, a
+    level, or PvP. These phrases frame what the model says,
+    so meta vocabulary here leaks straight into the output.
+    """
+    for memory_type in chatter_constants.VIBE_SOURCE_PHRASES:
+        line = chatter_prompts.build_session_vibe_line(
+            'humbled', memory_type,
+        )
+        leaked = _has_meta_game_vocabulary(line)
+        assert not leaked, (memory_type, leaked, line)
+
+
 def test_unmapped_locale_renders_the_full_english_sentence():
     with _Language('US'):
         assert chatter_prompts.build_session_vibe_line(
             'humbled', 'wipe',
         ) == (
-            "The group is still humbled after a recent wipe."
+            "The group is still humbled after being cut down"
+            " to the last of them."
             " Let it color how you speak -- the feeling should"
             " show in your delivery, never be announced."
         )
@@ -1152,7 +1181,7 @@ def _suffix(mood_label, vibe, vibe_source):
 def test_reaction_suffix_injects_the_vibe_when_active():
     out = _suffix('cheerful', 'humbled', 'wipe')
     assert 'Your own mood: cheerful' in out
-    assert 'still humbled after a recent wipe' in out
+    assert 'still humbled after being cut down' in out
     # Contradiction is framed as characterization.
     assert 'not your own mood' in out
 
@@ -1165,7 +1194,7 @@ def test_reaction_suffix_omits_the_vibe_when_none_is_active():
 def test_reaction_suffix_vibe_only_for_a_neutral_bot():
     out = _suffix('neutral', 'humbled', 'wipe')
     assert 'mood:' not in out
-    assert 'still humbled after a recent wipe' in out
+    assert 'still humbled after being cut down' in out
     # Nothing to contrast against, so no distinctness clause.
     assert 'not your own mood' not in out
 
