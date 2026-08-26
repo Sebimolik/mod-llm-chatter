@@ -1973,7 +1973,7 @@ def main():
                 )
                 session_min = int(config.get(
                     'LLMChatter.Memory'
-                    '.SessionMinutes', 15
+                    '.SessionMinutes', 3
                 ))
                 # Startup recovery trims each pair back to
                 # the configured cap; without this it used a

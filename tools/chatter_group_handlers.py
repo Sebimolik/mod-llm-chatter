@@ -168,7 +168,7 @@ def _kill_post_success(db, ctx, message):
     creature_name = ctx['creature_name']
     boss_mem_chance = int(config.get(
         'LLMChatter.Memory'
-        '.BossKillGenerationChance', 60
+        '.BossKillGenerationChance', 70
     ))
     if random.random() * 100 >= boss_mem_chance:
         return
@@ -1842,7 +1842,7 @@ def process_group_zone_transition_event(
         try:
             ambient_chance = int(config.get(
                 'LLMChatter.Memory.AmbientChance',
-                15,
+                20,
             ))
             if (
                 ambient_chance > 0

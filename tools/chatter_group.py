@@ -561,7 +561,7 @@ def process_group_event(db, client, config, event):
                 player_name_known = bool(memories)
                 recall_chance = int(config.get(
                     'LLMChatter.Memory.RecallChance',
-                    30,
+                    20,
                 )) / 100.0
                 if (
                     player_name_known
@@ -634,7 +634,7 @@ def process_group_event(db, client, config, event):
             dn = get_dungeon_flavor(pm)
             dng_chance = int(config.get(
                 'LLMChatter.Memory'
-                '.DungeonGenerationChance', 50
+                '.DungeonGenerationChance', 60
             ))
             if (dn and random.random() * 100
                     < dng_chance):
@@ -1208,7 +1208,7 @@ def process_group_join_batch_event(
                 dungeon_name = get_dungeon_flavor(pm)
                 dng_chance = int(config.get(
                     'LLMChatter.Memory'
-                    '.DungeonGenerationChance', 50
+                    '.DungeonGenerationChance', 60
                 ))
                 if dungeon_name:
                     dungeon_name = (
