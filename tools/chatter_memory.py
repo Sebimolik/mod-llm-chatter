@@ -980,8 +980,16 @@ def _ensure_cap_and_insert(
     # Session vibe: a sufficiently important memory
     # colors the group's ambient idle-chatter tone for
     # a while (see get_session_vibe() for the lazy-decay
-    # read side). Skip silently if the session already
-    # ended -- never create an entry just for this.
+    # read side). The in-memory session is updated only
+    # when one exists, but the DB row is written either
+    # way -- the read side falls back to the DB
+    # unconditionally, so gating the write on a live
+    # session would drop the vibe exactly when it is
+    # needed most (after a restart or a session CLEANUP
+    # wipe). Rows for groups that are really gone are
+    # purged by cleanup_stale_groups() /
+    # cleanup_all_session_data(), so writing without a
+    # session does not leak.
     # Not lock-protected: this call can already run
     # inside the per-group lock (see
     # _execute_generate_memory's insert_active=False
@@ -998,21 +1006,22 @@ def _ensure_cap_and_insert(
         if session is not None:
             session["vibe"] = mood
             session["vibe_set_at"] = time.time()
-            # Persist so the vibe survives a bridge
-            # restart / session CLEANUP wipe. Fail-open:
-            # a DB hiccup must never break the memory
-            # insert this block is part of.
-            try:
-                upsert_group_vibe(
-                    config, group_id, mood, mood,
-                    importance,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to persist group vibe for"
-                    " group %s", group_id,
-                    exc_info=True,
-                )
+        # Persist so the vibe survives a bridge restart /
+        # session CLEANUP wipe. Reuses this function's
+        # connection rather than opening a second one on
+        # the hot path. Fail-open: a DB hiccup must never
+        # break the memory insert this block is part of.
+        try:
+            upsert_group_vibe(
+                config, group_id, mood, importance,
+                conn=conn,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist group vibe for"
+                " group %s", group_id,
+                exc_info=True,
+            )
 
     # Proactive condensation trigger: needs the pair's
     # active count AFTER the insert above (and any eviction

@@ -1761,7 +1761,7 @@ def fail_event(db, event_id, event_type, reason,
 # =====================================================================
 
 def upsert_group_vibe(
-    config, group_id, vibe, mood, importance,
+    config, group_id, vibe, importance, conn=None,
 ):
     """Persist (or refresh) a group's session vibe row.
 
@@ -1769,6 +1769,12 @@ def upsert_group_vibe(
     get_session_vibe() to apply lazy expiry: a vibe only
     survives VibeDurationSeconds from when it was SET, so a
     bridge restart cannot extend its lifetime.
+
+    Accepts an optional caller-owned connection: the only
+    caller sits on the hot memory-write path and already
+    holds a connection to the same database (sometimes while
+    holding a non-reentrant per-group lock), so a fresh
+    connect + auth here would be pure overhead.
     """
     # Coerce against the unsigned column types: a malformed
     # score or out-of-range group id must not fail the INSERT
@@ -1777,36 +1783,37 @@ def upsert_group_vibe(
     importance = max(0, min(255, int(importance)))
     if group_id < 0 or group_id > 0xFFFFFFFF:
         return
-    conn = get_db_connection(config)
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
     try:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO llm_group_vibe"
-            " (group_id, vibe, mood, importance,"
+            " (group_id, vibe, importance,"
             "  set_at, updated_at)"
-            " VALUES (%s,%s,%s,%s,%s, NOW())"
+            " VALUES (%s,%s,%s,%s, NOW())"
             " ON DUPLICATE KEY UPDATE"
             "   vibe = VALUES(vibe),"
-            "   mood = VALUES(mood),"
             "   importance = VALUES(importance),"
             "   set_at = VALUES(set_at),"
             "   updated_at = NOW()",
             (
-                group_id, vibe, mood, importance,
+                group_id, vibe, importance,
                 int(time.time()),
             ),
         )
         conn.commit()
         cursor.close()
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def get_group_vibe(config, group_id, conn=None):
     """Return (vibe, set_at) for a group, or None.
 
-    set_at is the unix second the vibe was set. Only the
-    vibe (not the raw mood) is needed by readers. An optional
+    set_at is the unix second the vibe was set. An optional
     caller-owned connection avoids a fresh connect per read on
     the hot tone-selection path.
     """

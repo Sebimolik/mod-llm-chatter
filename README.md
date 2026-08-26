@@ -725,6 +725,15 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260829_memory_condensation_generation.sql
 
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260830_drop_relationship_id_watermark.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260831_llm_group_vibe.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260901_drop_group_vibe_mood.sql
+
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260320_bot_memory_system.sql
@@ -797,6 +806,15 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260829_memory_condensation_generation.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260830_drop_relationship_id_watermark.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260831_llm_group_vibe.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260901_drop_group_vibe_mood.sql
 ```
 
 Migrations are idempotent — safe to run on an already

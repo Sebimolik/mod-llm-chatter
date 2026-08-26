@@ -386,7 +386,6 @@ CREATE TABLE IF NOT EXISTS `llm_bot_relationships` (
 CREATE TABLE IF NOT EXISTS `llm_group_vibe` (
     `group_id`   INT UNSIGNED NOT NULL,
     `vibe`       VARCHAR(64)  NOT NULL,
-    `mood`       VARCHAR(32)  NOT NULL,
     `importance` TINYINT UNSIGNED NOT NULL DEFAULT 5,
     `set_at`     INT UNSIGNED NOT NULL,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
