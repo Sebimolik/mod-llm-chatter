@@ -28,6 +28,11 @@ from chatter_constants import (
     DUNGEON_FLAVOR, DUNGEON_FLAVOR_RU, DUNGEON_FLAVOR_FR, DUNGEON_FLAVOR_DE,
     DUNGEON_FLAVOR_ES,
     BG_LORE, BG_LORE_RU, BG_LORE_FR, BG_LORE_DE, BG_LORE_ES,
+    VIBE_SOURCE_PHRASES, VIBE_SOURCE_PHRASES_RU, VIBE_SOURCE_PHRASES_FR,
+    VIBE_SOURCE_PHRASES_DE, VIBE_SOURCE_PHRASES_ES, VIBE_SOURCE_PHRASES_PT,
+    VIBE_SOURCE_PHRASES_KO,
+    VIBE_MOOD_WORDS_RU, VIBE_MOOD_WORDS_FR, VIBE_MOOD_WORDS_DE,
+    VIBE_MOOD_WORDS_ES, VIBE_MOOD_WORDS_PT, VIBE_MOOD_WORDS_KO,
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
@@ -1654,6 +1659,99 @@ def get_language_locale_code() -> Optional[str]:
     default, or a language we haven't added data for yet).
     """
     return _LANGUAGE_LOCALE_CODES.get(_language)
+
+
+# Locale-keyed session-vibe wording maps, mirroring
+# _ZONE_FLAVOR_LOCALE_MAPS above. Unlike the zone/dungeon tables
+# these strings carry no proper nouns and need no world-DB rows, so
+# every language this module can speak is covered -- including
+# Portuguese and Korean, whose flavor-text coverage is otherwise
+# partial. A locale (or key) missing from a map falls back to the
+# English constant via the accessors below.
+_VIBE_SOURCE_PHRASE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_SOURCE_PHRASES_RU,
+    "frFR": VIBE_SOURCE_PHRASES_FR,
+    "deDE": VIBE_SOURCE_PHRASES_DE,
+    "esES": VIBE_SOURCE_PHRASES_ES,
+    "ptBR": VIBE_SOURCE_PHRASES_PT,
+    "koKR": VIBE_SOURCE_PHRASES_KO,
+}
+
+_VIBE_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_MOOD_WORDS_RU,
+    "frFR": VIBE_MOOD_WORDS_FR,
+    "deDE": VIBE_MOOD_WORDS_DE,
+    "esES": VIBE_MOOD_WORDS_ES,
+    "ptBR": VIBE_MOOD_WORDS_PT,
+    "koKR": VIBE_MOOD_WORDS_KO,
+}
+
+# Portuguese is deliberately absent from _LANGUAGE_LOCALE_CODES:
+# 3.3.5a has no ptBR rows in *_template_locale (ptBR shipped with
+# Cataclysm), so mapping it there would make every localized
+# creature/item/quest name lookup query a locale the world DB never
+# has. The vibe wording needs no DB rows, so Portuguese resolves
+# through this small supplement instead.
+_VIBE_TEXT_EXTRA_LOCALE_CODES = {
+    "Portuguese": "ptBR",
+}
+
+
+def _get_vibe_text_locale_code() -> Optional[str]:
+    """Locale code for the session-vibe wording tables.
+
+    get_language_locale_code() first (so RU/FR/DE/ES/KO behave
+    exactly like every other localized lookup), then the
+    DB-free supplement above for Portuguese.
+    """
+    return (
+        get_language_locale_code()
+        or _VIBE_TEXT_EXTRA_LOCALE_CODES.get(_language)
+    )
+
+
+def get_vibe_source_phrase(source_type: Optional[str]) -> Optional[str]:
+    """Short event phrase for the memory_type that set a group's
+    session vibe, e.g. 'wipe' -> "a recent wipe".
+
+    Prefers the configured language's phrasing (via
+    _VIBE_SOURCE_PHRASE_LOCALE_MAPS), falling back to the English
+    VIBE_SOURCE_PHRASES entry, mirroring get_zone_flavor()'s
+    locale-fallback pattern. Returns None for an empty or unmapped
+    memory_type so the caller can drop back to sourceless phrasing.
+    """
+    if not source_type:
+        return None
+    key = str(source_type).strip().lower()
+    if not key:
+        return None
+    locale = _get_vibe_text_locale_code()
+    if locale:
+        localized_map = _VIBE_SOURCE_PHRASE_LOCALE_MAPS.get(locale)
+        if localized_map and key in localized_map:
+            return localized_map[key]
+    return VIBE_SOURCE_PHRASES.get(key)
+
+
+def get_vibe_mood_word(vibe: Optional[str]) -> Optional[str]:
+    """Localized descriptor for a session vibe / memory mood.
+
+    Same locale-fallback pattern as get_vibe_source_phrase(); an
+    unmapped locale or an unknown mood returns the (normalized)
+    English word rather than nothing, so the prompt sentence is
+    always complete.
+    """
+    if not vibe:
+        return None
+    key = str(vibe).strip().lower().replace('_', ' ')
+    if not key:
+        return None
+    locale = _get_vibe_text_locale_code()
+    if locale:
+        localized_map = _VIBE_MOOD_WORD_LOCALE_MAPS.get(locale)
+        if localized_map and key in localized_map:
+            return localized_map[key]
+    return key
 
 
 # Cache for Blizzard-localized creature/NPC names, keyed

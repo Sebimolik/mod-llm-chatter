@@ -80,6 +80,7 @@ from chatter_db import (
 )
 from chatter_party_gate import should_defer_party_generation
 from chatter_prompts import (
+    build_session_vibe_line,
     pick_random_tone,
     maybe_get_creative_twist,
     build_environmental_context_lines,
@@ -134,7 +135,7 @@ from chatter_memory import (
     get_relationship_summary,
     flush_session_memories,
     sanitize_memory_for_prompt,
-    get_session_vibe,
+    get_session_vibe_details,
     insert_first_meeting_memory,
     _get_group_lock,
     _active_sessions,
@@ -2708,6 +2709,8 @@ def build_idle_chatter_prompt(
     memories=None,
     backstory=None,
     travel_context='',
+    session_vibe=None,
+    session_vibe_source=None,
 ):
     """Build prompt for idle party chat.
 
@@ -2725,6 +2728,14 @@ def build_idle_chatter_prompt(
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
+    # A live group vibe (see get_session_vibe_details()) is
+    # rendered as a grounded sentence naming what caused it
+    # rather than quietly replacing the bot's own tone word --
+    # a bare mood word gets lost among the race/class/
+    # personality context. Empty string when no vibe is live.
+    vibe_line = build_session_vibe_line(
+        session_vibe, session_vibe_source,
+    )
 
     # --------------------------------------------------
     # LEAN MEMORY PATH — when memories are present,
@@ -2751,6 +2762,8 @@ def build_idle_chatter_prompt(
                 f"Your personality: {trait_str}\n"
                 f"Your tone: {tone}\n"
             )
+            if vibe_line:
+                prompt += f"{vibe_line}\n"
             if speaker_talent_context:
                 prompt += (
                     f"{speaker_talent_context}\n"
@@ -2992,6 +3005,8 @@ def build_idle_chatter_prompt(
     prompt += (
         f"Your tone: {tone}\n"
     )
+    if vibe_line:
+        prompt += f"{vibe_line}\n"
     if travel_context:
         prompt += f"{travel_context}\n"
     if backstory:
@@ -3063,6 +3078,7 @@ def build_idle_conversation_prompt(
     memories_map=None,
     backstory_map=None,
     session_vibe=None,
+    session_vibe_source=None,
 ):
     """Build prompt for a multi-bot idle conversation.
 
@@ -3422,13 +3438,24 @@ def build_idle_conversation_prompt(
         parts.append(f"Topic: {topic}")
 
     # Tone and twist -- a live group vibe (see
-    # get_session_vibe()) biases the whole exchange
-    # before falling back to a fully random tone roll.
-    tone = session_vibe or pick_random_tone(mode)
+    # get_session_vibe_details()) states outright what the
+    # group just went through, and only without one does the
+    # exchange fall back to a random tone roll.
+    vibe_line = build_session_vibe_line(
+        session_vibe, session_vibe_source,
+    )
     twist = maybe_get_creative_twist(
         chance=1.0, mode=mode
     )
-    parts.append(f"Overall tone: {tone}")
+    if vibe_line:
+        # The vibe replaces the bare tone word: it names what
+        # the group just went through, which a tone word never
+        # could.
+        parts.append(vibe_line)
+    else:
+        parts.append(
+            f"Overall tone: {pick_random_tone(mode)}"
+        )
     if twist:
         parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
@@ -3918,17 +3945,16 @@ def _idle_single_statement(
         bot_row['trait2'],
         bot_row['trait3'],
     ]
-    # A live group vibe (see get_session_vibe()) wins over
-    # the bot's stored tone while it lasts: the stored tone
-    # is a permanent personality trait, the vibe is a
-    # situational signal from something that just happened
-    # (a wipe, a big kill), and the situation should colour
-    # the next few minutes of chatter. Once the vibe expires
-    # this falls straight back to the stored tone, then to a
-    # random roll further down the prompt builder.
-    stored_tone = get_session_vibe(
-        group_id, config,
-    ) or bot_row.get('tone')
+    # The stored tone is a permanent personality trait; the
+    # vibe is a situational signal from something that just
+    # happened (a wipe, a big kill). They are passed separately
+    # so the vibe can be rendered as its own grounded sentence
+    # inside the prompt builder (build_session_vibe_line())
+    # instead of masquerading as the bot's own tone word.
+    session_vibe, session_vibe_source = (
+        get_session_vibe_details(group_id, config)
+    )
+    stored_tone = bot_row.get('tone')
 
     # Get class/race from characters table
     cursor = db.cursor(dictionary=True)
@@ -4079,6 +4105,8 @@ def _idle_single_statement(
             memories=idle_memories,
             backstory=idle_backstory,
             travel_context=travel_context,
+            session_vibe=session_vibe,
+            session_vibe_source=session_vibe_source,
         )
 
         _dflav = get_dungeon_flavor(map_id)
@@ -4367,6 +4395,12 @@ def _idle_conversation(
             conv_backstory_map = _bs_map
 
     try:
+        # One vibe read for the whole exchange: the word AND
+        # the memory_type that set it, so the prompt can name
+        # the cause (see build_session_vibe_line()).
+        conv_vibe, conv_vibe_source = (
+            get_session_vibe_details(group_id, config)
+        )
         # Talent context for first bot only
         first_bot = bots[0] if bots else None
         speaker_talent = None
@@ -4417,9 +4451,8 @@ def _idle_conversation(
             memories_map=memories_map or None,
             backstory_map=conv_backstory_map,
             allow_action=allow_action,
-            session_vibe=get_session_vibe(
-                group_id, config,
-            ),
+            session_vibe=conv_vibe,
+            session_vibe_source=conv_vibe_source,
         )
         logger.info(
             "[IDLE] prompt snippet: %r",

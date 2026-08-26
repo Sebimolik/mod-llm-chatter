@@ -32,6 +32,7 @@ from chatter_shared import (
     append_conversation_json_instruction,
     select_conversation_message_count,
     get_subzone_name, get_subzone_lore,
+    get_vibe_mood_word, get_vibe_source_phrase,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,60 @@ def get_vibe_mood_pool(session_vibe, mode: str = 'normal'):
         'roleplay' if mode == 'roleplay' else 'normal', {}
     )
     return by_mode.get(family) or None
+
+
+def build_session_vibe_line(
+    vibe, source_type=None,
+    distinct_from_bot_mood=False,
+):
+    """Render a group's session vibe as a grounded instruction.
+
+    A bare "Overall tone: humbled" competes with the race
+    profile, class profile, personality and the event itself,
+    and gives the model nothing concrete to be humbled ABOUT.
+    This names the cause (from llm_group_vibe.source_type, see
+    get_session_vibe_details()) and asks for the feeling to show
+    in the delivery rather than be stated.
+
+    The mood word and the event phrase are localized (see
+    get_vibe_mood_word() / get_vibe_source_phrase()); the
+    surrounding instruction stays English like the rest of the
+    prompt scaffolding.
+
+    Args:
+        vibe: the vibe/mood word, e.g. "humbled"
+        source_type: memory_type that set it, or None for
+            legacy rows -- falls back to sourceless phrasing
+        distinct_from_bot_mood: True when a per-bot mood line
+            sits next to this one, so the prompt spells out
+            that the two are different axes and may disagree
+
+    Returns "" when there is no vibe, so callers can just
+    truth-test the result.
+    """
+    mood_word = get_vibe_mood_word(vibe)
+    if not mood_word:
+        return ""
+    phrase = get_vibe_source_phrase(source_type)
+    if phrase:
+        line = (
+            f"The group is still {mood_word} after {phrase}."
+        )
+    else:
+        line = (
+            "The group's mood right now is "
+            f"{mood_word}, after something that just happened."
+        )
+    if distinct_from_bot_mood:
+        line += (
+            " That is the whole party's weather, not your own"
+            " mood above -- yours may honestly differ."
+        )
+    line += (
+        " Let it color how you speak -- the feeling should"
+        " show in your delivery, never be announced."
+    )
+    return line
 
 
 def generate_conversation_mood_sequence(

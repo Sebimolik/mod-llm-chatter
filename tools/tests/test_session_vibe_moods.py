@@ -138,19 +138,39 @@ def test_no_vibe_keeps_the_full_random_pool():
 
 
 def test_vibe_reaches_the_idle_conversation_prompt():
+    """The vibe now replaces the bare tone word with a
+    sentence naming what caused it."""
     random.seed(14)
     prompt = chatter_group.build_idle_conversation_prompt(
         BOTS, TRAITS, 'normal', 'the road ahead',
         members=['Testbotone', 'Testbottwo'],
         zone_id=1, map_id=0, session_vibe='humbled',
+        session_vibe_source='wipe',
     )
-    assert "Overall tone: humbled" in prompt
+    assert (
+        "The group is still humbled after a recent wipe."
+        in prompt
+    )
+    assert "Overall tone:" not in prompt
     pool = chatter_prompts.get_vibe_mood_pool("humbled")
     first_line = next(
         line for line in prompt.splitlines()
         if line.strip().startswith("Message 1 ")
     )
     assert any(f"mood={mood}" in first_line for mood in pool)
+
+
+def test_vibe_without_a_source_still_replaces_the_tone():
+    """Legacy row (no source_type): still a sentence, just
+    without a named cause."""
+    random.seed(14)
+    prompt = chatter_group.build_idle_conversation_prompt(
+        BOTS, TRAITS, 'normal', 'the road ahead',
+        members=['Testbotone', 'Testbottwo'],
+        zone_id=1, map_id=0, session_vibe='humbled',
+    )
+    assert "mood right now is humbled" in prompt
+    assert "Overall tone:" not in prompt
 
 
 def test_no_vibe_prompt_uses_a_random_tone():
@@ -177,6 +197,7 @@ def main() -> int:
         test_bias_decays_across_the_exchange,
         test_no_vibe_keeps_the_full_random_pool,
         test_vibe_reaches_the_idle_conversation_prompt,
+        test_vibe_without_a_source_still_replaces_the_tone,
         test_no_vibe_prompt_uses_a_random_tone,
     ]
     for test in tests:
