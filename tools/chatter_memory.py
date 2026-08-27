@@ -161,6 +161,20 @@ _IMPORTANCE_RUBRIC = (
 DEFAULT_DECAY_MAX_IMPORTANCE = 3
 DEFAULT_DECAY_DAYS = 30
 
+# Fallback for LLMChatter.GroupChatter.VibeDurationSeconds, used
+# when the configured value is missing or not a usable positive
+# number. Mirrors the conf.dist default.
+DEFAULT_VIBE_DURATION_SECONDS = 600.0
+
+# How long get_session_vibe_details() remembers "this group has no
+# active vibe" before paying for another DB round-trip. Without
+# this, every group event for a group with no vibe -- the common
+# case -- opens a fresh connection just to learn nothing changed.
+# Invalidated immediately whenever a vibe is actually set for the
+# group, so the staleness window only ever delays discovering an
+# ABSENCE, never a live vibe.
+_VIBE_MISS_CACHE_SECONDS = 45.0
+
 # Hard ceiling on a single stored memory's text, enforced when a
 # generated memory or condensation digest is validated before
 # insert. Prompt-facing helpers that must show a memory in FULL
@@ -391,6 +405,33 @@ def start_session(
             ].update(members)
 
 
+_warned_vibe_durations = set()
+
+
+def _warn_invalid_vibe_duration(raw_value):
+    """Log once per distinct bad
+    LLMChatter.GroupChatter.VibeDurationSeconds value.
+
+    get_session_vibe_details() runs on the group-event hot
+    path, so an unconditional warning here would flood the
+    log on every single event for a misconfigured server.
+    De-duplicating by value keeps the misconfiguration
+    visible exactly once while still re-reporting if the
+    admin edits the key to a different bad value.
+    """
+    key = repr(raw_value)
+    if key in _warned_vibe_durations:
+        return
+    _warned_vibe_durations.add(key)
+    logger.warning(
+        "LLMChatter.GroupChatter.VibeDurationSeconds=%r is not a "
+        "positive number; group vibes would expire the instant "
+        "they were set. Falling back to the documented default "
+        "of %s seconds.",
+        raw_value, DEFAULT_VIBE_DURATION_SECONDS,
+    )
+
+
 def get_session_vibe_details(group_id, config=None):
     """Return (vibe, source_type) for the group's current
     ambient session vibe, or (None, None).
@@ -433,20 +474,42 @@ def get_session_vibe_details(group_id, config=None):
         vibe = session.get("vibe")
         vibe_set_at = session.get("vibe_set_at")
         vibe_source = session.get("vibe_source")
-    # Defensive parse: an empty/non-numeric/NaN duration
-    # must not crash the tone path or silently disable
-    # decay (NaN makes every comparison False).
-    duration = 600.0
+    # Defensive parse: an empty/non-numeric/NaN/infinite/
+    # non-positive duration must not crash the tone path,
+    # silently disable decay (NaN makes every comparison
+    # False), or silently disable the whole feature. Zero or
+    # negative would expire every vibe the instant it was
+    # set, with no other symptom -- so it is rejected with a
+    # warning rather than honoured.
+    duration = DEFAULT_VIBE_DURATION_SECONDS
+    _raw = (config or {}).get(
+        'LLMChatter.GroupChatter.VibeDurationSeconds',
+        DEFAULT_VIBE_DURATION_SECONDS,
+    )
     try:
-        _d = float((config or {}).get(
-            'LLMChatter.GroupChatter.VibeDurationSeconds',
-            600,
-        ))
-        if _d == _d and abs(_d) != float('inf'):
-            duration = _d
+        _d = float(_raw)
     except (TypeError, ValueError):
-        pass
+        _d = None
+    if (
+        _d is None
+        or _d != _d
+        or abs(_d) == float('inf')
+        or _d <= 0
+    ):
+        _warn_invalid_vibe_duration(_raw)
+    else:
+        duration = _d
     now = time.time()
+
+    # Negative-result cache: a recent DB check that found no
+    # usable vibe suppresses further checks for
+    # _VIBE_MISS_CACHE_SECONDS. Only consulted when the
+    # in-memory fast path above found nothing, and cleared
+    # by _ensure_cap_and_insert() the moment a vibe is set,
+    # so a live vibe is never hidden by it.
+    if session is not None and not (vibe and vibe_set_at):
+        if now < float(session.get('vibe_miss_until') or 0):
+            return None, None
     if vibe and vibe_set_at:
         if now - vibe_set_at < duration:
             # Fast path: live in-memory value wins.
@@ -471,6 +534,9 @@ def get_session_vibe_details(group_id, config=None):
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
                 session.pop('vibe_source', None)
+                session['vibe_miss_until'] = (
+                    now + _VIBE_MISS_CACHE_SECONDS
+                )
             return None, None
         persisted_vibe, set_at, persisted_source = row
         if now - set_at >= duration:
@@ -490,11 +556,15 @@ def get_session_vibe_details(group_id, config=None):
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
                 session.pop('vibe_source', None)
+                session['vibe_miss_until'] = (
+                    now + _VIBE_MISS_CACHE_SECONDS
+                )
             return None, None
         if session is not None:
             session["vibe"] = persisted_vibe
             session["vibe_set_at"] = set_at
             session["vibe_source"] = persisted_source
+            session.pop('vibe_miss_until', None)
         return persisted_vibe.replace('_', ' '), persisted_source
     except Exception:
         logger.warning(
@@ -1046,6 +1116,10 @@ def _ensure_cap_and_insert(
             # The triggering memory_type: lets the prompt
             # name the cause, not just the mood.
             session["vibe_source"] = memory_type
+            # Drop any cached "no vibe here" marker so the
+            # read side sees this one immediately (see
+            # _VIBE_MISS_CACHE_SECONDS).
+            session.pop('vibe_miss_until', None)
         # Persist so the vibe survives a bridge restart /
         # session CLEANUP wipe. Reuses this function's
         # connection rather than opening a second one on

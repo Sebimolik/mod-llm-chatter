@@ -545,6 +545,219 @@ def test_missing_row_clears_a_stale_session_vibe():
 
 
 # ---------------------------------------------------------
+# Negative-result cache: a group with no active vibe (the
+# common case) must not pay a connect+query per event
+# ---------------------------------------------------------
+
+def test_repeat_no_vibe_reads_do_not_reopen_the_database():
+    """Every group reaction event calls this. With no vibe row,
+    the read used to fall straight through to a fresh
+    get_db_connection() each time -- connect + auth + query +
+    close for a guaranteed miss.
+    """
+    table, connector = _fresh()
+    _clear_sessions()
+    chatter_memory._active_sessions[GROUP] = {}
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: 5000.0
+        ):
+            assert chatter_memory.get_session_vibe(
+                GROUP, CONFIG,
+            ) is None
+            assert len(connector.opened) == 1
+            # Nine more events in the same window: still one open.
+            for _ in range(9):
+                assert chatter_memory.get_session_vibe(
+                    GROUP, CONFIG,
+                ) is None
+            assert len(connector.opened) == 1
+    finally:
+        _clear_sessions()
+
+
+def test_no_vibe_cache_expires_and_rechecks():
+    table, connector = _fresh()
+    _clear_sessions()
+    chatter_memory._active_sessions[GROUP] = {}
+    clock = {'t': 5000.0}
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: clock['t']
+        ):
+            chatter_memory.get_session_vibe(GROUP, CONFIG)
+            assert len(connector.opened) == 1
+            clock['t'] += (
+                chatter_memory._VIBE_MISS_CACHE_SECONDS + 1
+            )
+            chatter_memory.get_session_vibe(GROUP, CONFIG)
+            assert len(connector.opened) == 2
+    finally:
+        _clear_sessions()
+
+
+def test_setting_a_vibe_invalidates_the_no_vibe_cache():
+    """The cache may only ever delay discovering an ABSENCE. A
+    vibe set after a cached miss must be visible immediately."""
+    table, connector = _fresh()
+    _clear_sessions()
+    chatter_memory._active_sessions[GROUP] = {}
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: 5000.0
+        ):
+            assert chatter_memory.get_session_vibe(
+                GROUP, CONFIG,
+            ) is None
+            session = chatter_memory._active_sessions[GROUP]
+            assert 'vibe_miss_until' in session
+            # The write path (_ensure_cap_and_insert) sets these.
+            session['vibe'] = 'triumphant'
+            session['vibe_set_at'] = 5000.0
+            session.pop('vibe_miss_until', None)
+            assert chatter_memory.get_session_vibe(
+                GROUP, CONFIG,
+            ) == 'triumphant'
+    finally:
+        _clear_sessions()
+
+
+def test_expired_stale_row_is_also_cached_as_a_miss():
+    table, connector = _fresh()
+    table[GROUP] = {
+        'vibe': 'wary', 'source_type': 'dungeon',
+        'importance': 7,
+        'set_at': 100, 'updated_at': 'NOW()',
+    }
+    _clear_sessions()
+    chatter_memory._active_sessions[GROUP] = {}
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: 5000.0
+        ):
+            assert chatter_memory.get_session_vibe(
+                GROUP, CONFIG,
+            ) is None
+            opened = len(connector.opened)
+            assert chatter_memory.get_session_vibe(
+                GROUP, CONFIG,
+            ) is None
+            assert len(connector.opened) == opened
+    finally:
+        _clear_sessions()
+
+
+# ---------------------------------------------------------
+# VibeDurationSeconds validation
+# ---------------------------------------------------------
+
+def _read_with_duration(duration):
+    """Read a 100s-old in-memory vibe under a given configured
+    duration. Returns (result, warned)."""
+    _clear_sessions()
+    chatter_memory._warned_vibe_durations.clear()
+    chatter_memory._active_sessions[GROUP] = {
+        'vibe': 'triumphant', 'vibe_set_at': 4900.0,
+    }
+    table, connector = _fresh()
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: 5000.0
+        ), patch.object(
+            chatter_memory.logger, 'warning'
+        ) as warn:
+            out = chatter_memory.get_session_vibe(
+                GROUP,
+                {
+                    'LLMChatter.GroupChatter'
+                    '.VibeDurationSeconds': duration,
+                },
+            )
+            return out, warn.called
+    finally:
+        _clear_sessions()
+        chatter_memory._warned_vibe_durations.clear()
+
+
+def test_zero_duration_falls_back_to_the_default_with_a_warning():
+    """0 would expire every vibe the instant it was set, silently
+    disabling the whole feature with no other symptom."""
+    out, warned = _read_with_duration(0)
+    assert out == 'triumphant'
+    assert warned
+
+
+def test_negative_duration_falls_back_to_the_default():
+    out, warned = _read_with_duration(-600)
+    assert out == 'triumphant'
+    assert warned
+
+
+def test_nan_and_infinite_durations_still_fall_back():
+    for bad in ('nan', 'inf', '-inf'):
+        out, warned = _read_with_duration(bad)
+        assert out == 'triumphant', bad
+        assert warned, bad
+
+
+def test_unparseable_duration_falls_back():
+    out, warned = _read_with_duration('not-a-number')
+    assert out == 'triumphant'
+    assert warned
+
+
+def test_a_valid_duration_is_honoured_without_warning():
+    out, warned = _read_with_duration(600)
+    assert out == 'triumphant'
+    assert not warned
+    # And a valid-but-short one really does expire the vibe.
+    out, warned = _read_with_duration(50)
+    assert out is None
+    assert not warned
+
+
+def test_the_invalid_duration_warning_is_not_logged_per_event():
+    """This sits on the group-event hot path; an unconditional
+    warning would flood the log on a misconfigured server."""
+    _clear_sessions()
+    chatter_memory._warned_vibe_durations.clear()
+    chatter_memory._active_sessions[GROUP] = {
+        'vibe': 'triumphant', 'vibe_set_at': 4900.0,
+    }
+    table, connector = _fresh()
+    try:
+        with patch.object(
+            chatter_memory, 'get_db_connection', connector
+        ), patch.object(
+            chatter_memory.time, 'time', lambda: 5000.0
+        ), patch.object(
+            chatter_memory.logger, 'warning'
+        ) as warn:
+            for _ in range(5):
+                chatter_memory.get_session_vibe(
+                    GROUP,
+                    {
+                        'LLMChatter.GroupChatter'
+                        '.VibeDurationSeconds': 0,
+                    },
+                )
+            assert warn.call_count == 1
+    finally:
+        _clear_sessions()
+        chatter_memory._warned_vibe_durations.clear()
+
+
+# ---------------------------------------------------------
 # _ensure_cap_and_insert(): the write path
 # ---------------------------------------------------------
 
@@ -1235,6 +1448,16 @@ def main() -> int:
         test_expired_row_returns_none_and_self_cleans,
         test_expiry_is_anchored_to_the_original_set_at,
         test_missing_row_clears_a_stale_session_vibe,
+        test_repeat_no_vibe_reads_do_not_reopen_the_database,
+        test_no_vibe_cache_expires_and_rechecks,
+        test_setting_a_vibe_invalidates_the_no_vibe_cache,
+        test_expired_stale_row_is_also_cached_as_a_miss,
+        test_zero_duration_falls_back_to_the_default_with_a_warning,
+        test_negative_duration_falls_back_to_the_default,
+        test_nan_and_infinite_durations_still_fall_back,
+        test_unparseable_duration_falls_back,
+        test_a_valid_duration_is_honoured_without_warning,
+        test_the_invalid_duration_warning_is_not_logged_per_event,
         test_vibe_is_persisted_without_an_in_memory_session,
         test_vibe_updates_the_session_when_one_exists,
         test_unimportant_memory_writes_no_vibe,
