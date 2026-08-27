@@ -934,6 +934,101 @@ def test_implausible_watermark_resets_to_epoch_with_warning():
     assert _folded_memories(db) == ['a memory']
 
 
+# ============================================================
+# Full-fidelity condensation prompt (sanitize truncation bug)
+# ============================================================
+
+def test_sanitize_defaults_to_the_short_prompt_cap():
+    text = 'x' * 400
+    out = chatter_memory.sanitize_memory_for_prompt(text)
+    assert len(out) == chatter_memory.DEFAULT_PROMPT_MEMORY_CHARS
+    assert out.endswith('...')
+
+
+def test_sanitize_honours_an_explicit_max_chars():
+    text = 'x' * 400
+    out = chatter_memory.sanitize_memory_for_prompt(
+        text, max_chars=chatter_memory.MEMORY_TEXT_MAX_CHARS,
+    )
+    # Well under the raised ceiling -> returned whole.
+    assert out == text
+    assert '...' not in out
+
+
+def test_sanitize_still_strips_and_normalizes_with_max_chars():
+    out = chatter_memory.sanitize_memory_for_prompt(
+        "a\x00b\n  c", max_chars=500,
+    )
+    assert out == 'ab c'
+
+
+def test_condensation_prompt_shows_the_whole_stored_memory():
+    """The blocker: memories are stored up to
+    MEMORY_TEXT_MAX_CHARS, the prompt truncated at 200, and
+    _condense_low_value_memories() then DELETED the untruncated
+    originals -- so everything past char 200 of a long memory was
+    destroyed without the model ever seeing it.
+    """
+    long_tail = 'TAIL-MARKER-THAT-MUST-SURVIVE'
+    long_memory = (
+        'We fought through Blackrock Depths together. '
+        + ('filler words here. ' * 20)
+        + long_tail
+    )
+    assert len(long_memory) > 200
+    assert len(long_memory) <= chatter_memory.MEMORY_TEXT_MAX_CHARS
+    prompt = chatter_memory._build_condensation_prompt(
+        [_row(1, long_memory, 2), _row(2, 'Short one.', 3)],
+        max_digests=1,
+    )
+    assert long_tail in prompt
+    assert '...' not in prompt.split('Memories:')[1][:len(long_memory) + 50]
+
+
+def test_relationship_prompt_shows_the_whole_stored_memory():
+    """Same truncation call in _maybe_update_relationship().
+    Lower severity (no deletion), but the watermark advances past
+    every row folded in, so a truncated tail is never summarized.
+    """
+    t0 = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    tail = 'RELATIONSHIP-TAIL-MARKER'
+    long_memory = (
+        'A long shared history. ' + ('and more. ' * 30) + tail
+    )
+    assert len(long_memory) > 200
+    db = _RelationshipDb(
+        memories=[_memory(1, long_memory, t0 + datetime.timedelta(
+            days=1,
+        ))],
+        relationship={
+            'summary': '', 'updated_through_created_at': t0,
+        },
+        now_ts=t0 + datetime.timedelta(days=2),
+    )
+    seen = {}
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection',
+            return_value=db,
+        ),
+        patch.object(
+            chatter_memory, 'get_llm_client',
+            return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm',
+            side_effect=lambda client, prompt, *a, **k: (
+                seen.setdefault('prompt', prompt),
+                json.dumps({'message': 'They trust each other.'}),
+            )[1],
+        ),
+    ):
+        chatter_memory._maybe_update_relationship(
+            {}, 1283000001, 1283000099,
+        )
+    assert tail in seen['prompt']
+
+
 if __name__ == '__main__':
     tests = [
         value for name, value in sorted(globals().items())

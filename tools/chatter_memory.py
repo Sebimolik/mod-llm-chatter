@@ -161,6 +161,20 @@ _IMPORTANCE_RUBRIC = (
 DEFAULT_DECAY_MAX_IMPORTANCE = 3
 DEFAULT_DECAY_DAYS = 30
 
+# Hard ceiling on a single stored memory's text, enforced when a
+# generated memory or condensation digest is validated before
+# insert. Prompt-facing helpers that must show a memory in FULL
+# (condensation, relationship summaries -- both of which either
+# delete or permanently supersede the rows they read) pass this
+# to sanitize_memory_for_prompt() as max_chars, so the LLM always
+# sees everything that was actually stored.
+MEMORY_TEXT_MAX_CHARS = 500
+
+# Default prompt-side truncation for memories that are merely
+# quoted as context and whose source rows survive untouched
+# (recall/context injection). Keeps routine prompts small.
+DEFAULT_PROMPT_MEMORY_CHARS = 200
+
 # Condensation defaults (see LLMChatter.Memory.Condensation.*
 # in conf.dist and _maybe_trigger_condensation() /
 # _condense_low_value_memories() below).
@@ -1245,9 +1259,14 @@ def _build_condensation_prompt(
     suggestion to min(suggested, max(source_importances))
     before storing it.
     """
+    # max_chars=MEMORY_TEXT_MAX_CHARS, NOT the default:
+    # _condense_low_value_memories() DELETES every row shown
+    # here once the digest is written, so anything the prompt
+    # truncates away is destroyed without ever having been
+    # seen by the model. Show the full stored text.
     memory_list = "\n".join(
         f"{i + 1}. "
-        f"{sanitize_memory_for_prompt(row['memory'])}"
+        f"{sanitize_memory_for_prompt(row['memory'], max_chars=MEMORY_TEXT_MAX_CHARS)}"
         for i, row in enumerate(candidates)
     )
     identity = ""
@@ -1656,7 +1675,10 @@ def _condense_low_value_memories(
             if not isinstance(memory_text, str):
                 continue
             memory_text = memory_text.strip()
-            if not memory_text or len(memory_text) > 500:
+            if (
+                not memory_text
+                or len(memory_text) > MEMORY_TEXT_MAX_CHARS
+            ):
                 continue
             suggested = _coerce_importance(
                 item.get('importance')
@@ -2940,8 +2962,14 @@ def _maybe_update_relationship(
             )
             return
 
+        # max_chars=MEMORY_TEXT_MAX_CHARS for the same reason
+        # condensation uses it: the watermark advances past
+        # every row folded in here, so each one gets exactly
+        # this one chance to reach the summary. The source
+        # rows survive (so this is fidelity, not data loss),
+        # but a truncated tail is still never summarized.
         memory_list = '\n'.join(
-            f"  - {sanitize_memory_for_prompt(row['memory'])}"
+            f"  - {sanitize_memory_for_prompt(row['memory'], max_chars=MEMORY_TEXT_MAX_CHARS)}"
             for row in candidates
         )
 
@@ -3534,20 +3562,44 @@ def get_bot_memories(
 # SANITIZATION
 # ============================================================
 
-def sanitize_memory_for_prompt(memory: str) -> str:
+def sanitize_memory_for_prompt(
+    memory: str,
+    max_chars: int = DEFAULT_PROMPT_MEMORY_CHARS,
+) -> str:
     """Sanitize a memory string for safe inclusion
     in an LLM prompt.
 
     Strips control characters, normalizes whitespace,
-    caps at 200 characters.
+    caps at `max_chars` characters (default
+    DEFAULT_PROMPT_MEMORY_CHARS).
+
+    The default is deliberately well below the stored
+    ceiling (MEMORY_TEXT_MAX_CHARS): most callers only quote
+    a memory as background context and their source rows
+    survive untouched, so trimming a long one costs nothing
+    permanent and keeps routine prompts cheap.
+
+    Callers whose prompt output REPLACES the rows it reads
+    -- condensation (which deletes its sources) and the
+    relationship summary (which advances a watermark past
+    them) -- must pass max_chars=MEMORY_TEXT_MAX_CHARS so
+    the LLM sees the full stored text. Truncating there
+    would silently discard the tail of any memory longer
+    than the default before destroying the original.
     """
     if not memory or not isinstance(memory, str):
         return ""
+    try:
+        limit = int(max_chars)
+    except (TypeError, ValueError):
+        limit = DEFAULT_PROMPT_MEMORY_CHARS
+    if limit < 4:
+        limit = 4
     # Strip control characters
     text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', memory)
     # Normalize whitespace
     text = ' '.join(text.split())
     # Cap length
-    if len(text) > 200:
-        text = text[:197] + "..."
+    if len(text) > limit:
+        text = text[:limit - 3] + "..."
     return text
