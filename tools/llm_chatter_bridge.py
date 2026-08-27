@@ -2180,7 +2180,7 @@ def main():
 
                 # Daily orphaned-memory GC (deleted
                 # characters). Runs the same DELETE the
-                # '.llm memory clean' GM command issues.
+                # '.llmc memoryclean' GM command issues.
                 if (
                     current_time - last_memory_gc
                     >= memory_gc_interval

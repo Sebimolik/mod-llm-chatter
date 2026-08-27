@@ -1911,11 +1911,18 @@ SQL and driven by the same `LLMChatter.Memory.DecayMaxImportance` /
 
 ### Manual and automatic cleanup
 
-`.llm memory clean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
+`.llmc memoryclean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
 runs a `DELETE` directly against `CharacterDatabase`, dropping
 `llm_bot_memories` rows whose `bot_guid`/`player_guid` no longer resolve
 to an existing character (e.g. after a character deletion) — the same
 pattern `.llmc forget` already uses.
+
+It is a subcommand of the module's single `.llmc` root (there is no separate
+`.llm` root command — `llm` is a literal prefix of `llmc`, which AzerothCore's
+partial-match command dispatcher resolves ambiguously). Because that root is
+registered `SEC_PLAYER` for the player-facing subcommands, `memoryclean`
+enforces `SEC_GAMEMASTER` itself via `ChatHandler::IsAvailable()`. Like the
+rest of `.llmc` it is in-game only, not available from the server console.
 
 The same cleanup also runs automatically: `llm_chatter_bridge.py`'s main
 loop calls `purge_orphaned_memories()` (which issues the identical
@@ -1978,14 +1985,14 @@ disposition, not a list of specific recollections.
    individual memory previews. Silently omitted if no row exists yet —
    no "no relationship yet" noise.
 6. **Cleanup** — both `purge_orphaned_memories()` (24-hour periodic pass)
-   and `.llm memory clean` (GM command) now issue a second `DELETE`
+   and `.llmc memoryclean` (GM command) now issue a second `DELETE`
    against `llm_bot_relationships` with the identical
    `characters`-orphan `LEFT JOIN` shape as `llm_bot_memories`, in the
    same function/command.
 
 ### Manual and automatic cleanup
 
-`.llm memory clean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
+`.llmc memoryclean` (`SEC_GAMEMASTER`, `src/LLMChatterCommand.cpp`)
 runs a `DELETE` directly against `CharacterDatabase`, dropping
 `llm_bot_memories` rows whose `bot_guid`/`player_guid` no longer resolve
 to an existing character (e.g. after a character deletion) — the same
@@ -2070,7 +2077,7 @@ being trimmed down to bare deletions once it hits the cap.
 | `chatter_group_handlers.py` | `_kill_post_success()` / `_wipe_post_success()` filter altbot candidates and call `queue_shared_event_memory()` for party-wide kill/wipe memories |
 | `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection; `build_player_response_prompt()` / `build_bot_question_prompt()` — `<relationship>` block injection |
 | `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop; drains `memory_executor`, `relationship_executor`, and `condensation_executor` on shutdown |
-| `src/LLMChatterCommand.cpp` | `.llm memory clean` GM command, runs the orphan-purge `DELETE`s directly |
+| `src/LLMChatterCommand.cpp` | `.llmc memoryclean` GM command, runs the orphan-purge `DELETE`s directly |
 | `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout plus the relationship line |
 | `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
 

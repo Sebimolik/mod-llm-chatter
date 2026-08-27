@@ -1163,12 +1163,17 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
+        // ONE root command for the whole module. "llm" is a
+        // literal prefix of "llmc", and AzerothCore's dispatcher
+        // resolves partial matches, so registering both makes
+        // ".llm ..." ambiguous. Everything hangs off "llmc";
+        // GM-only subcommands check IsAvailable() themselves
+        // (see HandleRootCommand) since the root has to stay
+        // SEC_PLAYER for the player-facing subcommands.
         static ChatCommandTable commandTable =
         {
             { "llmc", HandleRootCommand,
               SEC_PLAYER, Console::No },
-            { "llm", HandleLLMRootCommand,
-              SEC_GAMEMASTER, Console::Yes },
         };
 
         return commandTable;
@@ -1221,6 +1226,28 @@ public:
             return HandleMemoryShowCommand(
                 handler, rest);
 
+        // GM-only maintenance. The root is registered
+        // SEC_PLAYER for the subcommands above, so the
+        // security level the old separate "llm" root
+        // carried (SEC_GAMEMASTER) is enforced here
+        // instead -- IsAvailable() is the same check
+        // ChatCommand's own dispatcher performs.
+        if (command == "memoryclean")
+        {
+            if (!handler->IsAvailable(SEC_GAMEMASTER))
+            {
+                SendAddonLine(
+                    handler,
+                    "ERROR permission "
+                    + PercentEncode(
+                        "memoryclean requires "
+                        "gamemaster access"));
+                return true;
+            }
+
+            return HandleMemoryCleanCommand(handler);
+        }
+
         SendAddonLine(
             handler,
             "ERROR usage "
@@ -1228,34 +1255,6 @@ public:
                 "Supported commands: roster, "
                 "get, set, setbackstory, "
                 "regenbackstory, forget, memory"));
-        return true;
-    }
-
-    static bool HandleLLMRootCommand(
-        ChatHandler* handler, Tail args)
-    {
-        if (!sLLMChatterConfig
-            || !sLLMChatterConfig->IsEnabled())
-        {
-            handler->SendSysMessage(
-                "LLM Chatter: module is disabled.");
-            return true;
-        }
-
-        std::string input = Trim(std::string(args));
-
-        std::string command;
-        std::string rest;
-        std::istringstream iss(input);
-        iss >> command;
-        std::getline(iss, rest);
-        rest = Trim(rest);
-
-        if (command == "memory" && rest == "clean")
-            return HandleMemoryCleanCommand(handler);
-
-        handler->SendSysMessage(
-            "Usage: .llm memory clean");
         return true;
     }
 };

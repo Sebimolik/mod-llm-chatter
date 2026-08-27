@@ -3569,7 +3569,7 @@ def purge_orphaned_memories(db):
     in characters (e.g. deleted characters).
 
     Runs on the bridge's 24-hour periodic maintenance
-    pass; the '.llm memory clean' GM command issues the
+    pass; the '.llmc memoryclean' GM command issues the
     same two DELETEs from C++. Returns the number of
     llm_bot_memories rows deleted (unchanged return
     contract for existing callers/logging).
