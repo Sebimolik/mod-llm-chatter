@@ -1254,7 +1254,8 @@ public:
             + PercentEncode(
                 "Supported commands: roster, "
                 "get, set, setbackstory, "
-                "regenbackstory, forget, memory"));
+                "regenbackstory, forget, memory, "
+                "memoryclean"));
         return true;
     }
 };

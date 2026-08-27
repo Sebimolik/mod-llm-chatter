@@ -1362,7 +1362,8 @@ def _build_condensation_prompt(
         "or filler ones. Never invent, infer, or embellish "
         "facts not present in the memories below.\n"
         "Each resulting memory must be 1-2 sentences, "
-        "first person, hard limit 500 characters.\n\n"
+        "first person, hard limit "
+        f"{MEMORY_TEXT_MAX_CHARS} characters.\n\n"
         f"Memories:\n{memory_list}\n\n"
     )
     prompt += _IMPORTANCE_RUBRIC
@@ -2477,7 +2478,7 @@ def _call_llm_for_memory(
         else:
             return None, None, None
 
-        if not memory or len(memory) > 500:
+        if not memory or len(memory) > MEMORY_TEXT_MAX_CHARS:
             return None, None, None
 
         emote = data.get('emote')
@@ -2606,7 +2607,7 @@ def _generate_shared_event_memory(
         else:
             return None, None, None
 
-        if not memory or len(memory) > 500:
+        if not memory or len(memory) > MEMORY_TEXT_MAX_CHARS:
             return None, None, None
 
         # Optional alternate phrasings of the same
@@ -2623,7 +2624,8 @@ def _generate_shared_event_memory(
                 if (
                     isinstance(variation, str)
                     and variation.strip()
-                    and len(variation) <= 500
+                    and len(variation)
+                        <= MEMORY_TEXT_MAX_CHARS
                 ):
                     memory_texts.append(
                         variation.strip()
