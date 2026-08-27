@@ -96,6 +96,10 @@ class _CondenseCursor:
     def __init__(self, db):
         self.db = db
         self._rows = []
+        # Real DBAPI cursors always expose rowcount; the
+        # watermark-rewind UPDATE reads it to tell "rolled back"
+        # from "no relationship row for this pair".
+        self.rowcount = 0
 
     def execute(self, query, params=None):
         self.db.executed.append((query, params))
@@ -103,8 +107,16 @@ class _CondenseCursor:
             "SELECT id, group_id, memory, importance_score,"
         ):
             self._rows = self.db.candidate_rows
+            self.rowcount = len(self._rows)
+        elif query.startswith("UPDATE llm_bot_relationships"):
+            self._rows = []
+            # How many relationship rows the pair has that match
+            # the UPDATE's own guards. Defaults to 0: the fake
+            # pair has no relationship row, so no rewind.
+            self.rowcount = self.db.relationship_update_rowcount
         else:
             self._rows = []
+            self.rowcount = 0
 
     def fetchall(self):
         return self._rows
@@ -117,8 +129,13 @@ class _CondenseCursor:
 
 
 class _CondenseDb:
-    def __init__(self, candidate_rows):
+    def __init__(
+        self, candidate_rows, relationship_update_rowcount=0,
+    ):
         self.candidate_rows = candidate_rows
+        self.relationship_update_rowcount = (
+            relationship_update_rowcount
+        )
         self.executed = []
         self.commits = 0
         self.closed = False
@@ -1027,6 +1044,276 @@ def test_relationship_prompt_shows_the_whole_stored_memory():
             {}, 1283000001, 1283000099,
         )
     assert tail in seen['prompt']
+
+
+# ============================================================
+# MaxDigests is clamped against MinCandidates so a pass can
+# never net-grow the memory pool past MaxPerBotPlayer
+# ============================================================
+
+def _max_digests_in_prompt(**overrides):
+    seen = {}
+    rows = [_row(i, f'memory {i}', 2) for i in range(1, 7)]
+    db = _CondenseDb(candidate_rows=rows)
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ),
+        patch.object(
+            chatter_memory, 'get_llm_client', return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm',
+            side_effect=lambda client, prompt, *a, **k: (
+                seen.setdefault('prompt', prompt),
+                _ONE_DIGEST,
+            )[1],
+        ),
+    ):
+        chatter_memory._condense_low_value_memories(
+            _base_config(**overrides),
+            bot_guid=1283000001, player_guid=1283000099,
+        )
+    prompt = seen['prompt']
+    marker = 'Fold them into 1-'
+    start = prompt.index(marker) + len(marker)
+    return int(prompt[start:prompt.index(' ', start)])
+
+
+def test_max_digests_clamped_below_min_candidates():
+    # MaxDigests 5 with MinCandidates 4 would let a pass swap 4
+    # rows for 5 -- a net gain. Clamp to MinCandidates - 1.
+    assert _max_digests_in_prompt(**{
+        'LLMChatter.Memory.Condensation.MinCandidates': 4,
+        'LLMChatter.Memory.Condensation.MaxDigests': 5,
+    }) == 3
+
+
+def test_max_digests_equal_to_min_candidates_is_clamped():
+    # Equal is still not a reduction: 4 rows in, 4 digests out.
+    assert _max_digests_in_prompt(**{
+        'LLMChatter.Memory.Condensation.MinCandidates': 4,
+        'LLMChatter.Memory.Condensation.MaxDigests': 4,
+    }) == 3
+
+
+def test_max_digests_left_alone_when_already_safe():
+    assert _max_digests_in_prompt(**{
+        'LLMChatter.Memory.Condensation.MinCandidates': 5,
+        'LLMChatter.Memory.Condensation.MaxDigests': 2,
+    }) == 2
+
+
+def test_non_positive_max_digests_falls_back_to_default():
+    assert _max_digests_in_prompt(**{
+        'LLMChatter.Memory.Condensation.MinCandidates': 6,
+        'LLMChatter.Memory.Condensation.MaxDigests': 0,
+    }) == chatter_memory.DEFAULT_CONDENSATION_MAX_DIGESTS
+
+
+def test_non_positive_min_candidates_falls_back_to_default():
+    # MinCandidates 0/1 would make "condensation" a 1-row rewrite
+    # and leave MaxDigests unclamped.
+    assert _max_digests_in_prompt(**{
+        'LLMChatter.Memory.Condensation.MinCandidates': 1,
+        'LLMChatter.Memory.Condensation.MaxDigests': 9,
+    }) == chatter_memory.DEFAULT_CONDENSATION_MIN_CANDIDATES - 1
+
+
+# ============================================================
+# No open transaction across the LLM call
+# ============================================================
+
+def test_read_connection_is_closed_before_the_llm_call():
+    """With autocommit off, holding the candidate SELECT's
+    connection open across the LLM round-trip keeps its read view
+    (and InnoDB purge) pinned for seconds.
+    """
+    rows = [_row(i, f'memory {i}', 2) for i in range(1, 4)]
+    db = _CondenseDb(candidate_rows=rows)
+    state = {}
+
+    def _fake_llm(client, prompt, *args, **kwargs):
+        state['closed_at_llm_time'] = db.closed
+        state['queries_at_llm_time'] = [q for q, _ in db.executed]
+        return _ONE_DIGEST
+
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ) as get_conn,
+        patch.object(
+            chatter_memory, 'get_llm_client', return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm', side_effect=_fake_llm,
+        ),
+    ):
+        result = chatter_memory._condense_low_value_memories(
+            _base_config(), bot_guid=1283000001,
+            player_guid=1283000099,
+        )
+
+    assert result is True
+    assert state['closed_at_llm_time'] is True
+    # Nothing written yet at LLM time -- the read phase only read.
+    assert all(
+        q.startswith('SELECT')
+        for q in state['queries_at_llm_time']
+    )
+    # A second, fresh connection is opened for the write phase.
+    assert get_conn.call_count == 2
+
+
+# ============================================================
+# Condensation must not strand memories behind the relationship
+# watermark
+# ============================================================
+
+def _rewind_update(db):
+    return next(
+        (
+            (q, p) for q, p in db.executed
+            if q.startswith("UPDATE llm_bot_relationships")
+        ),
+        None,
+    )
+
+
+def _condense_with_timestamps(created_ats, rowcount):
+    rows = [
+        _row(i + 1, f'memory {i}', 2, created_at=ca)
+        for i, ca in enumerate(created_ats)
+    ]
+    db = _CondenseDb(
+        candidate_rows=rows,
+        relationship_update_rowcount=rowcount,
+    )
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ),
+        patch.object(
+            chatter_memory, 'get_llm_client', return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm', return_value=_ONE_DIGEST,
+        ),
+    ):
+        result = chatter_memory._condense_low_value_memories(
+            _base_config(), bot_guid=1283000001,
+            player_guid=1283000099,
+        )
+    return db, result
+
+
+def test_condensation_rewinds_the_relationship_watermark():
+    """The blocker: a digest inherits its OLDEST source's
+    created_at, but the relationship pass selects with
+    `created_at > watermark`. Folding a source NEWER than the
+    watermark into an older-stamped digest hides that content
+    from relationship tracking permanently -- the sources are
+    deleted and the digest sorts behind the watermark forever.
+    """
+    oldest = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    newest = datetime.datetime(2026, 8, 3, 10, 0, 0)
+    db, result = _condense_with_timestamps(
+        [oldest, datetime.datetime(2026, 8, 2, 10, 0, 0), newest],
+        rowcount=1,
+    )
+    assert result is True
+    update = _rewind_update(db)
+    assert update is not None, [q for q, _ in db.executed]
+    query, params = update
+    # Rewound to one second before the digest's created_at, so the
+    # next relationship pass re-folds the digest.
+    assert params[0] == oldest - datetime.timedelta(seconds=1)
+    assert params[1] == 1283000001
+    assert params[2] == 1283000099
+    # Only fires when a source really outran the watermark...
+    assert params[3] == newest
+    # ...and only ever rewinds, never advances.
+    assert params[4] == oldest - datetime.timedelta(seconds=1)
+    assert 'updated_through_created_at < %s' in query
+    assert 'updated_through_created_at > %s' in query
+
+
+def test_rewind_shares_the_condensation_transaction():
+    """A rewind committed separately from the insert+delete could
+    be lost (or applied alone) on a crash between them."""
+    oldest = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    db, result = _condense_with_timestamps(
+        [oldest, datetime.datetime(2026, 8, 3, 10, 0, 0)],
+        rowcount=1,
+    )
+    assert result is True
+    assert db.commits == 1
+    queries = [q for q, _ in db.executed]
+    insert_idx = next(
+        i for i, q in enumerate(queries)
+        if q.startswith("INSERT INTO llm_bot_memories")
+    )
+    delete_idx = next(
+        i for i, q in enumerate(queries)
+        if q.startswith("DELETE FROM llm_bot_memories")
+    )
+    update_idx = next(
+        i for i, q in enumerate(queries)
+        if q.startswith("UPDATE llm_bot_relationships")
+    )
+    assert insert_idx < delete_idx < update_idx
+
+
+def test_rewind_uses_update_so_it_never_creates_a_relationship():
+    """A pair with no relationship row must stay without one --
+    the relationship pass creates it on its own terms."""
+    oldest = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    db, result = _condense_with_timestamps(
+        [oldest, datetime.datetime(2026, 8, 3, 10, 0, 0)],
+        rowcount=0,
+    )
+    assert result is True
+    update = _rewind_update(db)
+    assert update is not None
+    assert update[0].startswith("UPDATE llm_bot_relationships")
+    assert 'INSERT' not in update[0]
+    assert not [
+        q for q, _ in db.executed
+        if q.startswith("INSERT INTO llm_bot_relationships")
+    ]
+
+
+def test_rewind_skipped_without_source_timestamps():
+    # Rows with no created_at at all (a caller/fake that never
+    # selected the column) -- _row() substitutes a default, so
+    # build them by hand.
+    rows = [
+        {
+            'id': i, 'group_id': 41, 'memory': f'memory {i}',
+            'importance_score': 2, 'effective_score': 2,
+            'condensation_generation': 0,
+        }
+        for i in (1, 2)
+    ]
+    db = _CondenseDb(
+        candidate_rows=rows, relationship_update_rowcount=1,
+    )
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ),
+        patch.object(
+            chatter_memory, 'get_llm_client', return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm', return_value=_ONE_DIGEST,
+        ),
+    ):
+        chatter_memory._condense_low_value_memories(
+            _base_config(), bot_guid=1283000001,
+            player_guid=1283000099,
+        )
+    assert _rewind_update(db) is None
 
 
 if __name__ == '__main__':

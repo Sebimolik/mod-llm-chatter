@@ -1488,6 +1488,69 @@ def _maybe_trigger_condensation(
         )
 
 
+def _rewind_relationship_watermark(
+    cursor, bot_guid, player_guid,
+    digest_created_at, source_max_created_at,
+):
+    """Roll a pair's relationship watermark back behind a
+    freshly written condensation digest, when condensation
+    would otherwise have hidden content from it forever.
+
+    _maybe_update_relationship() selects new material with
+    `created_at > updated_through_created_at`. A digest
+    inherits its OLDEST source's created_at (so its decay
+    clock is not reset), which means a digest can land BEHIND
+    a watermark that had already passed some of the sources it
+    absorbed. Those sources are then deleted. The content is
+    now reachable only through a row the relationship pass
+    will never select again -- and because each pass can fold
+    yet another already-summarized-past memory into an
+    older-stamped digest, the loss compounds instead of
+    resolving.
+
+    Setting the watermark to one second before the digest's
+    created_at makes the very next relationship pass pick the
+    digest up and re-fold it. Re-folding already-summarized
+    material is harmless (the prompt is "update this summary
+    with these memories"); losing it is not.
+
+    Only rewinds, never advances: the UPDATE requires the
+    current watermark to be strictly newer than the target, so
+    a pair whose watermark already sits behind the digest
+    keeps it and does not skip unrelated memories in between.
+    And only fires when a source really was newer than the
+    watermark -- an ordinary condensation of long-summarized
+    memories changes nothing.
+
+    Uses UPDATE (not upsert) so a pair with no relationship
+    row yet stays without one; the relationship pass creates
+    that row on its own terms.
+
+    Returns the datetime it rewound to, or None if it did not
+    rewind (no relationship row, watermark already behind the
+    digest, nothing newer than the watermark, or missing
+    timestamps).
+    """
+    if digest_created_at is None or source_max_created_at is None:
+        return None
+    if not isinstance(digest_created_at, datetime.datetime):
+        return None
+    target = digest_created_at - datetime.timedelta(seconds=1)
+    cursor.execute(
+        "UPDATE llm_bot_relationships"
+        " SET updated_through_created_at = %s"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND updated_through_created_at < %s"
+        "   AND updated_through_created_at > %s",
+        (
+            target, bot_guid, player_guid,
+            source_max_created_at, target,
+        ),
+    )
+    return target if cursor.rowcount else None
+
+
 def _condense_low_value_memories(
     config, bot_guid, player_guid,
 ):
@@ -1513,12 +1576,24 @@ def _condense_low_value_memories(
     ready yet, and the trigger fires again next time a
     qualifying insert crosses the threshold.
 
+    Runs on TWO short-lived connections, never one held
+    across the LLM call. The first opens, selects candidates
+    and resolves identities, then closes -- because
+    mysql-connector has autocommit off, keeping it open would
+    hold that SELECT's read view (and pin InnoDB's purge)
+    for the entire LLM round-trip, which is seconds, not
+    milliseconds. The second opens only once a usable
+    response is in hand. Atomicity is only ever needed across
+    the insert-then-delete pair, which lives entirely on the
+    second connection.
+
     On success: inserts up to
     LLMChatter.Memory.Condensation.MaxDigests digest rows
-    (memory_type='condensed') and deletes the source rows,
-    all inside one DB transaction (mysql-connector
+    (memory_type='condensed'), deletes the source rows, and
+    (if needed) rolls this pair's relationship watermark back
+    -- all inside one DB transaction (mysql-connector
     autocommit defaults to off, same as every other write
-    path in this file -- the two writes below share a single
+    path in this file -- those writes share a single
     conn.commit()), so a crash between insert and delete can
     never lose memories without gaining their replacement.
     Each digest's importance_score is bounded by
@@ -1530,6 +1605,22 @@ def _condense_low_value_memories(
     floor -- which is exactly why re-condensation is bounded by
     condensation_generation instead
     (LLMChatter.Memory.Condensation.MaxGenerations).
+
+    Inheriting the oldest source's created_at interacts badly
+    with the relationship-summary watermark, so this function
+    repairs that in the same transaction. _maybe_update_relationship()
+    picks up new material with `created_at > updated_through_created_at`.
+    Folding a source memory NEWER than that watermark into a digest
+    stamped OLDER than it would leave that content permanently
+    invisible to relationship tracking -- the sources are gone and
+    the digest sorts behind the watermark, so no later pass can ever
+    reach it, and repeated condensation passes compound the loss.
+    So: whenever a condensed source was newer than the pair's current
+    watermark, the watermark is rolled BACK to just before the
+    digest's created_at, guaranteeing the next relationship pass
+    re-folds the digest. Strictly a rollback -- it is never moved
+    forward, which would skip unrelated unsummarized memories -- and
+    it never creates a relationship row that did not already exist.
 
     Three details keep a digest from crowding out the real
     memories that outlive it:
@@ -1555,6 +1646,7 @@ def _condense_low_value_memories(
     candidates" and "condensation attempted but failed").
     """
     conn = None
+    write_conn = None
     try:
         conn = get_db_connection(config)
         cursor = conn.cursor(dictionary=True)
@@ -1576,6 +1668,11 @@ def _condense_low_value_memories(
             'LLMChatter.Memory.Condensation.MinCandidates',
             DEFAULT_CONDENSATION_MIN_CANDIDATES,
         ))
+        # A pass must always be a net REDUCTION. Folding fewer
+        # than two rows is not condensation, and MinCandidates
+        # is what MaxDigests is clamped against below.
+        if min_candidates < 2:
+            min_candidates = DEFAULT_CONDENSATION_MIN_CANDIDATES
         if len(candidates) < min_candidates:
             logger.debug(
                 "Skipping condensation for bot=%s "
@@ -1649,6 +1746,26 @@ def _condense_low_value_memories(
             'LLMChatter.Memory.Condensation.MaxDigests',
             DEFAULT_CONDENSATION_MAX_DIGESTS,
         ))
+        # Digest inserts go through _insert_memory_row() directly,
+        # NOT _ensure_cap_and_insert(), so they are not themselves
+        # cap-checked or eviction-guarded. That is safe only while a
+        # pass strictly shrinks the pool: with MaxDigests >=
+        # MinCandidates a pass could replace N rows with N (or more)
+        # digests and, repeated, grow the pool straight past
+        # MaxPerBotPlayer with nothing to trim it back. Clamp so at
+        # least one row is always retired per pass. MaxCandidates and
+        # MaxGenerations are clamped the same way in
+        # _get_condensation_candidates().
+        if max_digests < 1:
+            max_digests = DEFAULT_CONDENSATION_MAX_DIGESTS
+        ceiling = max(1, min_candidates - 1)
+        if max_digests > ceiling:
+            logger.debug(
+                "Clamping Condensation.MaxDigests %d -> %d so a "
+                "pass cannot grow the memory pool (MinCandidates=%d)",
+                max_digests, ceiling, min_candidates,
+            )
+            max_digests = ceiling
         prompt = _build_condensation_prompt(
             candidates, max_digests,
             player_name=player_name,
@@ -1659,6 +1776,17 @@ def _condense_low_value_memories(
             bot_gender=bot_gender,
         )
         client = get_llm_client(config)
+
+        # Everything this pass needs from the database has been
+        # read. Close BEFORE the LLM call rather than after:
+        # holding this connection open would keep the candidate
+        # SELECT's transaction (and read view) alive for the
+        # whole round-trip. The write below opens a fresh one.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
 
         response = None
         try:
@@ -1731,6 +1859,13 @@ def _condense_low_value_memories(
             min(source_created_ats)
             if source_created_ats else None
         )
+        # The newest source folded away, used below to decide
+        # whether the relationship watermark now sits past
+        # content that only survives inside the digest.
+        source_max_created_at = (
+            max(source_created_ats)
+            if source_created_ats else None
+        )
         digest_generation = max(
             int(c.get('condensation_generation') or 0)
             for c in candidates
@@ -1792,11 +1927,16 @@ def _condense_low_value_memories(
             ['%s'] * len(candidate_ids)
         )
 
-        # Insert digest(s), then delete sources, sharing
-        # ONE commit -- see docstring above.
+        # Fresh connection for the write phase (see docstring):
+        # the read connection was closed before the LLM call.
+        write_conn = get_db_connection(config)
+        wcursor = write_conn.cursor(dictionary=True)
+
+        # Insert digest(s), then delete sources, then repair the
+        # relationship watermark -- sharing ONE commit.
         for digest in validated:
             _insert_memory_row(
-                cursor, bot_guid, player_guid, group_id,
+                wcursor, bot_guid, player_guid, group_id,
                 'condensed', digest['memory'],
                 digest['mood'], None, active=1, used=1,
                 session_start=time.time(),
@@ -1805,12 +1945,16 @@ def _condense_low_value_memories(
                 created_at=digest_created_at,
                 condensation_generation=digest_generation,
             )
-        cursor.execute(
+        wcursor.execute(
             "DELETE FROM llm_bot_memories"
             f" WHERE id IN ({placeholders})",
             tuple(candidate_ids),
         )
-        conn.commit()
+        rolled_back_to = _rewind_relationship_watermark(
+            wcursor, bot_guid, player_guid,
+            digest_created_at, source_max_created_at,
+        )
+        write_conn.commit()
 
         logger.info(
             "Condensed %d memories into %d digest(s) for "
@@ -1820,6 +1964,14 @@ def _condense_low_value_memories(
             bot_guid, player_guid, digest_generation,
             digest_created_at,
         )
+        if rolled_back_to is not None:
+            logger.info(
+                "Rolled relationship watermark back to %s for "
+                "bot=%s player=%s so the new digest is re-folded "
+                "into the relationship summary (a condensed source "
+                "was newer than the old watermark)",
+                rolled_back_to, bot_guid, player_guid,
+            )
         return True
 
     except Exception:
@@ -1834,11 +1986,12 @@ def _condense_low_value_memories(
             _condensing_pairs.discard(
                 (bot_guid, player_guid)
             )
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        for _c in (conn, write_conn):
+            if _c is not None:
+                try:
+                    _c.close()
+                except Exception:
+                    pass
 
 
 def insert_first_meeting_memory(
@@ -2793,11 +2946,19 @@ def _sanitized_relationship_watermark(
     and self-correcting; staying stuck is not.
 
     A watermark merely newer than the pair's newest memory is
-    NOT treated as an error: that is the normal state right
-    after condensation, whose digests inherit their oldest
-    source's (older) created_at while the summarized rows they
-    replaced are deleted. It resolves itself as soon as the pair
-    makes another memory, so it is logged at debug only.
+    NOT treated as an error: it is the normal state right after
+    condensation, whose digests inherit their oldest source's
+    (older) created_at while the summarized rows they replaced
+    are deleted -- there is simply nothing new to fold in yet,
+    and the next memory the pair makes clears it.
+
+    Note this is only benign for material the summary had
+    ALREADY absorbed. Condensing a source that was newer than
+    the watermark used to strand that content behind the digest
+    permanently; _condense_low_value_memories() now rewinds the
+    watermark in its own write transaction (see
+    _rewind_relationship_watermark()) so that case never reaches
+    here. Do not widen this branch into a fixup for it.
     """
     if not watermark:
         return RELATIONSHIP_WATERMARK_EPOCH
@@ -2828,7 +2989,9 @@ def _sanitized_relationship_watermark(
         logger.debug(
             "Relationship watermark %s for bot=%s player=%s is "
             "newer than the pair's newest memory (%s); expected "
-            "after condensation, resolves on the next memory.",
+            "after condensation of already-summarized rows -- "
+            "nothing new to fold in until this pair's next "
+            "memory.",
             watermark, bot_guid, player_guid, newest_at,
         )
     return watermark
