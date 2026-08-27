@@ -361,6 +361,137 @@ def test_default_max_per_is_thirty_when_omitted(db):
     conn.close()
 
 
+def test_zero_max_per_deletes_nothing(db):
+    """The blocker: max_per was never clamped, so
+    `excess = ids[:len(ids) - max_per]` with max_per=0 became
+    `ids[:len(ids)]` -- every active memory the pair had, deleted
+    at bridge startup, silently. A misconfigured
+    LLMChatter.Memory.MaxPerBotPlayer = 0 must be refused, not
+    obeyed.
+    """
+    conn = db.connect()
+    now = time.time()
+    bot_guid, player_guid = 999999107, 999999907
+    # Real-shaped pool: two already-active rows plus three
+    # orphans about to be promoted, mixed importances.
+    for i, importance in enumerate((5, 9)):
+        _insert_memory(
+            conn, group_id=107, bot_guid=bot_guid,
+            player_guid=player_guid, active=1, session_start=now,
+            importance=importance, created_at_offset=-60 + i,
+        )
+    for i, importance in enumerate((2, 4, 7)):
+        _insert_memory(
+            conn, group_id=107, bot_guid=bot_guid,
+            player_guid=player_guid, active=0,
+            session_start=now - 7200, importance=importance,
+            created_at_offset=-30 + i,
+        )
+    chatter_memory.activate_orphaned_memories(
+        conn, session_minutes=30, max_per=0,
+    )
+    rows = _active_rows(conn, bot_guid, player_guid)
+    # All five survive, all promoted -- nothing deleted.
+    assert len(rows) == 5, rows
+    assert all(r['active'] == 1 for r in rows), rows
+    assert sorted(
+        r['importance_score'] for r in rows
+    ) == [2, 4, 5, 7, 9]
+    conn.close()
+
+
+def test_negative_max_per_deletes_nothing(db):
+    """Same guard, negative side: -1 would have made the slice
+    `ids[:len(ids) + 1]`, i.e. still everything."""
+    conn = db.connect()
+    now = time.time()
+    bot_guid, player_guid = 999999108, 999999908
+    for i, importance in enumerate((3, 6, 8)):
+        _insert_memory(
+            conn, group_id=108, bot_guid=bot_guid,
+            player_guid=player_guid, active=0,
+            session_start=now - 7200, importance=importance,
+            created_at_offset=i,
+        )
+    chatter_memory.activate_orphaned_memories(
+        conn, session_minutes=30, max_per=-1,
+    )
+    rows = _active_rows(conn, bot_guid, player_guid)
+    assert len(rows) == 3, rows
+    assert all(r['active'] == 1 for r in rows), rows
+    conn.close()
+
+
+def test_trim_never_deletes_the_pairs_top_row(db):
+    """Every other deletion path in chatter_memory.py protects a
+    pair's single highest-effective-score row via
+    _top_row_exclusion_sql(). This one must too: with max_per=1
+    the trim has to leave exactly the top row, not an arbitrary
+    one.
+    """
+    conn = db.connect()
+    now = time.time()
+    bot_guid, player_guid = 999999109, 999999909
+    for i, importance in enumerate((2, 10, 4, 6)):
+        _insert_memory(
+            conn, group_id=109, bot_guid=bot_guid,
+            player_guid=player_guid, active=0,
+            session_start=now - 7200, importance=importance,
+            created_at_offset=i,
+        )
+    chatter_memory.activate_orphaned_memories(
+        conn, session_minutes=30, max_per=1,
+    )
+    rows = _active_rows(conn, bot_guid, player_guid)
+    assert len(rows) == 1, rows
+    assert rows[0]['importance_score'] == 10, rows
+    conn.close()
+
+
+def test_trim_uses_effective_score_not_raw_importance(db):
+    """The trim must rank by the decay-aware effective score
+    (_effective_score_sql()), the same expression eviction and
+    condensation-candidate selection use -- not raw
+    importance_score.
+
+    Rows at or below DecayMaxImportance (3) lose ~1 point per
+    DecayDays (30). A 90-day-old importance-3 row therefore has
+    effective score 1, BELOW a fresh importance-2 row. Ranking by
+    raw importance would drop the fresh 2 and keep the stale 3;
+    ranking by effective score does the opposite.
+    """
+    conn = db.connect()
+    now = time.time()
+    bot_guid, player_guid = 999999110, 999999910
+    ninety_days = -90 * 24 * 3600
+    _insert_memory(
+        conn, group_id=110, bot_guid=bot_guid,
+        player_guid=player_guid, active=0,
+        session_start=now - 7200, importance=3,
+        created_at_offset=ninety_days,
+    )
+    _insert_memory(
+        conn, group_id=110, bot_guid=bot_guid,
+        player_guid=player_guid, active=0,
+        session_start=now - 7200, importance=2,
+        created_at_offset=-10,
+    )
+    # Protected top row, so the trim has exactly one row to drop.
+    _insert_memory(
+        conn, group_id=110, bot_guid=bot_guid,
+        player_guid=player_guid, active=0,
+        session_start=now - 7200, importance=9,
+        created_at_offset=-5,
+    )
+    chatter_memory.activate_orphaned_memories(
+        conn, session_minutes=30, max_per=2,
+    )
+    rows = _active_rows(conn, bot_guid, player_guid)
+    kept = sorted(r['importance_score'] for r in rows)
+    assert kept == [2, 9], kept
+    conn.close()
+
+
 def main() -> int:
     db = ScratchMySQL()
     db.start()
@@ -373,6 +504,10 @@ def main() -> int:
             test_promotion_respects_a_custom_max_per_cap,
             test_cap_is_not_enforced_on_pairs_that_were_not_promoted,
             test_default_max_per_is_thirty_when_omitted,
+            test_zero_max_per_deletes_nothing,
+            test_negative_max_per_deletes_nothing,
+            test_trim_never_deletes_the_pairs_top_row,
+            test_trim_uses_effective_score_not_raw_importance,
         ]
         for test in tests:
             test(db)

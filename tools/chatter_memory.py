@@ -3197,7 +3197,7 @@ def get_relationship_summary(db, bot_guid, player_guid):
 # ============================================================
 
 def activate_orphaned_memories(
-    db, session_minutes, max_per=30,
+    db, session_minutes, max_per=30, config=None,
 ):
     """Promote orphaned inactive memories from
     sessions that ended without a clean farewell
@@ -3210,6 +3210,11 @@ def activate_orphaned_memories(
 
     Uses UNIX_TIMESTAMP arithmetic since
     session_start is DOUBLE (not TIMESTAMP).
+
+    `config` is optional and only feeds the decay tunables
+    behind _effective_score_sql() for the post-promotion cap
+    trim below; omitting it just uses the documented decay
+    defaults rather than the server's overrides.
     """
     session_seconds = int(session_minutes) * 60
     try:
@@ -3280,25 +3285,53 @@ def activate_orphaned_memories(
 
         # Enforce the per-pair cap after a bulk promotion: crash recovery
         # can otherwise leave a pair above LLMChatter.Memory.MaxPerBotPlayer
-        # until the next normal insert trims it. Drop the lowest-importance
+        # until the next normal insert trims it. Drop the least valuable
         # excess so the cap is a real invariant, not just self-correcting.
-        for (b_guid, p_guid) in promoted_pairs:
-            cursor.execute(
-                "SELECT id FROM llm_bot_memories"
-                " WHERE bot_guid = %s AND player_guid = %s"
-                "   AND active = 1"
-                " ORDER BY importance_score ASC, created_at ASC",
-                (b_guid, p_guid),
-            )
-            ids = [r['id'] for r in cursor.fetchall()]
-            if len(ids) > max_per:
-                excess = ids[:len(ids) - max_per]
-                placeholders = ','.join(['%s'] * len(excess))
+        #
+        # max_per <= 0 is a misconfiguration, NOT an instruction to forget
+        # everything: without this guard the slice below becomes ids[:len(ids)]
+        # and wipes every active memory the pair has, at startup, silently.
+        # Every other cap-consuming path in this file bails the same way (see
+        # _maybe_trigger_condensation()).
+        #
+        # Ordering and the top-row exclusion match _evict_one_used() and
+        # _get_condensation_candidates(): trim by decay-aware effective score
+        # (_effective_score_sql()) rather than raw importance_score, and never
+        # drop the pair's single most valuable memory (_top_row_exclusion_sql()).
+        # Deleting by a different rule than every other deletion path is how a
+        # row that eviction would have protected gets dropped here instead.
+        if max_per > 0:
+            score_sql = _effective_score_sql(config)
+            top_row_subquery = _top_row_exclusion_sql(score_sql)
+            for (b_guid, p_guid) in promoted_pairs:
                 cursor.execute(
-                    "DELETE FROM llm_bot_memories"
-                    " WHERE id IN (" + placeholders + ")",
-                    tuple(excess),
+                    "SELECT id FROM llm_bot_memories"
+                    " WHERE bot_guid = %s AND player_guid = %s"
+                    "   AND active = 1"
+                    + top_row_subquery +
+                    " ORDER BY " + score_sql + " ASC,"
+                    " created_at ASC, id ASC",
+                    (b_guid, p_guid, b_guid, p_guid),
                 )
+                ids = [r['id'] for r in cursor.fetchall()]
+                # ids excludes the protected top row, so the pair's real
+                # active count is len(ids) + 1.
+                excess_count = (len(ids) + 1) - max_per
+                if excess_count > 0:
+                    excess = ids[:excess_count]
+                    placeholders = ','.join(['%s'] * len(excess))
+                    cursor.execute(
+                        "DELETE FROM llm_bot_memories"
+                        " WHERE id IN (" + placeholders + ")",
+                        tuple(excess),
+                    )
+        elif promoted_pairs:
+            logger.warning(
+                "LLMChatter.Memory.MaxPerBotPlayer=%s is not positive; "
+                "skipping the startup cap trim for %d promoted pair(s) "
+                "rather than deleting every memory they have.",
+                max_per, len(promoted_pairs),
+            )
 
         db.commit()
         if promoted or discarded:

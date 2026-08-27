@@ -1984,7 +1984,7 @@ def main():
                     '.MaxPerBotPlayer', 30
                 ))
                 activate_orphaned_memories(
-                    db, session_min, max_per,
+                    db, session_min, max_per, config=config,
                 )
                 rehydrate_active_sessions(db)
         except Exception:
