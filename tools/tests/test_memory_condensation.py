@@ -836,6 +836,12 @@ class _RelationshipDb:
         self.now_ts = now_ts
         self.executed = []
         self.commits = 0
+        # Tracks whether the read connection has been closed yet,
+        # same convention as _CondenseDb.closed -- lets a test
+        # observe that the read connection is gone before the LLM
+        # call fires, without the fake having to actually enforce
+        # closed-connection errors.
+        self.closed = False
 
     def cursor(self, *args, **kwargs):
         return _RelationshipCursor(self)
@@ -844,7 +850,7 @@ class _RelationshipDb:
         self.commits += 1
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def _memory(row_id, text, created_at):
@@ -959,6 +965,63 @@ def test_first_relationship_for_a_pair_inserts():
     assert write[1][3] == t0
     assert db.relationship['updated_through_created_at'] == t0
     assert db.relationship['summary'] == 'They trust each other.'
+    assert db.commits == 1
+
+
+def test_relationship_read_connection_is_closed_before_the_llm_call():
+    """Mirrors
+    test_read_connection_is_closed_before_the_llm_call() in the
+    condensation path (1b744f9): with autocommit off, holding
+    the read connection open across the LLM round-trip would pin
+    its read view for no reason. The read connection must be
+    closed before call_llm() runs, and a second, fresh connection
+    must be opened for the write.
+    """
+    t0 = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    newest = t0 + datetime.timedelta(days=1)
+    db = _RelationshipDb(
+        memories=[_memory(7, 'a new memory', newest)],
+        relationship={
+            'summary': '', 'updated_through_created_at': t0,
+        },
+        now_ts=newest + datetime.timedelta(hours=1),
+    )
+    state = {}
+
+    def _fake_llm(client, prompt, *args, **kwargs):
+        state['closed_at_llm_time'] = db.closed
+        state['queries_at_llm_time'] = [
+            q for q, _ in db.executed
+        ]
+        return json.dumps({'message': 'They trust each other.'})
+
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ) as get_conn,
+        patch.object(
+            chatter_memory, 'get_llm_client',
+            return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm', side_effect=_fake_llm,
+        ),
+    ):
+        chatter_memory._maybe_update_relationship(
+            {}, 1283000001, 1283000099,
+        )
+
+    assert state['closed_at_llm_time'] is True
+    # Nothing written yet at LLM time -- the read phase only read.
+    assert all(
+        q.startswith('SELECT')
+        for q in state['queries_at_llm_time']
+    )
+    # A second, fresh connection is opened for the write phase.
+    assert get_conn.call_count == 2
+    # And the write still actually landed on the (fake, shared)
+    # connection returned by the second call.
+    assert db.relationship['updated_through_created_at'] == newest
     assert db.commits == 1
 
 

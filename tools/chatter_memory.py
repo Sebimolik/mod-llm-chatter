@@ -3113,6 +3113,21 @@ def _maybe_update_relationship(
     LLMChatter.Memory.Relationship.MaxChars, and writes it
     back with the new watermark.
 
+    Runs on TWO short-lived connections, same reasoning as
+    _condense_low_value_memories(): the read connection opens,
+    reads the summary/watermark/candidate memories/names, then
+    closes -- before the LLM call, not after. With autocommit
+    off, holding it open across a multi-second round-trip would
+    pin that SELECT's read view (and InnoDB purge) for no
+    reason; nothing else on this connection is needed once the
+    prompt is built. The write below opens a fresh connection.
+    `watermark_at_read` and `row_existed_at_read` are captured
+    from the read connection before it closes, so the
+    optimistic-concurrency guard on the write (see below) is
+    unaffected by the connection swap -- it only ever compares
+    against the plain Python values captured here, never against
+    connection/cursor state.
+
     The watermark write is optimistically concurrent: it only
     lands if the column is still exactly where this pass read
     it, because condensation's
@@ -3130,6 +3145,7 @@ def _maybe_update_relationship(
     never a partial/corrupt overwrite.
     """
     conn = None
+    write_conn = None
     try:
         conn = get_db_connection(config)
         cursor = conn.cursor(dictionary=True)
@@ -3149,7 +3165,9 @@ def _maybe_update_relationship(
         )
         # Raw stored value (NOT the sanitized one) and whether a
         # row existed at all: both are the state this pass's
-        # write is conditioned on further down.
+        # write is conditioned on further down. Captured now,
+        # as plain values, so they survive the read connection
+        # closing below.
         row_existed_at_read = existing is not None
         watermark_at_read = (
             existing.get('updated_through_created_at')
@@ -3217,6 +3235,18 @@ def _maybe_update_relationship(
                 f" player={player_guid}",
             )
             return
+
+        # Everything this pass needs from the database has been
+        # read. Close BEFORE the LLM call rather than after, same
+        # reasoning as _condense_low_value_memories(): holding
+        # this connection open would pin the reads' transaction
+        # (and read view) for the whole round-trip. The write
+        # below opens a fresh one.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
 
         # max_chars=MEMORY_TEXT_MAX_CHARS for the same reason
         # condensation uses it: the watermark advances past
@@ -3308,7 +3338,11 @@ def _maybe_update_relationship(
         # Rows are ordered by created_at, so the last one
         # carries the newest timestamp folded in.
         new_watermark = candidates[-1]['created_at']
-        write_cursor = conn.cursor()
+
+        # Fresh connection for the write phase (see docstring):
+        # the read connection was closed before the LLM call.
+        write_conn = get_db_connection(config)
+        write_cursor = write_conn.cursor()
         if row_existed_at_read:
             # Optimistic concurrency on the watermark, NOT a
             # blind upsert and NOT GREATEST().
@@ -3330,7 +3364,11 @@ def _maybe_update_relationship(
             # source rows are already deleted. GREATEST() would
             # do exactly the same thing, for the same reason: it
             # also refuses to go backward. So the advance only
-            # lands while the column is still where we read it.
+            # lands while the column is still where we read it
+            # -- on the ORIGINAL read connection, before it
+            # closed; watermark_at_read is a plain value captured
+            # from that read and does not depend on the read
+            # connection/cursor still being open.
             write_cursor.execute(
                 "UPDATE llm_bot_relationships"
                 " SET summary = %s,"
@@ -3395,7 +3433,7 @@ def _maybe_update_relationship(
                 ),
             )
             watermark_written = new_watermark
-        conn.commit()
+        write_conn.commit()
         logger.info(
             "Relationship summary updated bot=%s "
             "player=%s lines=%s chars=%s out=%s "
@@ -3412,11 +3450,12 @@ def _maybe_update_relationship(
             exc_info=True,
         )
     finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        for _c in (conn, write_conn):
+            if _c is not None:
+                try:
+                    _c.close()
+                except Exception:
+                    pass
 
 
 def get_relationship_summary(db, bot_guid, player_guid):
