@@ -1,0 +1,68 @@
+#!/bin/bash
+# Pre-push verification for mod-llm-chatter.
+#
+# Runs the fast, safe part of the verification checklist documented in
+# ~/mod-llm-chatter-state.md before allowing a push:
+#   1. py_compile every tracked *.py file (catches syntax errors).
+#   2. tools/import_smoke_check.py (import/cycle safety).
+#   3. every tools/tests/test_*.py (plain scripts with main() -> int,
+#      run with the venv interpreter, NOT pytest).
+#
+# Deliberately NOT run here: tools/chatter_healthcheck.py. It opens a
+# live DB connection and isn't safe/fast/guaranteed-available in a
+# pre-push context (no DB on a fresh clone/CI box, and we don't want a
+# git hook depending on live server state). Run it manually before
+# pushing anything that touches schema, config keys, or memory logic.
+#
+# Bypass in a genuine emergency: git push --no-verify
+# (then run the full checklist by hand as soon as possible after).
+
+set -u
+
+REPO_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd)"
+cd "$REPO_ROOT" || exit 1
+
+VENV_PY="$REPO_ROOT/tools/venv/bin/python3"
+if [ ! -x "$VENV_PY" ]; then
+    echo "pre-push: $VENV_PY not found or not executable; skipping checks." >&2
+    echo "pre-push: install tools/venv before pushing, or bypass with --no-verify." >&2
+    exit 1
+fi
+
+fail=0
+
+echo "pre-push: compiling tracked Python files..."
+py_files=$(git ls-files -- 'tools/*.py' | grep -v '/venv/')
+if [ -n "$py_files" ]; then
+    # shellcheck disable=SC2086
+    if ! python3 -m py_compile $py_files; then
+        echo "pre-push: py_compile FAILED" >&2
+        fail=1
+    fi
+fi
+
+echo "pre-push: import smoke check..."
+if ! "$VENV_PY" tools/import_smoke_check.py; then
+    echo "pre-push: import_smoke_check.py FAILED" >&2
+    fail=1
+fi
+
+echo "pre-push: running tools/tests/test_*.py..."
+shopt -s nullglob
+for f in tools/tests/test_*.py; do
+    if ! "$VENV_PY" "$f"; then
+        echo "pre-push: FAIL $f" >&2
+        fail=1
+    fi
+done
+shopt -u nullglob
+
+echo "pre-push: reminder -- get a skeptic-agent review before pushing (repo convention, not enforced by this hook)."
+
+if [ "$fail" -ne 0 ]; then
+    echo "pre-push: verification failed, push blocked. Fix the above or bypass with 'git push --no-verify' (emergency only)." >&2
+    exit 1
+fi
+
+echo "pre-push: all checks passed."
+exit 0
