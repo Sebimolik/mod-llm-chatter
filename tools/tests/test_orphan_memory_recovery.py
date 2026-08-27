@@ -11,11 +11,11 @@ sure that regression can't come back unnoticed.
 
 Runs against a private, disposable mysqld instance (own datadir,
 own unix socket, no networking, torn down at the end) -- never the
-live acore_characters database. See ~/mod-llm-chatter-state.md
-("mysqld is at /usr/sbin/mysqld, not on PATH... needs a private
-instance with its own datadir"). No real bot/player guids are
-touched; synthetic ids are used purely by convention since the
-whole database is throwaway.
+live acore_characters database. mysqld is expected at MYSQLD below
+(/usr/sbin/mysqld on Debian/Ubuntu, where it is not on PATH); the
+test skips itself cleanly if that binary is missing. No real
+bot/player guids are touched; synthetic ids are used purely by
+convention since the whole database is throwaway.
 
 Run directly from the module root:
   python tools/tests/test_orphan_memory_recovery.py
@@ -493,6 +493,16 @@ def test_trim_uses_effective_score_not_raw_importance(db):
 
 
 def main() -> int:
+    # This test needs a real mysqld to exercise the actual SQL.
+    # Skip cleanly (rather than fail) where there isn't one -- a
+    # fresh clone or CI box has no MySQL server installed, and
+    # this file runs from the pre-push hook.
+    if not shutil.which(MYSQLD) and not Path(MYSQLD).exists():
+        print(
+            f"SKIP: {MYSQLD} not found; "
+            "orphan-recovery tests need a local mysqld binary."
+        )
+        return 0
     db = ScratchMySQL()
     db.start()
     try:

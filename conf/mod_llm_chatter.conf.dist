@@ -2470,14 +2470,6 @@ LLMChatter.Memory.MountChangeGenerationChance = 50
 LLMChatter.Memory.BGMatchGenerationChance = 45
 
 #
-#   LLMChatter.Memory.DiscoveryGenerationChance
-#       Percent chance (0-100) that discovering a new
-#       area generates a persistent memory.
-#       Default: 30
-#
-LLMChatter.Memory.DiscoveryGenerationChance = 30
-
-#
 #   LLMChatter.Memory.PvPKillGenerationChance
 #       Percent chance (0-100) that a PvP kill event
 #       generates a persistent memory.

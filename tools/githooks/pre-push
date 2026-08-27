@@ -1,8 +1,8 @@
 #!/bin/bash
 # Pre-push verification for mod-llm-chatter.
 #
-# Runs the fast, safe part of the verification checklist documented in
-# ~/mod-llm-chatter-state.md before allowing a push:
+# Runs the fast, safe part of the project verification checklist before
+# allowing a push:
 #   1. py_compile every tracked *.py file (catches syntax errors).
 #   2. tools/import_smoke_check.py (import/cycle safety).
 #   3. every tools/tests/test_*.py (plain scripts with main() -> int,
@@ -56,8 +56,6 @@ for f in tools/tests/test_*.py; do
     fi
 done
 shopt -u nullglob
-
-echo "pre-push: reminder -- get a skeptic-agent review before pushing (repo convention, not enforced by this hook)."
 
 if [ "$fail" -ne 0 ]; then
     echo "pre-push: verification failed, push blocked. Fix the above or bypass with 'git push --no-verify' (emergency only)." >&2
