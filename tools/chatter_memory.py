@@ -3109,8 +3109,17 @@ def _maybe_update_relationship(
     _RELATIONSHIP_MAX_INPUT_CHARS), asks the LLM to fold them
     into an updated summary, hard-truncates to
     LLMChatter.Memory.Relationship.MaxChars, and writes it
-    back with the new watermark via INSERT ... ON DUPLICATE
-    KEY UPDATE.
+    back with the new watermark.
+
+    The watermark write is optimistically concurrent: it only
+    lands if the column is still exactly where this pass read
+    it, because condensation's
+    _rewind_relationship_watermark() legitimately moves the
+    same column BACKWARD from a different executor while the
+    LLM call below is in flight (see the write block for why
+    neither an unconditional upsert nor a GREATEST() guard
+    works here). A pair with no relationship row yet has no
+    watermark to race against and takes a plain upsert.
 
     On any failure (no new memories, LLM call failure, empty/
     unparseable response) does nothing and leaves the
@@ -3135,6 +3144,14 @@ def _maybe_update_relationship(
         previous_summary = (
             str(existing.get('summary') or '').strip()
             if existing else ''
+        )
+        # Raw stored value (NOT the sanitized one) and whether a
+        # row existed at all: both are the state this pass's
+        # write is conditioned on further down.
+        row_existed_at_read = existing is not None
+        watermark_at_read = (
+            existing.get('updated_through_created_at')
+            if existing else None
         )
         watermark = _sanitized_relationship_watermark(
             cursor, bot_guid, player_guid,
@@ -3290,28 +3307,101 @@ def _maybe_update_relationship(
         # carries the newest timestamp folded in.
         new_watermark = candidates[-1]['created_at']
         write_cursor = conn.cursor()
-        write_cursor.execute(
-            "INSERT INTO llm_bot_relationships"
-            " (bot_guid, player_guid, summary,"
-            "  updated_through_created_at, updated_at)"
-            " VALUES (%s, %s, %s, %s, NOW())"
-            " ON DUPLICATE KEY UPDATE"
-            "   summary = VALUES(summary),"
-            "   updated_through_created_at ="
-            "     VALUES(updated_through_created_at),"
-            "   updated_at = NOW()",
-            (
-                bot_guid, player_guid, summary,
-                new_watermark,
-            ),
-        )
+        if row_existed_at_read:
+            # Optimistic concurrency on the watermark, NOT a
+            # blind upsert and NOT GREATEST().
+            #
+            # _condense_low_value_memories() runs on its own
+            # executor (condensation_executor), unaware of this
+            # one (relationship_executor) -- _condensing_pairs
+            # only excludes a second CONDENSATION pass for the
+            # pair, not a relationship pass. It can therefore
+            # commit _rewind_relationship_watermark() for this
+            # exact pair while the multi-second LLM call above
+            # is in flight, deliberately moving this column
+            # BACKWARD so a freshly written digest gets re-folded
+            # here next time.
+            #
+            # Writing our own (now stale, higher) watermark
+            # unconditionally would silently undo that rewind and
+            # strand the digest's content permanently, since its
+            # source rows are already deleted. GREATEST() would
+            # do exactly the same thing, for the same reason: it
+            # also refuses to go backward. So the advance only
+            # lands while the column is still where we read it.
+            write_cursor.execute(
+                "UPDATE llm_bot_relationships"
+                " SET summary = %s,"
+                "     updated_through_created_at = %s,"
+                "     updated_at = NOW()"
+                " WHERE bot_guid = %s"
+                "   AND player_guid = %s"
+                "   AND updated_through_created_at <=> %s",
+                (
+                    summary, new_watermark,
+                    bot_guid, player_guid, watermark_at_read,
+                ),
+            )
+            if write_cursor.rowcount:
+                watermark_written = new_watermark
+            else:
+                # Someone moved the watermark underneath us (a
+                # condensation rewind, or another pass for this
+                # pair). Keep the summary -- it is real LLM work,
+                # and re-folding already-summarized material is
+                # harmless by design -- but leave the watermark
+                # wherever they put it, so the next pass resumes
+                # from the real position instead of skipping
+                # whatever the rewind was trying to recover.
+                write_cursor.execute(
+                    "UPDATE llm_bot_relationships"
+                    " SET summary = %s, updated_at = NOW()"
+                    " WHERE bot_guid = %s AND player_guid = %s",
+                    (summary, bot_guid, player_guid),
+                )
+                watermark_written = None
+                logger.debug(
+                    "Relationship watermark for bot=%s "
+                    "player=%s moved from %s while this pass's "
+                    "LLM call was in flight (condensation "
+                    "rewind or a concurrent pass); kept the new "
+                    "summary but left the watermark alone "
+                    "instead of clobbering it with %s.",
+                    bot_guid, player_guid, watermark_at_read,
+                    new_watermark,
+                )
+        else:
+            # First-ever summary for this pair: no row existed at
+            # read time, so there is no watermark to race
+            # against, and the rewind helper never creates a row.
+            # A plain upsert is correct (ON DUPLICATE covers the
+            # rare case of another pass having created the row in
+            # the meantime).
+            write_cursor.execute(
+                "INSERT INTO llm_bot_relationships"
+                " (bot_guid, player_guid, summary,"
+                "  updated_through_created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, NOW())"
+                " ON DUPLICATE KEY UPDATE"
+                "   summary = VALUES(summary),"
+                "   updated_through_created_at ="
+                "     VALUES(updated_through_created_at),"
+                "   updated_at = NOW()",
+                (
+                    bot_guid, player_guid, summary,
+                    new_watermark,
+                ),
+            )
+            watermark_written = new_watermark
         conn.commit()
         logger.info(
             "Relationship summary updated bot=%s "
             "player=%s lines=%s chars=%s out=%s "
             "watermark=%s",
             bot_guid, player_guid, len(candidates),
-            char_count, len(summary), new_watermark,
+            char_count, len(summary),
+            new_watermark if watermark_written is not None
+            else 'unchanged (moved concurrently)',
         )
     except Exception:
         logger.error(

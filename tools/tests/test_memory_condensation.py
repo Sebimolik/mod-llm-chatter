@@ -738,11 +738,19 @@ class _RelationshipCursor:
     def __init__(self, db):
         self.db = db
         self._rows = []
+        # Real cursors always expose rowcount; the relationship
+        # write path reads it to tell "watermark advanced" from
+        # "someone moved it while the LLM call was in flight".
+        self.rowcount = 0
 
     def execute(self, query, params=None):
         self.db.executed.append((query, params))
+        self.rowcount = 0
         if query.startswith("SELECT summary,"):
-            self._rows = [dict(self.db.relationship)]
+            self._rows = (
+                [dict(self.db.relationship)]
+                if self.db.relationship is not None else []
+            )
         elif query.startswith("SELECT NOW()"):
             self._rows = [{
                 'now_ts': self.db.now_ts,
@@ -765,8 +773,51 @@ class _RelationshipCursor:
                 {'guid': params[0], 'name': 'Bottington'},
                 {'guid': params[1], 'name': 'Playerella'},
             ]
+        elif query.startswith("UPDATE llm_bot_relationships"):
+            self._rows = []
+            self._apply_update(query, params)
+        elif query.startswith("INSERT INTO llm_bot_relationships"):
+            self._rows = []
+            # Real ON DUPLICATE KEY UPDATE semantics: writes
+            # unconditionally, whatever the current watermark is.
+            bot_guid, player_guid, summary, watermark = params
+            if self.db.relationship is None:
+                self.db.relationship = {}
+            self.db.relationship['summary'] = summary
+            self.db.relationship[
+                'updated_through_created_at'
+            ] = watermark
+            self.rowcount = 1
         else:
             self._rows = []
+
+    def _apply_update(self, query, params):
+        """Apply the relationship UPDATEs with real MySQL
+        semantics, so the WHERE guards are actually enforced
+        (and a test can prove one is missing).
+        """
+        relationship = self.db.relationship
+        if relationship is None:
+            self.rowcount = 0  # UPDATE never creates a row
+            return
+        if 'updated_through_created_at <=> %s' in query:
+            summary, watermark, _bot, _player, expected = params
+            if (
+                relationship['updated_through_created_at']
+                != expected
+            ):
+                self.rowcount = 0  # moved underneath us
+                return
+            relationship['summary'] = summary
+            relationship[
+                'updated_through_created_at'
+            ] = watermark
+            self.rowcount = 1
+            return
+        # Summary-only fallback: never touches the watermark.
+        assert 'updated_through_created_at' not in query
+        relationship['summary'] = params[0]
+        self.rowcount = 1
 
     def fetchall(self):
         return self._rows
@@ -863,6 +914,9 @@ def test_relationship_selects_by_created_at_not_id():
 
 
 def test_relationship_writes_timestamp_watermark():
+    """Existing pair, nobody racing: the watermark advances to
+    the newest memory folded in.
+    """
     t0 = datetime.datetime(2026, 8, 1, 10, 0, 0)
     newest = t0 + datetime.timedelta(days=1)
     db = _RelationshipDb(
@@ -875,13 +929,103 @@ def test_relationship_writes_timestamp_watermark():
     _run_relationship_update(db)
     write = next(
         (q, p) for q, p in db.executed
+        if q.startswith("UPDATE llm_bot_relationships")
+    )
+    assert 'updated_through_created_at = %s' in write[0]
+    assert 'updated_through_memory_id' not in write[0]
+    # (summary, new watermark, bot, player, watermark at read)
+    assert write[1][1] == newest
+    assert write[1][4] == t0
+    assert db.relationship['updated_through_created_at'] == newest
+    assert db.commits == 1
+
+
+def test_first_relationship_for_a_pair_inserts():
+    """No row at read time -> nothing to race against, so the
+    plain upsert path still has to run (otherwise a pair would
+    never get its first relationship row at all).
+    """
+    t0 = datetime.datetime(2026, 8, 1, 10, 0, 0)
+    db = _RelationshipDb(
+        memories=[_memory(7, 'a new memory', t0)],
+        relationship=None,
+        now_ts=t0 + datetime.timedelta(hours=1),
+    )
+    _run_relationship_update(db)
+    write = next(
+        (q, p) for q, p in db.executed
         if q.startswith("INSERT INTO llm_bot_relationships")
     )
-    assert 'updated_through_created_at' in write[0]
-    assert 'updated_through_memory_id' not in write[0]
-    # (bot, player, summary, timestamp watermark)
-    assert write[1][3] == newest
+    assert write[1][3] == t0
+    assert db.relationship['updated_through_created_at'] == t0
+    assert db.relationship['summary'] == 'They trust each other.'
     assert db.commits == 1
+
+
+def test_relationship_write_does_not_clobber_a_concurrent_rewind():
+    """The race between the two fixes on this branch.
+
+    _maybe_update_relationship() (relationship_executor) reads
+    the watermark at T1 and then spends multiple seconds in an
+    LLM call. Meanwhile _condense_low_value_memories()
+    (condensation_executor -- _condensing_pairs excludes only a
+    second CONDENSATION pass, not this one) commits
+    _rewind_relationship_watermark() for the SAME pair, moving
+    the watermark BACK to T0 so a freshly written digest gets
+    re-folded.
+
+    The relationship pass then wakes up holding a stale, higher
+    watermark. If it writes that unconditionally, the rewind is
+    undone and the digest's content is stranded forever -- its
+    source rows are already deleted. So the write must lose the
+    race, not win it.
+    """
+    t0 = datetime.datetime(2026, 8, 1, 10, 0, 0)   # rewind target
+    t1 = t0 + datetime.timedelta(hours=2)          # read at
+    t2 = t0 + datetime.timedelta(hours=5)          # would advance to
+    db = _RelationshipDb(
+        memories=[_memory(7, 'a new memory', t2)],
+        relationship={
+            'summary': 'Cordial.',
+            'updated_through_created_at': t1,
+        },
+        now_ts=t2 + datetime.timedelta(hours=1),
+    )
+
+    def _rewind_during_the_llm_call(*args, **kwargs):
+        # Condensation commits its rewind while we are blocked
+        # on the model.
+        db.relationship['updated_through_created_at'] = t0
+        return json.dumps({'message': 'They trust each other.'})
+
+    with (
+        patch.object(
+            chatter_memory, 'get_db_connection', return_value=db,
+        ),
+        patch.object(
+            chatter_memory, 'get_llm_client', return_value=object(),
+        ),
+        patch.object(
+            chatter_memory, 'call_llm',
+            side_effect=_rewind_during_the_llm_call,
+        ),
+    ):
+        chatter_memory._maybe_update_relationship(
+            {}, 1283000001, 1283000099,
+        )
+
+    # The rewind stands. Not t2 (stale advance), and not
+    # GREATEST(t0, t2) either -- that guard would be just as
+    # wrong here, since the rewind is *meant* to go backward.
+    assert db.relationship['updated_through_created_at'] == t0
+    # The summary is still real LLM work, and re-folding
+    # already-summarized material is harmless, so it is kept.
+    assert db.relationship['summary'] == 'They trust each other.'
+    # And the pass must not have fallen back to a blind upsert.
+    assert not [
+        q for q, _ in db.executed
+        if q.startswith("INSERT INTO llm_bot_relationships")
+    ]
 
 
 def test_digest_of_summarized_memories_is_not_replayed():
