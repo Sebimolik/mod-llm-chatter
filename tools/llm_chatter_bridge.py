@@ -2055,10 +2055,18 @@ def main():
                 )
                 session_min = int(config.get(
                     'LLMChatter.Memory'
-                    '.SessionMinutes', 15
+                    '.SessionMinutes', 3
+                ))
+                # Startup recovery trims each pair back to
+                # the configured cap; without this it used a
+                # hardcoded 30 and would delete real memories
+                # on any server that raised the limit.
+                max_per = int(config.get(
+                    'LLMChatter.Memory'
+                    '.MaxPerBotPlayer', 30
                 ))
                 activate_orphaned_memories(
-                    db, session_min
+                    db, session_min, max_per, config=config,
                 )
                 rehydrate_active_sessions(db)
         except Exception:
@@ -2076,6 +2084,8 @@ def main():
     # Main loop
     last_cleanup = 0
     cleanup_interval = 60  # every 60 seconds
+    last_memory_gc = 0
+    memory_gc_interval = 86400  # every 24 hours
     last_db_snapshot = 0
     db_snapshot_interval = 10  # every 10 seconds
     last_idle_check = 0
@@ -2249,6 +2259,26 @@ def main():
                     # regardless of UseEventSystem)
                     cleanup_stale_groups(db)
                     last_cleanup = current_time
+
+                # Daily orphaned-memory GC (deleted
+                # characters). Runs the same DELETE the
+                # '.llmc memoryclean' GM command issues.
+                if (
+                    current_time - last_memory_gc
+                    >= memory_gc_interval
+                ):
+                    try:
+                        from chatter_memory import (
+                            purge_orphaned_memories,
+                        )
+                        purge_orphaned_memories(db)
+                    except Exception:
+                        logger.error(
+                            "Periodic orphaned-memory"
+                            " GC failed",
+                            exc_info=True,
+                        )
+                    last_memory_gc = current_time
 
                 # DB state snapshot for log viewer
                 if (
@@ -2448,6 +2478,34 @@ def main():
             except Exception:
                 logger.error(
                     "Memory executor shutdown failed",
+                    exc_info=True,
+                )
+            # Drain relationship executor
+            try:
+                from chatter_memory import (
+                    relationship_executor,
+                )
+                relationship_executor.shutdown(
+                    wait=True
+                )
+            except Exception:
+                logger.error(
+                    "Relationship executor shutdown "
+                    "failed",
+                    exc_info=True,
+                )
+            # Drain condensation executor
+            try:
+                from chatter_memory import (
+                    condensation_executor,
+                )
+                condensation_executor.shutdown(
+                    wait=True
+                )
+            except Exception:
+                logger.error(
+                    "Condensation executor shutdown "
+                    "failed",
                     exc_info=True,
                 )
             break

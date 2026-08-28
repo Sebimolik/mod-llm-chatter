@@ -191,6 +191,7 @@ def get_creature_entry_column(db):
         cursor.close()
         _creature_entry_col = (row[0] if row else 'id')
     except Exception:
+        logger.warning("get_creature_entry_column failed", exc_info=True)
         _creature_entry_col = 'id'
     return _creature_entry_col
 
@@ -272,6 +273,7 @@ def query_zone_quests(
         return quests
 
     except Exception:
+        logger.warning("query_zone_quests failed", exc_info=True)
         return []
 
 
@@ -389,6 +391,7 @@ def query_zone_loot(
         return loot
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return []
 
 
@@ -480,6 +483,7 @@ def query_zone_mobs(
         return mobs
 
     except Exception:
+        logger.warning("query_zone_mobs failed", exc_info=True)
         return []
 
 
@@ -649,6 +653,7 @@ def query_zone_npcs(
         return results
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return []
 
 
@@ -760,6 +765,7 @@ def query_bot_spells(
         return result
 
     except Exception:
+        logger.warning("query_bot_spells failed", exc_info=True)
         return []
 
 
@@ -897,6 +903,7 @@ def query_item_details(
         """, (entry,))
         return cursor.fetchone()
     except Exception:
+        logger.warning("query_item_details failed", exc_info=True)
         return None
 
 
@@ -923,6 +930,7 @@ def query_quest_turnin_npc(
         row = cursor.fetchone()
         return row['name'] if row else None
     except Exception:
+        logger.warning("query_quest_turnin_npc failed", exc_info=True)
         return None
     finally:
         try:
@@ -971,6 +979,7 @@ def get_recent_zone_messages(
             'message'
         )]
     except Exception:
+        logger.warning("get_recent_zone_messages failed", exc_info=True)
         return []
 
 
@@ -1003,6 +1012,7 @@ def get_recent_bot_messages(
             'message'
         )]
     except Exception:
+        logger.warning("get_recent_bot_messages failed", exc_info=True)
         return []
 
 
@@ -1080,6 +1090,7 @@ def get_group_location(db, group_id):
                 int(row.get('map', 0) or 0),
             )
     except Exception:
+        logger.warning("get_group_location failed", exc_info=True)
         pass
     return (0, 0, 0)
 
@@ -1115,6 +1126,7 @@ def get_character_info_by_name(
         )
         return result
     except Exception:
+        logger.warning("get_character_info_by_name failed", exc_info=True)
         return None
 
 
@@ -1157,6 +1169,7 @@ def is_player_online(
         )
         return result
     except Exception:
+        logger.warning("is_player_online failed", exc_info=True)
         return True  # assume online on error
 
 
@@ -1186,6 +1199,7 @@ def get_character_talents(
             spec_row['activeTalentGroup']
         )
     except Exception:
+        logger.warning("get_character_talents failed", exc_info=True)
         return empty
 
     cache_key = (char_guid, active_spec)
@@ -1258,6 +1272,7 @@ def get_character_talents(
         return result
 
     except Exception:
+        logger.warning("get_character_talents failed", exc_info=True)
         return empty
 
 
@@ -1288,6 +1303,7 @@ def any_real_players_online(db) -> bool:
         row = cursor.fetchone()
         return row is not None
     except Exception:
+        logger.warning("any_real_players_online failed", exc_info=True)
         # On error, assume online to avoid
         # accidentally suppressing work
         return True
@@ -1413,6 +1429,16 @@ def cleanup_stale_groups(db) -> int:
                 "WHERE group_id = %s",
                 (gid,),
             )
+            # Drop any persisted session vibe. Group ids are
+            # reissued after a worldserver restart, so leaving
+            # this row behind lets a disbanded group's mood
+            # bleed into an unrelated party that inherits its
+            # id while the vibe is still inside its window.
+            cursor.execute(
+                "DELETE FROM llm_group_vibe "
+                "WHERE group_id = %s",
+                (gid,),
+            )
             # Clear in-memory session state
             try:
                 from chatter_memory import (
@@ -1420,6 +1446,7 @@ def cleanup_stale_groups(db) -> int:
                 )
                 teardown_group_session(gid)
             except Exception:
+                logger.warning("operation failed", exc_info=True)
                 pass
             cleaned += 1
 
@@ -1627,6 +1654,7 @@ def cleanup_all_session_data(db):
     - llm_group_bot_traits
     - llm_group_chat_history
     - llm_group_cached_responses
+    - llm_group_vibe
     - llm_general_chat_history
     - llm_guild_session_history
     - llm_guild_chat_sessions
@@ -1644,6 +1672,9 @@ def cleanup_all_session_data(db):
         )
         cursor.execute(
             "DELETE FROM llm_group_cached_responses"
+        )
+        cursor.execute(
+            "DELETE FROM llm_group_vibe"
         )
         cursor.execute(
             "DELETE FROM llm_general_chat_history"
@@ -1714,3 +1745,129 @@ def fail_event(db, event_id, event_type, reason,
         exc_info=exc_info,
     )
     mark_event(db, event_id, 'skipped')
+
+
+# =====================================================================
+# Group session vibe persistence (llm_group_vibe)
+# =====================================================================
+#
+# The group's ambient "vibe" (a short-lived mood cue set when an
+# important memory lands, see get_session_vibe() in
+# chatter_memory.py) is persisted here so it survives bridge
+# restarts and the in-memory session CLEANUP wipe. All three
+# helpers are fail-open at the call site: callers wrap them in
+# try/except and log, so a DB hiccup never breaks a memory write
+# or a tone roll.
+# =====================================================================
+
+def upsert_group_vibe(
+    config, group_id, vibe, importance,
+    source_type=None, conn=None,
+):
+    """Persist (or refresh) a group's session vibe row.
+
+    set_at is the unix second the vibe was (re)set, used by
+    get_session_vibe() to apply lazy expiry: a vibe only
+    survives VibeDurationSeconds from when it was SET, so a
+    bridge restart cannot extend its lifetime.
+
+    source_type is the memory_type of the memory that set the
+    vibe, so the prompt can name the cause ("still humbled
+    after being cut down to the last of them") instead of
+    only the mood. NULL is
+    allowed and means "unknown cause": the read side falls
+    back to sourceless phrasing.
+
+    Accepts an optional caller-owned connection: the only
+    caller sits on the hot memory-write path and already
+    holds a connection to the same database (sometimes while
+    holding a non-reentrant per-group lock), so a fresh
+    connect + auth here would be pure overhead.
+    """
+    # Coerce against the unsigned column types: a malformed
+    # score or out-of-range group id must not fail the INSERT
+    # under strict mode and silently drop the vibe. Fail-open:
+    # the caller logs any exception.
+    importance = max(0, min(255, int(importance)))
+    if group_id < 0 or group_id > 0xFFFFFFFF:
+        return
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO llm_group_vibe"
+            " (group_id, vibe, source_type, importance,"
+            "  set_at, updated_at)"
+            " VALUES (%s,%s,%s,%s,%s, NOW())"
+            " ON DUPLICATE KEY UPDATE"
+            "   vibe = VALUES(vibe),"
+            "   source_type = VALUES(source_type),"
+            "   importance = VALUES(importance),"
+            "   set_at = VALUES(set_at),"
+            "   updated_at = NOW()",
+            (
+                group_id, vibe,
+                (str(source_type)[:32] if source_type else None),
+                importance,
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        if own:
+            conn.close()
+
+
+def get_group_vibe(config, group_id, conn=None):
+    """Return (vibe, set_at, source_type) for a group, or None.
+
+    set_at is the unix second the vibe was set. source_type is
+    the memory_type that triggered it, or None for legacy rows
+    written before the column existed. An optional
+    caller-owned connection avoids a fresh connect per read on
+    the hot tone-selection path.
+    """
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT vibe, set_at, source_type"
+            " FROM llm_group_vibe"
+            " WHERE group_id = %s",
+            (group_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        if not row:
+            return None
+        return row[0], int(row[1]), row[2]
+    finally:
+        if own:
+            conn.close()
+
+
+def delete_group_vibe(config, group_id, set_at, conn=None):
+    """Remove a group's persisted vibe only if it still
+    carries the set_at we observed, so a concurrently-written
+    newer vibe is never deleted. Accepts an optional
+    caller-owned connection."""
+    own = conn is None
+    if own:
+        conn = get_db_connection(config)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM llm_group_vibe"
+            " WHERE group_id = %s AND set_at = %s",
+            (group_id, set_at),
+        )
+        conn.commit()
+        cursor.close()
+    finally:
+        if own:
+            conn.close()
