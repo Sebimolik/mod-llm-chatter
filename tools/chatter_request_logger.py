@@ -1,8 +1,9 @@
 """
 Thread-safe JSONL logger for LLM requests.
 
-Logs every LLM API call (prompt, response, timing)
-to a rotating JSONL file for offline analysis.
+Logs every LLM API call (prompt, response, timing,
+provider-reported token usage) to a rotating JSONL
+file for offline analysis.
 
 Config keys (all [BRIDGE]):
   LLMChatter.RequestLog.Enable     (default 0)
@@ -110,6 +111,7 @@ def log_request(
     duration_ms: int,
     metadata: dict = None,
     system_prompt: str = None,
+    usage: dict = None,
 ) -> None:
     """Write one JSONL entry. No-op when disabled.
 
@@ -118,6 +120,14 @@ def log_request(
     string values are written (no null keys).
     system_prompt: if set, logged as a separate field
     so the user/system split is visible in logs.
+    usage: optional dict of REAL token counts reported
+    by the provider ('prompt_tokens',
+    'completion_tokens', 'total_tokens'). Only integer
+    values actually returned by the API are written --
+    providers/paths that report nothing simply get no
+    token fields, and nothing is ever estimated here.
+    Older rows predate these fields, so consumers must
+    treat them as optional.
     """
     if not _enabled:
         return
@@ -140,6 +150,14 @@ def log_request(
             'provider': provider,
             'duration_ms': duration_ms,
         }
+        for tok_key in (
+            'prompt_tokens',
+            'completion_tokens',
+            'total_tokens',
+        ):
+            tok_val = (usage or {}).get(tok_key)
+            if isinstance(tok_val, int):
+                entry[tok_key] = tok_val
         if metadata:
             for k, v in metadata.items():
                 if v is not None and v != "":

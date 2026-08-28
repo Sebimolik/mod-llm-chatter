@@ -185,6 +185,73 @@ def _extract_chat_content(response, label=''):
     return None
 
 
+def _usage_int(usage, *names):
+    """Return the first int-valued attribute/key found.
+
+    Providers hand back either a pydantic-ish object or a
+    plain dict, so both are probed. Anything non-int (or
+    missing) yields None -- never a guess.
+    """
+    for name in names:
+        value = None
+        if isinstance(usage, dict):
+            value = usage.get(name)
+        else:
+            value = getattr(usage, name, None)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _extract_usage(response):
+    """Pull REAL token counts off a provider response.
+
+    Handles the OpenAI-compatible shape (usage.
+    prompt_tokens / completion_tokens / total_tokens --
+    used by OpenAI, OpenRouter, DeepSeek, Google's
+    OpenAI-compat endpoint and Ollama) and Anthropic's
+    (usage.input_tokens / output_tokens, which carries no
+    total, so it is summed only when both halves are
+    present).
+
+    Returns None when the provider reported nothing, so the
+    logger can omit the fields entirely rather than write
+    fabricated zeros. Never raises: usage accounting must
+    not be able to break an otherwise good LLM call.
+    """
+    try:
+        usage = getattr(response, 'usage', None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get('usage')
+        if usage is None:
+            return None
+        prompt_tokens = _usage_int(
+            usage, 'prompt_tokens', 'input_tokens'
+        )
+        completion_tokens = _usage_int(
+            usage, 'completion_tokens', 'output_tokens'
+        )
+        total_tokens = _usage_int(usage, 'total_tokens')
+        if (
+            total_tokens is None
+            and prompt_tokens is not None
+            and completion_tokens is not None
+        ):
+            total_tokens = prompt_tokens + completion_tokens
+        out = {}
+        if prompt_tokens is not None:
+            out['prompt_tokens'] = prompt_tokens
+        if completion_tokens is not None:
+            out['completion_tokens'] = completion_tokens
+        if total_tokens is not None:
+            out['total_tokens'] = total_tokens
+        return out or None
+    except Exception:
+        return None
+
+
 def resolve_model(model_name: str) -> str:
     """Resolve friendly model aliases to provider model IDs."""
     normalized = (model_name or '').strip()
@@ -299,10 +366,23 @@ def call_llm(
     *,
     label: str = '',
     metadata: dict = None,
+    use_quick_model: bool = False,
 ) -> str:
     """Call LLM API.
 
     Supports Anthropic, OpenAI, Google, OpenRouter, and Ollama.
+
+    use_quick_model: route this call to the cheap
+    QuickAnalyze provider/model (see
+    _resolve_quick_target()) instead of LLMChatter.Model.
+    Intended for text a player never reads verbatim --
+    stored memories, digests, dispositions. Falls back to
+    the main client/model transparently when QuickAnalyze
+    is not configured, so callers can pass it
+    unconditionally. Everything else (retry-free error
+    handling, token accounting, request logging, the
+    max_tokens/temperature budget) is shared with a normal
+    call.
     """
     provider = config.get(
         'LLMChatter.Provider', 'anthropic'
@@ -318,6 +398,10 @@ def call_llm(
         'LLMChatter.Model', default_model
     )
     model = resolve_model(model)
+    if use_quick_model:
+        client, provider, model = (
+            _resolve_quick_target(client, config)
+        )
     if max_tokens_override is not None:
         max_tokens = max_tokens_override
     else:
@@ -333,6 +417,7 @@ def call_llm(
 
     t0 = time.monotonic()
     result = None
+    usage = None
     sys_msg, user_msg = _split_prompt(prompt)
     sent_user_msg = user_msg  # tracks actual payload
     try:
@@ -362,6 +447,7 @@ def call_llm(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         elif provider in ('openai', 'google', 'openrouter'):
             kwargs = {
                 'model': model,
@@ -379,6 +465,7 @@ def call_llm(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         else:
             # Anthropic (default)
             kwargs = _build_anthropic_request_kwargs(
@@ -391,6 +478,7 @@ def call_llm(
             response = client.messages.create(
                 **kwargs
             )
+            usage = _extract_usage(response)
             result = response.content[0].text.strip()
     except Exception as exc:
         logger.error(
@@ -410,6 +498,7 @@ def call_llm(
                 model, provider, duration_ms,
                 metadata=metadata,
                 system_prompt=sys_msg,
+                usage=usage,
             )
         except Exception:
             pass
@@ -529,31 +618,23 @@ def _get_quick_analyze_client(config):
         return _quick_analyze_client, qa_provider
 
 
-def quick_llm_analyze(
-    client: Any,
-    config: dict,
-    prompt: str,
-    max_tokens: int = 50,
-    *,
-    label: str = '',
-    metadata: dict = None,
-) -> Optional[str]:
-    """Fast LLM call for pre-processing analysis.
+def _resolve_quick_target(client, config):
+    """Resolve the client/provider/model for cheap
+    "internal" LLM work (QuickAnalyze).
 
-    Uses the configured QuickAnalyze provider/model,
-    or defaults to the fastest model on the main
-    provider (Haiku for Anthropic, gpt-4o-mini for
-    OpenAI, Gemini Flash for Google, OpenRouter's
-    configured model, main model for Ollama).
+    Returns (client, provider, model). When QuickAnalyze is
+    not configured on this server the fallback is fully
+    transparent: the caller's own client, the main
+    provider, and -- for providers where the configured
+    model IS the only sensible choice (Google, OpenRouter/
+    OpenAI-compatible, Ollama) -- LLMChatter.Model itself.
+    So an unconfigured server behaves exactly as if the
+    call had gone through the main path.
 
-    Useful for tasks like:
-    - Determining which bot a player is addressing
-    - Classifying message intent or sentiment
-    - Summarizing context before a full prompt
-
-    Returns raw text response, or None on error.
+    Shared by quick_llm_analyze() and by
+    call_llm(use_quick_model=True) so there is exactly one
+    definition of "the cheap model".
     """
-    # Check for separate quick analyze provider
     qa_client, provider = (
         _get_quick_analyze_client(config)
     )
@@ -564,7 +645,6 @@ def quick_llm_analyze(
         active_client = client
         using_quick_provider = False
 
-    # Resolve model
     qa_model = config.get(
         'LLMChatter.QuickAnalyze.Model', ''
     ).strip()
@@ -597,10 +677,40 @@ def quick_llm_analyze(
             'LLMChatter.Model',
             DEFAULT_ANTHROPIC_MODEL
         )
-    model = resolve_model(model)
+    return active_client, provider, resolve_model(model)
+
+
+def quick_llm_analyze(
+    client: Any,
+    config: dict,
+    prompt: str,
+    max_tokens: int = 50,
+    *,
+    label: str = '',
+    metadata: dict = None,
+) -> Optional[str]:
+    """Fast LLM call for pre-processing analysis.
+
+    Uses the configured QuickAnalyze provider/model,
+    or defaults to the fastest model on the main
+    provider (Haiku for Anthropic, gpt-4o-mini for
+    OpenAI, Gemini Flash for Google, OpenRouter's
+    configured model, main model for Ollama).
+
+    Useful for tasks like:
+    - Determining which bot a player is addressing
+    - Classifying message intent or sentiment
+    - Summarizing context before a full prompt
+
+    Returns raw text response, or None on error.
+    """
+    active_client, provider, model = (
+        _resolve_quick_target(client, config)
+    )
 
     t0 = time.monotonic()
     result = None
+    usage = None
     sys_msg, user_msg = _split_prompt(prompt)
     sent_user_msg = user_msg
     try:
@@ -633,6 +743,7 @@ def quick_llm_analyze(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         elif provider in ('openai', 'google', 'openrouter'):
             kwargs = {
                 'model': model,
@@ -655,6 +766,7 @@ def quick_llm_analyze(
             result = _extract_chat_content(
                 response, label
             )
+            usage = _extract_usage(response)
         else:
             kwargs = _build_anthropic_request_kwargs(
                 model,
@@ -668,6 +780,7 @@ def quick_llm_analyze(
                     **kwargs
                 )
             )
+            usage = _extract_usage(response)
             result = response.content[0].text.strip()
     except Exception as exc:
         logger.error(
@@ -687,6 +800,7 @@ def quick_llm_analyze(
                 model, provider, duration_ms,
                 metadata=metadata,
                 system_prompt=sys_msg,
+                usage=usage,
             )
         except Exception:
             pass
