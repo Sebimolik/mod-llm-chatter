@@ -220,6 +220,11 @@ void LLMChatterConfig::LoadConfig()
     _useFarewell = GetChatterOption<bool>(
         "LLMChatter.GroupChatter.FarewellEnable", true);
 
+    _groupGearChangeChance = GetChatterOption<uint32>("LLMChatter.GroupChatter.GearChangeGenerationChance", 25);
+    _groupGearChangeCooldown = GetChatterOption<uint32>("LLMChatter.GroupChatter.GearChangeCooldown", 180);
+    _groupMountChangeChance = GetChatterOption<uint32>("LLMChatter.GroupChatter.MountChangeGenerationChance", 30);
+    _groupMountChangeCooldown = GetChatterOption<uint32>("LLMChatter.GroupChatter.MountChangeCooldown", 180);
+
 
     // Group chatter - react-after delays (seconds)
     _reactDelayJoin =

@@ -20,6 +20,8 @@
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "Group.h"
+#include "Item.h"
+#include "ItemTemplate.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -671,7 +673,6 @@ void HandleGroupPlayerEnterCombatImpl(
         || (tmpl->type_flags
             & CREATURE_TYPE_FLAG_BOSS_MOB);
     bool isElite = (rank >= 1);
-    bool isNormal = !isBoss && !isElite;
 
     uint32 groupId =
         group->GetGUID().GetCounter();
@@ -1320,6 +1321,156 @@ void HandleGroupPlayerCompleteQuestImpl(
     );
 }
 
+// Per-player-per-slot last-reacted-to gear entry --
+// keyed by (playerGuid, equipment slot) rather than
+// just playerGuid, since Player::_LoadInventory() calls
+// QuickEquipItem() once per already-equipped slot during
+// the login bulk re-equip pass, and this hook fires for
+// every one of those calls -- keying on the player alone
+// would compare each slot's item against whatever slot
+// happened to be processed immediately before it instead
+// of that slot's own prior value. This map is used both
+// to avoid repeat reactions to the exact same item (e.g.
+// swapping back to a previously-worn piece) and, via the
+// "no baseline yet" branch below, to silently absorb that
+// bulk re-equip pass slot-by-slot.
+static std::unordered_map<ObjectGuid::LowType,
+    std::unordered_map<uint8, uint32>>
+    _lastReactedGearEntry;
+static std::unordered_map<uint32, time_t>
+    _groupGearChangeCooldowns;
+
+static void PruneGroupGearMountCooldowns();
+
+void HandleGroupPlayerEquipImpl(
+    Player* player, Item* it, uint8 /*bag*/,
+    uint8 slot, bool /*update*/)
+{
+    if (!sLLMChatterConfig
+        || !sLLMChatterConfig->IsEnabled()
+        || !sLLMChatterConfig->_useGroupChatter
+        || !sLLMChatterConfig->_groupGearChangeChance)
+        return;
+
+    PruneGroupGearMountCooldowns();
+
+    if (!player || !it || IsPlayerBot(player))
+        return;
+
+    // Real equipment slots only -- this hook also fires
+    // for bag/bank item moves, which aren't a "gear
+    // change" worth commenting on.
+    if (slot >= EQUIPMENT_SLOT_END)
+        return;
+
+    ItemTemplate const* tmpl = it->GetTemplate();
+    if (!tmpl)
+        return;
+
+    // Quality floor -- don't react to grey/white trash.
+    if (tmpl->Quality < ITEM_QUALITY_UNCOMMON)
+        return;
+
+    Group* group = player->GetGroup();
+    if (!group || !GroupHasBots(group))
+        return;
+
+    ObjectGuid::LowType playerGuid =
+        player->GetGUID().GetCounter();
+    uint32 itemEntry = it->GetEntry();
+
+    auto& slotBaselines =
+        _lastReactedGearEntry[playerGuid];
+    auto baseIt = slotBaselines.find(slot);
+    if (baseIt == slotBaselines.end())
+    {
+        // First equip observed for this slot this
+        // process lifetime -- almost certainly the
+        // login re-equip pass (or a previously-empty
+        // slot being filled for the first time), not a
+        // real gear change. Record the baseline
+        // silently.
+        slotBaselines[slot] = itemEntry;
+        return;
+    }
+
+    // Don't repeat a reaction to the exact same item.
+    if (baseIt->second == itemEntry)
+        return;
+    baseIt->second = itemEntry;
+
+    uint32 groupId = group->GetGUID().GetCounter();
+    time_t now = time(nullptr);
+    {
+        auto cdIt =
+            _groupGearChangeCooldowns.find(groupId);
+        if (cdIt != _groupGearChangeCooldowns.end()
+            && (now - cdIt->second)
+                < sLLMChatterConfig
+                    ->_groupGearChangeCooldown)
+            return;
+    }
+
+    if (urand(1, 100)
+        > sLLMChatterConfig->_groupGearChangeChance)
+        return;
+
+    Player* reactor = GetRandomBotInGroup(group);
+    if (!reactor)
+        return;
+
+    std::string itemName = GetLocalizedItemName(tmpl);
+    if (itemName.empty())
+        return;
+
+    std::string extraData = "{"
+        + BuildBotIdentityFields(reactor) + ","
+        "\"wearer_name\":\"" +
+            JsonEscape(player->GetName()) + "\","
+        "\"item_name\":\"" +
+            JsonEscape(itemName) + "\","
+        "\"item_entry\":" +
+            std::to_string(itemEntry) + ","
+        "\"item_quality\":" +
+            std::to_string(tmpl->Quality) + ","
+        "\"group_id\":" +
+            std::to_string(groupId) +
+        "}";
+
+    if (reactor->InBattleground())
+    {
+        Battleground* bg =
+            reactor->GetBattleground();
+        if (bg)
+            AppendBGContext(
+                bg, reactor, extraData);
+    }
+
+    extraData = EscapeString(extraData);
+
+    QueueChatterEvent(
+        "bot_group_gear_change",
+        "player",
+        reactor->GetZoneId(),
+        reactor->GetMapId(),
+        GetChatterEventPriority(
+            "bot_group_gear_change"),
+        "",
+        reactor->GetGUID().GetCounter(),
+        reactor->GetName(),
+        0,
+        itemName,
+        itemEntry,
+        extraData,
+        GetReactionDelaySeconds(
+            "bot_group_gear_change"),
+        120,
+        false
+    );
+
+    _groupGearChangeCooldowns[groupId] = now;
+}
+
 void HandleGroupPlayerAchievementCompleteImpl(
     Player* player,
     AchievementEntry const* achievement)
@@ -1378,6 +1529,42 @@ void HandleGroupPlayerAchievementCompleteImpl(
         GetLocalizedAchievementName(achievement);
     uint32 achId = achievement->ID;
 
+    // Titles are granted through achievement_reward,
+    // not a separate hook -- if this achievement grants
+    // one, surface it so the Python side can call it out
+    // specifically instead of a generic "achievement
+    // earned" line. Player-only: bots don't have their
+    // own chosen-title flavor text to react to here.
+    std::string titleName;
+    if (!isBot)
+    {
+        if (AchievementReward const* reward =
+                sAchievementMgr->GetAchievementReward(
+                    achievement))
+        {
+            // Achievement 1793 ("For the Children") is
+            // the one documented exception where reward
+            // titles are indexed by gender rather than
+            // faction -- mirrors AchievementMgr's own
+            // special case.
+            uint32 titleId = reward->titleId[
+                achievement->ID == 1793
+                    ? player->getGender()
+                    : uint8(player->GetTeamId())];
+            if (titleId)
+            {
+                if (CharTitlesEntry const* titleEntry =
+                        sCharTitlesStore.LookupEntry(
+                            titleId))
+                {
+                    titleName = GetLocalizedTitleName(
+                        titleEntry,
+                        player->getGender());
+                }
+            }
+        }
+    }
+
     std::string extraData = "{"
         + BuildBotIdentityFields(reactor) + ","
         "\"is_bot\":" +
@@ -1389,6 +1576,8 @@ void HandleGroupPlayerAchievementCompleteImpl(
             JsonEscape(achName) + "\","
         "\"achievement_id\":" +
             std::to_string(achId) + ","
+        "\"title_name\":\"" +
+            JsonEscape(titleName) + "\","
         "\"group_id\":" +
             std::to_string(groupId) +
         "}";
@@ -1425,6 +1614,136 @@ void HandleGroupPlayerAchievementCompleteImpl(
     );
 }
 
+// Per-player last-reacted-to mount spell id -- avoids a
+// repeat reaction to remounting the same mount right after
+// a dismount. Unlike gear, no "first observation = login
+// baseline" guard is needed: mounting only ever happens
+// via a live, deliberate spell cast (never replayed from
+// the DB on login), so the very first mount cast this
+// process lifetime is a genuine event worth reacting to.
+static std::unordered_map<ObjectGuid::LowType, uint32>
+    _lastReactedMountId;
+static std::unordered_map<uint32, time_t>
+    _groupMountChangeCooldowns;
+
+static void PruneGroupGearMountCooldowns()
+{
+    if (!sLLMChatterConfig)
+        return;
+
+    time_t now = time(nullptr);
+
+    for (auto it = _groupGearChangeCooldowns.begin();
+         it != _groupGearChangeCooldowns.end();)
+    {
+        if (now - it->second
+            >= sLLMChatterConfig->_groupGearChangeCooldown)
+            it = _groupGearChangeCooldowns.erase(it);
+        else
+            ++it;
+    }
+
+    for (auto it = _groupMountChangeCooldowns.begin();
+         it != _groupMountChangeCooldowns.end();)
+    {
+        if (now - it->second
+            >= sLLMChatterConfig->_groupMountChangeCooldown)
+            it = _groupMountChangeCooldowns.erase(it);
+        else
+            ++it;
+    }
+}
+
+void HandleGroupPlayerMountChangeImpl(
+    Player* player, Group* group,
+    SpellInfo const* spellInfo)
+{
+    if (!GroupHasBots(group))
+        return;
+
+    PruneGroupGearMountCooldowns();
+
+    ObjectGuid::LowType playerGuid =
+        player->GetGUID().GetCounter();
+    uint32 spellId = spellInfo->Id;
+
+    auto it = _lastReactedMountId.find(playerGuid);
+    if (it != _lastReactedMountId.end()
+        && it->second == spellId)
+        return;
+    _lastReactedMountId[playerGuid] = spellId;
+
+    uint32 groupId = group->GetGUID().GetCounter();
+    time_t now = time(nullptr);
+    {
+        auto cdIt =
+            _groupMountChangeCooldowns.find(groupId);
+        if (cdIt != _groupMountChangeCooldowns.end()
+            && (now - cdIt->second)
+                < sLLMChatterConfig
+                    ->_groupMountChangeCooldown)
+            return;
+    }
+
+    if (urand(1, 100)
+        > sLLMChatterConfig->_groupMountChangeChance)
+        return;
+
+    Player* reactor = GetRandomBotInGroup(group);
+    if (!reactor)
+        return;
+
+    std::string mountName =
+        GetLocalizedSpellName(spellInfo);
+    if (mountName.empty())
+        return;
+
+    std::string extraData = "{"
+        + BuildBotIdentityFields(reactor) + ","
+        "\"rider_name\":\"" +
+            JsonEscape(player->GetName()) + "\","
+        "\"mount_name\":\"" +
+            JsonEscape(mountName) + "\","
+        "\"mount_spell_id\":" +
+            std::to_string(spellId) + ","
+        "\"group_id\":" +
+            std::to_string(groupId) +
+        "}";
+
+    if (reactor->InBattleground())
+    {
+        Battleground* bg =
+            reactor->GetBattleground();
+        if (bg)
+            AppendBGContext(
+                bg, reactor, extraData);
+    }
+
+    extraData = EscapeString(extraData);
+
+    QueueChatterEvent(
+        "bot_group_mount_change",
+        "player",
+        reactor->GetZoneId(),
+        reactor->GetMapId(),
+        GetChatterEventPriority(
+            "bot_group_mount_change"),
+        "",
+        reactor->GetGUID().GetCounter(),
+        reactor->GetName(),
+        0,
+        mountName,
+        spellId,
+        extraData,
+        GetReactionDelaySeconds(
+            "bot_group_mount_change"),
+        120,
+        false
+    );
+
+    _groupMountChangeCooldowns[groupId] = now;
+}
+
 void HandleGroupPlayerSpellCastImpl(
     Player* player, Spell* spell)
 {
@@ -1439,6 +1758,36 @@ void HandleGroupPlayerSpellCastImpl(
     Group* group = player->GetGroup();
     if (!group)
         return;
+
+    // ------------------------------------------------
+    // Mount change: self-contained, separately-gated
+    // branch handled via this same existing hook (no
+    // dedicated PlayerScript hook exists for mounting in
+    // this AC revision -- mounting is a self-cast spell
+    // that applies SPELL_AURA_MOUNTED). Always returns
+    // before falling into the generic spell-cast
+    // categorization below so a mount cast is never also
+    // classified as a "buff"/"support" spell-cast event.
+    // When the feature is disabled (chance == 0) this
+    // branch is skipped entirely and behavior is exactly
+    // the historical one (mount casts fall through to
+    // the generic categorization, unchanged).
+    // ------------------------------------------------
+    if (!IsPlayerBot(player)
+        && sLLMChatterConfig->_groupMountChangeChance)
+    {
+        SpellInfo const* mountSpellInfo =
+            spell->GetSpellInfo();
+        if (mountSpellInfo
+            && !spell->IsTriggered()
+            && mountSpellInfo->HasAura(
+                   SPELL_AURA_MOUNTED))
+        {
+            HandleGroupPlayerMountChangeImpl(
+                player, group, mountSpellInfo);
+            return;
+        }
+    }
 
     uint32 groupId =
         group->GetGUID().GetCounter();

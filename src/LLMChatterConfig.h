@@ -129,6 +129,12 @@ public:
     uint32 _groupCorpseRunCooldown;
     bool _useFarewell;
 
+    // Group chatter - player gear/mount change reactions
+    uint32 _groupGearChangeChance;
+    uint32 _groupGearChangeCooldown;
+    uint32 _groupMountChangeChance;
+    uint32 _groupMountChangeCooldown;
+
 
     // Group chatter - react-after delays (seconds)
     uint32 _reactDelayJoin;

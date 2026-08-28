@@ -11,6 +11,7 @@
 #include "LLMChatterShared.h"
 #include "Player.h"
 #include "ScriptMgr.h"
+#include "Util.h"
 
 #include <algorithm>
 #include <cctype>
@@ -152,6 +153,34 @@ bool IsKnownBotForPlayer(uint32 playerGuid, uint32 botGuid)
         "LIMIT 1",
         playerGuid, botGuid);
     return result != nullptr;
+}
+
+bool ResolveBotGuidByName(
+    uint32 playerGuid,
+    std::string const& botName,
+    uint32& outGuid)
+{
+    if (!playerGuid || botName.empty())
+        return false;
+
+    // Only resolve among bots this player already has
+    // memories with (same "known bot" boundary as the
+    // roster/forget commands), case-insensitive.
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT DISTINCT m.bot_guid "
+        "FROM llm_bot_memories m "
+        "JOIN characters c "
+        "  ON c.guid = m.bot_guid "
+        "WHERE m.player_guid = {} "
+        "  AND LOWER(c.name) = LOWER('{}') "
+        "LIMIT 1",
+        playerGuid, EscapeString(botName));
+
+    if (!result)
+        return false;
+
+    outGuid = result->Fetch()[0].Get<uint32>();
+    return outGuid != 0;
 }
 
 bool LoadBotProfile(uint32 botGuid, BotProfile& profile)
@@ -918,6 +947,210 @@ bool HandleForgetCommand(
         + PercentEncode(botName));
     return true;
 }
+
+std::string CapitalizeMemoryType(
+    std::string const& memoryType)
+{
+    std::string out = memoryType;
+    for (char& ch : out)
+    {
+        if (ch == '_')
+            ch = ' ';
+    }
+    if (!out.empty())
+        out[0] = static_cast<char>(
+            std::toupper(
+                static_cast<unsigned char>(out[0])));
+    return out;
+}
+
+std::string TruncateMemoryText(
+    std::string const& memory, size_t maxLen)
+{
+    // Codepoint-safe: work off a UTF-8-sanitized copy and
+    // measure/truncate in codepoints (via utf8length /
+    // utf8truncate), not raw bytes, so multi-byte
+    // characters (e.g. 2-byte Cyrillic) never get sliced
+    // in half.
+    std::string text = SanitizeUtf8(memory);
+    if (utf8length(text) <= maxLen)
+        return text;
+
+    utf8truncate(text, maxLen);
+
+    // Prefer trimming back to the last whitespace so the
+    // output reads as a clean word boundary rather than a
+    // word cut off mid-way. Only do this if the last space
+    // is reasonably close to the end, otherwise keep the
+    // hard cut (e.g. one very long word).
+    size_t lastSpace = text.find_last_of(" \t\n\r");
+    if (lastSpace != std::string::npos &&
+        lastSpace > maxLen / 2)
+        text.resize(lastSpace);
+
+    return text + "...";
+}
+
+// Player-facing, plain chat reply (not the addon
+// protocol) — meant to be typed directly, e.g.
+// ".llmc memory Stella". Reads llm_bot_memories
+// synchronously; no Python bridge round-trip needed
+// since this is a read-only lookup with no LLM work.
+bool HandleMemoryShowCommand(
+    ChatHandler* handler, std::string const& args)
+{
+    Player* player = handler->GetSession()->GetPlayer();
+    if (!player)
+        return true;
+
+    std::string botName = Trim(args);
+    if (botName.empty())
+    {
+        handler->SendSysMessage(
+            "Usage: .llmc memory <botname>");
+        return true;
+    }
+
+    uint32 playerGuid =
+        player->GetGUID().GetCounter();
+
+    uint32 botGuid = 0;
+    if (!ResolveBotGuidByName(
+            playerGuid, botName, botGuid))
+    {
+        handler->PSendSysMessage(
+            "You don't know a bot named '{}'.",
+            botName);
+        return true;
+    }
+
+    BotProfile profile;
+    std::string displayName = botName;
+    if (LoadBotProfile(botGuid, profile)
+        && !profile.name.empty())
+        displayName = profile.name;
+
+    // Standing relationship disposition (see
+    // chatter_memory.py's _maybe_update_relationship()),
+    // printed ahead of the specific memory list below.
+    // Silently skipped if no row exists yet for this pair
+    // (first-time pair, or the update threshold was never
+    // reached) -- no "no relationship yet" noise.
+    QueryResult relResult = CharacterDatabase.Query(
+        "SELECT summary FROM llm_bot_relationships "
+        "WHERE bot_guid = {} AND player_guid = {}",
+        botGuid, playerGuid);
+    if (relResult)
+    {
+        std::string relationshipText =
+            relResult->Fetch()[0].Get<std::string>();
+        handler->PSendSysMessage(
+            "{}'s feelings about you: {}",
+            displayName,
+            TruncateMemoryText(relationshipText, 400));
+    }
+
+    uint32 decayMaxImportance =
+        sConfigMgr->GetOption<uint32>(
+            "LLMChatter.Memory.DecayMaxImportance", 3);
+    uint32 decayDays =
+        sConfigMgr->GetOption<uint32>(
+            "LLMChatter.Memory.DecayDays", 30);
+    if (decayDays < 1)
+        decayDays = 30;
+
+    // Mirrors chatter_memory.py's
+    // _effective_score_sql(): memories at or below the
+    // decay threshold fade with age, floored at 1;
+    // higher-importance memories never decay.
+    std::string effectiveScoreExpr =
+        "CASE WHEN importance_score <= "
+        + std::to_string(decayMaxImportance)
+        + " THEN GREATEST(1, importance_score - "
+          "TIMESTAMPDIFF(DAY, created_at, NOW()) / "
+        + std::to_string(decayDays)
+        + ") ELSE importance_score END";
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT memory_type, importance_score, memory, "
+        "       emote "
+        "FROM llm_bot_memories "
+        "WHERE bot_guid = {} "
+        "  AND player_guid = {} "
+        "  AND active = 1 "
+        "ORDER BY (" + effectiveScoreExpr + ") DESC, "
+        "         created_at DESC "
+        "LIMIT 10",
+        botGuid, playerGuid);
+
+    if (!result)
+    {
+        handler->PSendSysMessage(
+            "{} doesn't remember anything about "
+            "you yet.",
+            displayName);
+        return true;
+    }
+
+    handler->PSendSysMessage(
+        "{}'s memories of you:", displayName);
+
+    do
+    {
+        Field* fields = result->Fetch();
+        std::string memoryType =
+            fields[0].Get<std::string>();
+        uint32 importance = fields[1].Get<uint8>();
+        std::string memoryText =
+            fields[2].Get<std::string>();
+        std::string emote =
+            fields[3].Get<std::string>();
+
+        if (!emote.empty())
+            handler->PSendSysMessage(
+                "  [{}] (importance {}, {}) {}",
+                CapitalizeMemoryType(memoryType),
+                importance,
+                emote,
+                TruncateMemoryText(memoryText, 400));
+        else
+            handler->PSendSysMessage(
+                "  [{}] (importance {}) {}",
+                CapitalizeMemoryType(memoryType),
+                importance,
+                TruncateMemoryText(memoryText, 400));
+    }
+    while (result->NextRow());
+
+    return true;
+}
+
+bool HandleMemoryCleanCommand(ChatHandler* handler)
+{
+    // Drop memories whose bot or player character no
+    // longer exists (e.g. after a character deletion).
+    CharacterDatabase.Execute(
+        "DELETE m FROM llm_bot_memories m "
+        "LEFT JOIN characters c1 ON m.bot_guid = c1.guid "
+        "LEFT JOIN characters c2 "
+        "  ON m.player_guid = c2.guid "
+        "WHERE c1.guid IS NULL OR c2.guid IS NULL");
+
+    // Same orphan cleanup for the relationship summary
+    // table -- same join shape, same one GM action.
+    CharacterDatabase.Execute(
+        "DELETE m FROM llm_bot_relationships m "
+        "LEFT JOIN characters c1 ON m.bot_guid = c1.guid "
+        "LEFT JOIN characters c2 "
+        "  ON m.player_guid = c2.guid "
+        "WHERE c1.guid IS NULL OR c2.guid IS NULL");
+
+    handler->SendSysMessage(
+        "LLM Chatter: purged orphaned "
+        "llm_bot_memories and llm_bot_relationships "
+        "rows.");
+    return true;
+}
 }  // namespace
 
 class LLMChatterCommandScript : public CommandScript
@@ -930,6 +1163,13 @@ public:
 
     ChatCommandTable GetCommands() const override
     {
+        // Single root; "llm" is a literal prefix of "llmc"
+        // and AzerothCore's partial-match dispatcher would
+        // treat ".llm ..." as ambiguous if both were
+        // registered. The root stays SEC_PLAYER for the
+        // player-facing subcommands, so GM-only subcommands
+        // check IsAvailable() themselves (see
+        // HandleRootCommand).
         static ChatCommandTable commandTable =
         {
             { "llmc", HandleRootCommand,
@@ -982,13 +1222,40 @@ public:
             return HandleForgetCommand(
                 handler, rest);
 
+        if (command == "memory")
+            return HandleMemoryShowCommand(
+                handler, rest);
+
+        // GM-only maintenance. The `llmc` root is
+        // registered SEC_PLAYER so the player-facing
+        // subcommands above work, so this one enforces
+        // SEC_GAMEMASTER itself -- IsAvailable() is the
+        // same check ChatCommand's own dispatcher
+        // performs.
+        if (command == "memoryclean")
+        {
+            if (!handler->IsAvailable(SEC_GAMEMASTER))
+            {
+                SendAddonLine(
+                    handler,
+                    "ERROR permission "
+                    + PercentEncode(
+                        "memoryclean requires "
+                        "gamemaster access"));
+                return true;
+            }
+
+            return HandleMemoryCleanCommand(handler);
+        }
+
         SendAddonLine(
             handler,
             "ERROR usage "
             + PercentEncode(
                 "Supported commands: roster, "
                 "get, set, setbackstory, "
-                "regenbackstory, forget"));
+                "regenbackstory, forget, memory, "
+                "memoryclean"));
         return true;
     }
 };
