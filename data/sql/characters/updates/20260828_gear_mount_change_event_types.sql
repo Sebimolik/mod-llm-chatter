@@ -1,0 +1,101 @@
+-- Add the memory-maintenance, gear-change and mount-change
+-- event types (the background memory_clean pass, and bots
+-- noticing the player's newly-equipped item or
+-- newly-summoned mount). Idempotent: guarded by a
+-- COLUMN_TYPE check, same pattern as
+-- 20260329_screenshot_event_type.sql.
+
+SET @has_gear_change = (
+  SELECT COUNT(*)
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME   = 'llm_chatter_events'
+    AND COLUMN_NAME  = 'event_type'
+    AND COLUMN_TYPE LIKE '%bot_group_gear_change%'
+);
+SET @sql = IF(@has_gear_change = 0,
+  "ALTER TABLE `llm_chatter_events`
+  MODIFY COLUMN `event_type` ENUM(
+    'weather_change',
+    'holiday_start',
+    'holiday_end',
+    'creature_death_boss',
+    'creature_death_rare',
+    'creature_death_guard',
+    'player_enters_zone',
+    'bot_pvp_kill',
+    'bot_level_up',
+    'bot_achievement',
+    'bot_quest_complete',
+    'world_boss_spawn',
+    'rare_spawn',
+    'transport_arrives',
+    'day_night_transition',
+    'enemy_player_near',
+    'bot_loot_item',
+    'bot_group_join',
+    'bot_group_kill',
+    'bot_group_death',
+    'bot_group_loot',
+    'bot_group_player_msg',
+    'bot_group_general_reaction',
+    'bot_group_combat',
+    'bot_group_levelup',
+    'bot_group_quest_complete',
+    'bot_group_achievement',
+    'bot_group_spell_cast',
+    'bot_group_quest_objectives',
+    'bot_group_resurrect',
+    'bot_group_zone_transition',
+    'bot_group_dungeon_entry',
+    'bot_group_wipe',
+    'bot_group_corpse_run',
+    'player_general_msg',
+    'minor_event',
+    'bot_group_low_health',
+    'bot_group_oom',
+    'bot_group_aggro_loss',
+    'bot_group_quest_accept',
+    'bot_group_quest_accept_batch',
+    'weather_ambient',
+    'bot_group_nearby_object',
+    'bot_group_join_batch',
+    'bg_match_start',
+    'bg_match_end',
+    'bg_pvp_kill',
+    'bg_flag_picked_up',
+    'bg_flag_dropped',
+    'bg_flag_captured',
+    'bg_flag_returned',
+    'bg_node_contested',
+    'bg_node_captured',
+    'bg_score_milestone',
+    'bg_idle_chatter',
+    'bg_player_arrival',
+    'raid_boss_pull',
+    'raid_boss_kill',
+    'raid_boss_wipe',
+    'raid_idle_morale',
+    'bot_group_farewell',
+    'bot_group_subzone_change',
+    'bot_group_emote_observer',
+    'bot_group_emote_reaction',
+    'bot_group_screenshot_observation',
+    'proximity_say',
+    'proximity_conversation',
+    'proximity_reply',
+    'proximity_player_say',
+    'proximity_player_conversation',
+    'bot_backstory_regen',
+    'bot_tone_regen',
+    'guild_idle_chatter',
+    'guild_player_message',
+    'guild_login_greeting',
+    'memory_clean',
+    'bot_group_gear_change',
+    'bot_group_mount_change'
+  ) NOT NULL",
+  'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

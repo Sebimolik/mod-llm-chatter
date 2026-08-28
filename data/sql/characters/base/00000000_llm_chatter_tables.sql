@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS `llm_chatter_events` (
         'bot_tone_regen',
         'guild_idle_chatter',
         'guild_player_message',
-        'guild_login_greeting'
+        'guild_login_greeting',
+        'memory_clean',
+        'bot_group_gear_change',
+        'bot_group_mount_change'
     ) NOT NULL,
     `event_scope` ENUM('global', 'zone', 'player') NOT NULL DEFAULT 'zone',
     `zone_id` INT UNSIGNED DEFAULT NULL,
@@ -198,6 +201,7 @@ CREATE TABLE IF NOT EXISTS `llm_group_bot_traits` (
     `group_id` INT UNSIGNED NOT NULL,
     `bot_guid` INT UNSIGNED NOT NULL,
     `bot_name` VARCHAR(64) NOT NULL,
+    `is_altbot` TINYINT(1) NOT NULL DEFAULT 1,
     `trait1` VARCHAR(32) NOT NULL,
     `trait2` VARCHAR(32) NOT NULL,
     `trait3` VARCHAR(32) NOT NULL,
@@ -335,9 +339,17 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
         'dungeon', 'party_member', 'player_message',
         'first_meeting', 'quest_complete', 'achievement',
         'level_up', 'bg_win', 'bg_loss',
-        'discovery', 'pvp_kill'
+        'discovery', 'pvp_kill', 'gear_change', 'mount_change',
+        'condensed'
     ) NOT NULL,
     `memory`        TEXT         NOT NULL,
+    `importance_score` TINYINT UNSIGNED NOT NULL DEFAULT 5,
+    `zone_id`        INT UNSIGNED DEFAULT NULL,
+    -- How many rounds of condensation this row is deep: 0 for a
+    -- lived memory, max(source generations) + 1 for a digest.
+    -- Capped by LLMChatter.Memory.Condensation.MaxGenerations so
+    -- digests can't be re-folded forever.
+    `condensation_generation` TINYINT UNSIGNED NOT NULL DEFAULT 0,
     `mood`          VARCHAR(32)  NOT NULL,
     `emote`         VARCHAR(32)  DEFAULT NULL,
     `active`        TINYINT(1)   NOT NULL DEFAULT 0,
@@ -347,5 +359,41 @@ CREATE TABLE IF NOT EXISTS `llm_bot_memories` (
     `created_at`    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     INDEX `idx_bot_player`        (`bot_guid`, `player_guid`),
     INDEX `idx_bot_player_active` (`bot_guid`, `player_guid`, `active`),
-    INDEX `idx_group`             (`group_id`, `active`)
+    INDEX `idx_group`             (`group_id`, `active`),
+    CONSTRAINT `chk_importance_score`
+        CHECK (`importance_score` BETWEEN 1 AND 10)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Running per-bot-per-player relationship summary, condensed
+-- from llm_bot_memories by the relationship_executor background
+-- pass (see chatter_memory.py's _maybe_update_relationship()).
+-- NOTE: No DROP TABLE -- this data is persistent across sessions/restarts
+CREATE TABLE IF NOT EXISTS `llm_bot_relationships` (
+    `bot_guid`                   INT UNSIGNED NOT NULL,
+    `player_guid`                INT UNSIGNED NOT NULL,
+    `summary`                    TEXT NOT NULL,
+    `updated_through_created_at` DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00',
+    `updated_at`                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`bot_guid`, `player_guid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Group session vibe persistence (survives bridge restarts /
+-- in-memory session CLEANUP wipe). UPSERTed by
+-- _ensure_cap_and_insert() when a memory's importance_score
+-- crosses LLMChatter.GroupChatter.VibeImportanceThreshold;
+-- lazily expired/deleted by get_session_vibe() once
+-- VibeDurationSeconds have elapsed since set_at.
+CREATE TABLE IF NOT EXISTS `llm_group_vibe` (
+    `group_id`   INT UNSIGNED NOT NULL,
+    `vibe`       VARCHAR(64)  NOT NULL,
+    -- memory_type of the memory that set the vibe, so the prompt can
+    -- name the cause ("still humbled after a recent wipe") and not
+    -- just the mood. NULL = unknown cause (legacy rows, unmapped
+    -- types); the prompt falls back to sourceless phrasing.
+    `source_type` VARCHAR(32) NULL,
+    `importance` TINYINT UNSIGNED NOT NULL DEFAULT 5,
+    `set_at`     INT UNSIGNED NOT NULL,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`group_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
