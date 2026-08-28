@@ -73,6 +73,8 @@ MOOD_DELTAS = {
     'quest': 1.0,
     'levelup': 2.0,
     'achievement': 1.5,
+    'gear_change': 0.5,
+    'mount_change': 0.5,
 }
 
 # Drift toward neutral each event
@@ -212,6 +214,7 @@ def check_or_create_bot_identity(
             }
         had_row = row is not None
     except Exception:
+        logger.warning("check_or_create_bot_identity failed", exc_info=True)
         had_row = False
 
     # No stored identity or version mismatch:
@@ -264,6 +267,7 @@ def check_or_create_bot_identity(
             traits[0], traits[1], traits[2],
         )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     return {
@@ -341,6 +345,7 @@ def _generate_bot_tone(
             db.commit()
             return tone
     except Exception:
+        logger.warning("_sync_group_rows failed", exc_info=True)
         pass
 
     # Build LLM prompt
@@ -438,6 +443,7 @@ def _generate_bot_tone(
                 )
             )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     try:
@@ -476,6 +482,7 @@ def _generate_bot_tone(
         return tone
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         # Store fallback so we don't retry LLM on
         # every subsequent call for this bot+group
         try:
@@ -490,6 +497,10 @@ def _generate_bot_tone(
             )
             db.commit()
         except Exception:
+            logger.warning(
+                "_sync_group_rows commit failed",
+                exc_info=True,
+            )
             pass
         return fallback
 
@@ -560,6 +571,7 @@ def _generate_bot_backstory(
             db.commit()
             return bs
     except Exception:
+        logger.warning("_sync_group_rows failed", exc_info=True)
         pass
 
     # Build LLM prompt
@@ -667,6 +679,7 @@ def _generate_bot_backstory(
                 )
             )
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         pass
 
     try:
@@ -714,6 +727,7 @@ def _generate_bot_backstory(
         return backstory
 
     except Exception:
+        logger.warning("operation failed", exc_info=True)
         return None
 
 
@@ -822,6 +836,7 @@ def regenerate_bot_backstory(
         )
         db.commit()
     except Exception:
+        logger.warning("regenerate_bot_backstory failed", exc_info=True)
         pass
 
     # Fetch bot info for generation — try identity
@@ -943,6 +958,7 @@ def regenerate_bot_tone(db, config, bot_guid):
         )
         db.commit()
     except Exception:
+        logger.warning("regenerate_bot_tone failed", exc_info=True)
         pass
 
     cursor = db.cursor(dictionary=True)
@@ -1033,6 +1049,7 @@ def assign_bot_traits(
     role=None, zone=0, area_id=0, map_id=0,
     config=None,
     bot_class='', bot_race='', bot_gender='',
+    is_altbot=True,
 ):
     """Pick 3 random traits and store them.
 
@@ -1079,12 +1096,13 @@ def assign_bot_traits(
     cursor = db.cursor()
     cursor.execute("""
         INSERT INTO llm_group_bot_traits
-        (group_id, bot_guid, bot_name,
+        (group_id, bot_guid, bot_name, is_altbot,
          trait1, trait2, trait3, role, tone,
          backstory, zone, area, map)
-        VALUES (%s, %s, %s, %s, %s, %s, %s,
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
+            is_altbot = VALUES(is_altbot),
             trait1 = VALUES(trait1),
             trait2 = VALUES(trait2),
             trait3 = VALUES(trait3),
@@ -1099,6 +1117,7 @@ def assign_bot_traits(
             assigned_at = CURRENT_TIMESTAMP
     """, (
         group_id, bot_guid, bot_name,
+        1 if is_altbot else 0,
         traits[0], traits[1], traits[2],
         role, persistent_tone,
         persistent_backstory,
@@ -1118,6 +1137,7 @@ def assign_bot_traits(
             )
             db.commit()
         except Exception:
+            logger.warning("assign_bot_traits failed", exc_info=True)
             pass
 
     # Clear stored tone and backstory on fresh identity
@@ -1134,6 +1154,7 @@ def assign_bot_traits(
             )
             db.commit()
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     # Generate LLM-derived tone if not already set
@@ -1146,6 +1167,7 @@ def assign_bot_traits(
                 traits,
             )
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     # Generate LLM-derived backstory if not already set
@@ -1159,6 +1181,7 @@ def assign_bot_traits(
                 bot_gender=bot_gender,
             )
         except Exception:
+            logger.warning("operation failed", exc_info=True)
             pass
 
     return {
@@ -1320,6 +1343,7 @@ def _generate_farewell(
                 db.commit()
                 return
         except Exception:
+            logger.warning("_generate_farewell failed", exc_info=True)
             pass
 
     is_rp = (mode == 'roleplay')
@@ -1402,9 +1426,14 @@ def _generate_farewell(
                 )
                 db.commit()
             except Exception:
+                logger.warning("operation failed", exc_info=True)
                 pass
 
     except Exception:
+        logger.warning(
+            "_generate_farewell failed",
+            exc_info=True,
+        )
         pass
 
 def _has_recent_event(
@@ -1511,6 +1540,37 @@ def get_group_members(db, group_id):
     """, (group_id,))
     return [
         row['bot_name']
+        for row in cursor.fetchall()
+    ]
+
+
+def get_group_bot_guids(db, group_id):
+    """Get bot_guid/bot_name/is_altbot for every bot
+    in a group.
+
+    Sibling to get_group_members() (which returns
+    plain bot_name strings and is relied on by many
+    callers as-is): this variant keeps the guid and
+    altbot flag for callers that need to identify a
+    SPECIFIC other bot in the group, e.g. cross-bot
+    memory referencing.
+
+    Returns a list of dicts:
+    [{'bot_guid': int, 'bot_name': str,
+      'is_altbot': bool}, ...]
+    """
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("""
+        SELECT bot_guid, bot_name, is_altbot
+        FROM llm_group_bot_traits
+        WHERE group_id = %s
+    """, (group_id,))
+    return [
+        {
+            'bot_guid': row['bot_guid'],
+            'bot_name': row['bot_name'],
+            'is_altbot': bool(row['is_altbot']),
+        }
         for row in cursor.fetchall()
     ]
 

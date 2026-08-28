@@ -154,6 +154,42 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
             'achievement_name': (str, True),
             'achievement_id': (int, True),
             'is_bot': (str, False),
+            'title_name': (str, False),
+        },
+    ),
+
+    'bot_group_gear_change': EventSpec(
+        handler_module='chatter_group_handlers',
+        handler_func=(
+            'process_group_gear_change_event'
+        ),
+        producer='LLMChatterGroupCombat.cpp',
+        description=(
+            'Bot notices the player equipped a new '
+            'item'
+        ),
+        payload_fields={
+            'wearer_name': (str, True),
+            'item_name': (str, True),
+            'item_entry': (int, True),
+            'item_quality': (int, False),
+        },
+    ),
+
+    'bot_group_mount_change': EventSpec(
+        handler_module='chatter_group_handlers',
+        handler_func=(
+            'process_group_mount_change_event'
+        ),
+        producer='LLMChatterGroupCombat.cpp',
+        description=(
+            'Bot notices the player summoned a new '
+            'mount'
+        ),
+        payload_fields={
+            'rider_name': (str, True),
+            'mount_name': (str, True),
+            'mount_spell_id': (int, True),
         },
     ),
 

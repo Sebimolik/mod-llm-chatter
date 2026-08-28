@@ -287,7 +287,7 @@ def build_bot_greeting_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -521,7 +521,7 @@ def build_bot_welcome_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -659,7 +659,7 @@ def build_batch_welcome_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     if members:
         others = [
@@ -817,7 +817,9 @@ def build_kill_reaction_prompt(
             f"Your party just killed {creature_name}. "
             f"Just a regular mob, nothing special. "
             f"Make a brief, casual offhand remark "
-            f"about it - don't be too excited."
+            f"about it - don't be too excited, and "
+            f"don't tally kills as a count (no "
+            f"'one less X' phrasing)."
         )
 
     if is_rp:
@@ -841,7 +843,7 @@ def build_kill_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -857,6 +859,15 @@ def build_kill_reaction_prompt(
         f"- Don't repeat jokes or themes "
         f"already said in chat"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
@@ -981,7 +992,7 @@ def build_loot_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1006,6 +1017,192 @@ def build_loot_reaction_prompt(
         f"already said in chat\n"
         f"- NEVER say the item will serve YOU "
         f"if someone else looted it"
+    )
+    return append_json_instruction(
+        prompt, allow_action
+    )
+
+
+def build_gear_change_reaction_prompt(
+    bot, traits, wearer_name, item_name,
+    item_quality, mode, chat_history="",
+    allow_action=True,
+    speaker_talent_context=None,
+    stored_tone=None,
+    map_id=0,
+):
+    """Build prompt for a bot noticing the real
+    player equipped a new item. Mirrors
+    build_loot_reaction_prompt's shape/quality
+    scaling, but this is a spontaneous "I noticed
+    your gear" comment rather than a loot-pickup
+    reaction -- wearer_name is always the player,
+    never another bot.
+    """
+    is_rp = (mode == 'roleplay')
+    trait_str = ', '.join(traits)
+    tone = stored_tone or pick_random_tone(mode)
+    twist = maybe_get_creative_twist(
+        chance=1.0, mode=mode
+    )
+
+    rp_context = ""
+    if is_rp:
+        ctx = build_race_class_context(
+            bot['race'], bot['class']
+        )
+        if ctx:
+            rp_context = f"\n{ctx}"
+
+    if chat_history:
+        rp_context += f"{chat_history}\n"
+
+    dungeon_flav = get_dungeon_flavor(map_id)
+    if dungeon_flav:
+        rp_context += (
+            f"\nDungeon context: {dungeon_flav}"
+        )
+
+    quality_names = {
+        2: 'uncommon (green)',
+        3: 'rare (blue)',
+        4: 'epic (purple)',
+        5: 'legendary (orange)',
+    }
+    quality_label = quality_names.get(
+        item_quality, 'notable'
+    )
+
+    gear_context = (
+        f"You just noticed {wearer_name} is now "
+        f"wearing {item_name}, a {quality_label} "
+        f"item they weren't wearing before. Make a "
+        f"brief, spontaneous remark about their new "
+        f"gear -- an offhand compliment, a bit of "
+        f"envy, or friendly curiosity about where "
+        f"they got it."
+    )
+
+    if is_rp:
+        style = (
+            "React in-character to noticing their "
+            "new gear. Keep it brief and natural."
+        )
+    else:
+        style = (
+            "React naturally in party chat to "
+            "noticing their new gear. Casual and "
+            "brief."
+        )
+
+    prompt = (
+        f"{build_bot_identity_from_dict(bot)}\n"
+        f"Your personality: {trait_str}\n"
+    )
+    if speaker_talent_context:
+        prompt += f"{speaker_talent_context}\n"
+    prompt += (
+        f"Your tone: {tone}\n"
+    )
+    if twist:
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
+    prompt += (
+        f"{rp_context}\n\n"
+        f"{gear_context}\n\n"
+        f"{style}\n\n"
+        f"Say a reaction in party chat.\n"
+        f"{_pick_length_hint(mode)}\n"
+        f"Rules:\n"
+        f"- No quotes, no emojis\n"
+        f"- Can mention the item by name\n"
+        f"- Address {wearer_name} by name\n"
+        f"- Reflect your personality traits\n"
+        f"- Don't repeat jokes or themes "
+        f"already said in chat"
+    )
+    return append_json_instruction(
+        prompt, allow_action
+    )
+
+
+def build_mount_change_reaction_prompt(
+    bot, traits, rider_name, mount_name, mode,
+    chat_history="",
+    allow_action=True,
+    speaker_talent_context=None,
+    stored_tone=None,
+    map_id=0,
+):
+    """Build prompt for a bot noticing the real
+    player summoned a new/different mount.
+    """
+    is_rp = (mode == 'roleplay')
+    trait_str = ', '.join(traits)
+    tone = stored_tone or pick_random_tone(mode)
+    twist = maybe_get_creative_twist(
+        chance=1.0, mode=mode
+    )
+
+    rp_context = ""
+    if is_rp:
+        ctx = build_race_class_context(
+            bot['race'], bot['class']
+        )
+        if ctx:
+            rp_context = f"\n{ctx}"
+
+    if chat_history:
+        rp_context += f"{chat_history}\n"
+
+    dungeon_flav = get_dungeon_flavor(map_id)
+    if dungeon_flav:
+        rp_context += (
+            f"\nDungeon context: {dungeon_flav}"
+        )
+
+    mount_context = (
+        f"{rider_name} just summoned {mount_name} "
+        f"and hopped on. Make a brief, spontaneous "
+        f"remark about the mount -- admiration, a "
+        f"joke, or friendly curiosity about where "
+        f"they got it."
+    )
+
+    if is_rp:
+        style = (
+            "React in-character to their new mount. "
+            "Keep it brief and natural."
+        )
+    else:
+        style = (
+            "React naturally in party chat to their "
+            "new mount. Casual and brief."
+        )
+
+    prompt = (
+        f"{build_bot_identity_from_dict(bot)}\n"
+        f"Your personality: {trait_str}\n"
+    )
+    if speaker_talent_context:
+        prompt += f"{speaker_talent_context}\n"
+    prompt += (
+        f"Your tone: {tone}\n"
+    )
+    if twist:
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
+    prompt += (
+        f"{rp_context}\n\n"
+        f"{mount_context}\n\n"
+        f"{style}\n\n"
+        f"Say a reaction in party chat.\n"
+        f"{_pick_length_hint(mode)}\n"
+        f"Rules:\n"
+        f"- No quotes, no emojis\n"
+        f"- Can mention the mount by name\n"
+        f"- Address {rider_name} by name\n"
+        f"- Reflect your personality traits\n"
+        f"- Don't repeat jokes or themes "
+        f"already said in chat"
     )
     return append_json_instruction(
         prompt, allow_action
@@ -1095,7 +1292,7 @@ def build_combat_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1212,7 +1409,7 @@ def build_death_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -1301,7 +1498,7 @@ def build_levelup_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{levelup_context}\n\n"
@@ -1410,7 +1607,7 @@ def build_quest_complete_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -1517,7 +1714,7 @@ def build_quest_objectives_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -1546,6 +1743,7 @@ def build_achievement_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     map_id=0,
+    title_name=None,
 ):
     """Build prompt for a bot reacting to an
     achievement being earned. Achievements are
@@ -1599,6 +1797,13 @@ def build_achievement_reaction_prompt(
             f"them — achievements are a big deal "
             f"and worth celebrating!"
         )
+    if title_name:
+        achieve_context += (
+            f" It also earned them a brand-new "
+            f"title: \"{title_name}\"! Call out "
+            f"the title specifically -- that's the "
+            f"exciting part."
+        )
 
     if bot_is_achiever:
         if is_rp:
@@ -1637,7 +1842,7 @@ def build_achievement_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{achieve_context}\n\n"
@@ -1736,7 +1941,7 @@ def build_group_achievement_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{achieve_context}\n\n"
@@ -2052,7 +2257,7 @@ def build_spell_cast_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -2071,6 +2276,15 @@ def build_spell_cast_reaction_prompt(
         f"already said in chat"
         f"{anti_rep_block}"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
@@ -2086,10 +2300,29 @@ def build_player_response_prompt(
     stored_tone=None,
     memories=None,
     travel_context="",
+    companion_memories=None,
+    companion_name=None,
+    relationship_summary=None,
 ):
     """Build prompt for a bot responding to a real
     player's party chat message. The bot should
     reply naturally and contextually.
+
+    companion_memories/companion_name: optional
+    "shared party lore" — 1-2 memories belonging to
+    a DIFFERENT present bot (companion_name), so the
+    speaking bot can occasionally reference what a
+    companion remembers about the player, not just
+    its own memories. Injected as a separate
+    <party_memories> block, distinct from this bot's
+    own <past_memories>.
+
+    relationship_summary: optional standing-disposition
+    text (see get_relationship_summary() in
+    chatter_memory.py) -- how this bot generally FEELS
+    about player_name overall, a running impression, not
+    a specific recollection like <past_memories>. Injected
+    as a <relationship> block.
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
@@ -2164,7 +2397,7 @@ def build_player_response_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if members:
         others = [
             m for m in members
@@ -2203,6 +2436,28 @@ def build_player_response_prompt(
                 f"- You may address {target} by "
                 f"name in your reply\n"
             )
+
+    # Inject standing relationship disposition, if any --
+    # positioned after identity/personality/tone (already
+    # set above) and BEFORE <past_memories>/<party_memories>,
+    # matching the plan's required ordering. Framed as a
+    # general, ongoing impression rather than a specific
+    # thing to recall, mirroring how <past_memories> vs.
+    # <party_memories> are already disambiguated below.
+    if relationship_summary:
+        rp_context += (
+            f"\n<relationship>\n"
+            f"How you generally feel about "
+            f"{player_name}, as a standing "
+            f"impression built up over time -- "
+            f"NOT a specific memory to recite, "
+            f"just your overall disposition "
+            f"toward them:\n"
+            f"{relationship_summary}\n"
+            f"Let this color your tone, not the "
+            f"topic. Do not quote it verbatim.\n"
+            f"</relationship>"
+        )
 
     # Inject memories if available
     if memories:
@@ -2257,6 +2512,46 @@ def build_player_response_prompt(
                     f"\"you\" to mean "
                     f"{player_name}."
                 )
+
+    # Inject a companion's memory of the player --
+    # "shared party lore". Distinct tag from
+    # <past_memories> above so the model can tell
+    # "my own memory" apart from "what I've heard
+    # from a companion".
+    if companion_memories and companion_name:
+        from chatter_memory import (
+            sanitize_memory_for_prompt,
+        )
+        comp_sanitized = [
+            sanitize_memory_for_prompt(m)
+            for m in companion_memories
+        ]
+        comp_sanitized = [
+            s for s in comp_sanitized if s
+        ]
+        if comp_sanitized:
+            comp_mem_lines = '\n'.join(
+                f"  - {m}" for m in comp_sanitized
+            )
+            rp_context += (
+                f"\n<party_memories "
+                f"bot=\"{companion_name}\">\n"
+                f"{companion_name}'s memories of "
+                f"past adventures with "
+                f"{player_name} -- NOT your own "
+                f"memory, you heard about this "
+                f"secondhand from "
+                f"{companion_name}:\n"
+                f"{comp_mem_lines}\n"
+                f"You may naturally bring this "
+                f"up as something {companion_name} "
+                f"told you or as a shared party "
+                f"moment -- don't claim it "
+                f"happened to you personally, and "
+                f"don't just recite it "
+                f"verbatim.\n"
+                f"</party_memories>"
+            )
 
     prompt += f"{rp_context}\n\n"
     if link_context:
@@ -2352,7 +2647,7 @@ def build_resurrect_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"You just died and someone in your "
@@ -2368,6 +2663,15 @@ def build_resurrect_reaction_prompt(
         f"- Don't repeat jokes or themes "
         f"already said in chat"
     )
+    spices = pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+    if spices:
+        prompt += (
+            "\nBackground feelings (texture, "
+            "not the topic): "
+            + "; ".join(spices)
+        )
     return append_json_instruction(
         prompt, allow_action
     )
@@ -2486,7 +2790,7 @@ def build_zone_transition_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     location_name = (
         area_label if is_subzone and area_label
         else zone_name
@@ -2628,7 +2932,7 @@ def build_quest_accept_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -2732,7 +3036,7 @@ def build_quest_accept_batch_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{quest_context}\n\n"
@@ -2850,7 +3154,7 @@ def build_dungeon_entry_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"Your party just entered {map_name}, "
@@ -2955,7 +3259,7 @@ def build_wipe_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     if state_ctx:
         prompt += f"{state_ctx}\n"
     prompt += (
@@ -3090,7 +3394,7 @@ def build_corpse_run_reaction_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
     prompt += (
         f"{rp_context}\n\n"
         f"{situation}\n\n"
@@ -3921,7 +4225,7 @@ def build_nearby_object_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     # Message count: 2 per bot, cap at 8
     msg_count = min(2 * num_bots, 8)
@@ -4104,7 +4408,7 @@ def build_player_msg_conversation_prompt(
     )
     parts.append(f"\nOverall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     # Mood and length sequence
     mood_seq = generate_conversation_mood_sequence(
@@ -4331,6 +4635,7 @@ def build_bot_question_prompt(
     area_id=0,
     stored_tone=None,
     memories=None,
+    relationship_summary=None,
 ):
     """Build prompt for a bot asking the player a
     creative, contextual question in party chat.
@@ -4352,6 +4657,9 @@ def build_bot_question_prompt(
         recent_messages: for anti-repetition
         allow_action: whether to allow action field
         memories: list of memory strings or None
+        relationship_summary: optional standing-
+            disposition text, see
+            build_player_response_prompt()'s docstring
     """
     is_rp = (mode == 'roleplay')
     trait_str = ', '.join(traits)
@@ -4395,6 +4703,25 @@ def build_bot_question_prompt(
             if speaker_talent_context:
                 prompt += (
                     f"{speaker_talent_context}\n"
+                )
+            # Standing relationship disposition, if
+            # any -- after identity/personality/tone,
+            # before <past_memories>, same framing as
+            # build_player_response_prompt().
+            if relationship_summary:
+                prompt += (
+                    f"\n<relationship>\n"
+                    f"How you generally feel about "
+                    f"{player_name}, as a standing "
+                    f"impression built up over time "
+                    f"-- NOT a specific memory to "
+                    f"recite, just your overall "
+                    f"disposition toward them:\n"
+                    f"{relationship_summary}\n"
+                    f"Let this color your tone, not "
+                    f"the topic. Do not quote it "
+                    f"verbatim.\n"
+                    f"</relationship>\n"
                 )
             prompt += (
                 f"\n<past_memories>\n"
@@ -4577,7 +4904,7 @@ def build_bot_question_prompt(
         f"Your tone: {tone}\n"
     )
     if twist:
-        prompt += f"Creative twist: {twist}\n"
+        prompt += f"Optional flavor, use only if it fits this moment naturally: {twist}\n"
 
     prompt += (
         f"{rp_context}\n\n"
@@ -4739,7 +5066,7 @@ def build_quest_complete_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(
@@ -4891,7 +5218,7 @@ def build_quest_objectives_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(
@@ -5046,7 +5373,7 @@ def build_quest_accept_conversation_prompt(
     )
     parts.append(f"Overall tone: {tone}")
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"Optional flavor, use only if it fits this moment naturally: {twist}")
 
     if num_bots > 2:
         parts.append(

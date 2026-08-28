@@ -37,8 +37,53 @@ from chatter_group_state import (
     update_bot_mood,
 )
 from chatter_raid_base import dual_worker_dispatch
+from chatter_memory import get_session_vibe_details
+from chatter_prompts import (
+    build_session_vibe_line, build_bot_mood_line,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def build_mood_and_vibe_suffix(group_id, bot_guid, config):
+    """Mood lines appended to every reaction prompt.
+
+    Two separate axes, and the prompt says so:
+
+    - the per-bot mood is this bot's own drift (see
+      _bot_mood_scores / MOOD_DELTAS in chatter_group_state)
+    - the session vibe is what the whole party just lived
+      through (see get_session_vibe_details())
+
+    They can legitimately disagree -- a cheerful bot in a
+    shaken party is characterization, not a bug -- so neither
+    suppresses the other; the wording keeps them distinct
+    instead of leaving the model to guess. Both lines render
+    wholly in the configured language. Kept to one extra
+    sentence: this goes into every reaction prompt.
+
+    Returns "" when the bot is neutral and no vibe is live.
+    """
+    mood_label = get_bot_mood_label(group_id, bot_guid)
+    vibe, vibe_source = get_session_vibe_details(
+        group_id, config,
+    )
+    has_mood = mood_label != 'neutral'
+    vibe_line = build_session_vibe_line(
+        vibe, vibe_source,
+        distinct_from_bot_mood=has_mood,
+    )
+    suffix = ""
+    if has_mood:
+        # Localized label *and* word (build_bot_mood_line):
+        # an English "Your own mood:" over a localized vibe
+        # sentence is the same hybrid defect in miniature.
+        suffix += "\n" + build_bot_mood_line(
+            mood_label, alongside_vibe=bool(vibe_line),
+        )
+    if vibe_line:
+        suffix += f"\n{vibe_line}"
+    return suffix
 
 
 def _build_bot_from_extra(extra_data):
@@ -291,15 +336,11 @@ def run_group_handler(
         # 10. Build prompt
         prompt = build_prompt(ctx)
 
-        # 11. Mood injection
+        # 11. Mood + group vibe injection
         if inject_mood:
-            mood_label = get_bot_mood_label(
-                group_id, bot_guid,
+            prompt += build_mood_and_vibe_suffix(
+                group_id, bot_guid, config,
             )
-            if mood_label != 'neutral':
-                prompt += (
-                    f"\nCurrent mood: {mood_label}"
-                )
 
         # 12. Compute delay
         actual_delay = (
