@@ -28,6 +28,21 @@ from chatter_constants import (
     DUNGEON_FLAVOR, DUNGEON_FLAVOR_RU, DUNGEON_FLAVOR_FR, DUNGEON_FLAVOR_DE,
     DUNGEON_FLAVOR_ES,
     BG_LORE, BG_LORE_RU, BG_LORE_FR, BG_LORE_DE, BG_LORE_ES,
+    VIBE_SOURCE_PHRASES, VIBE_SOURCE_PHRASES_RU, VIBE_SOURCE_PHRASES_FR,
+    VIBE_SOURCE_PHRASES_DE, VIBE_SOURCE_PHRASES_ES, VIBE_SOURCE_PHRASES_PT,
+    VIBE_SOURCE_PHRASES_KO,
+    VIBE_MOOD_WORDS_RU, VIBE_MOOD_WORDS_FR, VIBE_MOOD_WORDS_DE,
+    VIBE_MOOD_WORDS_ES, VIBE_MOOD_WORDS_PT, VIBE_MOOD_WORDS_KO,
+    VIBE_LINE_TEMPLATES, VIBE_LINE_TEMPLATES_RU,
+    VIBE_LINE_TEMPLATES_FR, VIBE_LINE_TEMPLATES_DE,
+    VIBE_LINE_TEMPLATES_ES, VIBE_LINE_TEMPLATES_PT,
+    VIBE_LINE_TEMPLATES_KO,
+    BOT_MOOD_LINE_TEMPLATES, BOT_MOOD_LINE_TEMPLATES_RU,
+    BOT_MOOD_LINE_TEMPLATES_FR, BOT_MOOD_LINE_TEMPLATES_DE,
+    BOT_MOOD_LINE_TEMPLATES_ES, BOT_MOOD_LINE_TEMPLATES_PT,
+    BOT_MOOD_LINE_TEMPLATES_KO,
+    BOT_MOOD_WORDS_RU, BOT_MOOD_WORDS_FR, BOT_MOOD_WORDS_DE,
+    BOT_MOOD_WORDS_ES, BOT_MOOD_WORDS_PT, BOT_MOOD_WORDS_KO,
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
@@ -1595,6 +1610,31 @@ def get_language_rule() -> str:
     )
 
 
+def get_lore_guardrail_rule() -> str:
+    """Return a compact, era-scoped lore guardrail line.
+
+    Used by JSON instruction builders (and directly by
+    the memory-generation prompt builders) to keep
+    generated chat/memory text anchored to what actually
+    exists in Wrath of the Lich King (client 3.3.5a),
+    instead of drifting into anachronistic lore from
+    later expansions. Kept short by design since it is
+    injected into every single prompt.
+    """
+    return (
+        "\nLore: This server is Wrath of the Lich King "
+        "(client 3.3.5a) — content stops there. Playable "
+        "races are only the eight Classic races plus "
+        "Blood Elf and Draenei (no Worgen, Goblin, "
+        "Pandaren, or anything from later expansions). "
+        "The world is pre-Cataclysm — no Cataclysm-era "
+        "zone changes, factions, or events. Never invent "
+        "lore, characters, or places, and never "
+        "reference anything anachronistic to this point "
+        "in the timeline."
+    )
+
+
 # Maps the resolved language label (see _LANGUAGE_LABELS)
 # to the WoW client locale code used by Blizzard's own
 # localized data in acore_world.*_locale tables (e.g.
@@ -1619,6 +1659,190 @@ def get_language_locale_code() -> Optional[str]:
     default, or a language we haven't added data for yet).
     """
     return _LANGUAGE_LOCALE_CODES.get(_language)
+
+
+# Locale-keyed session-vibe wording maps, mirroring
+# _ZONE_FLAVOR_LOCALE_MAPS above. Unlike the zone/dungeon tables
+# these strings carry no proper nouns and need no world-DB rows, so
+# every language this module can speak is covered -- including
+# Portuguese and Korean, whose flavor-text coverage is otherwise
+# partial. A locale (or key) missing from a map falls back to the
+# English constant via the accessors below.
+_VIBE_SOURCE_PHRASE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_SOURCE_PHRASES_RU,
+    "frFR": VIBE_SOURCE_PHRASES_FR,
+    "deDE": VIBE_SOURCE_PHRASES_DE,
+    "esES": VIBE_SOURCE_PHRASES_ES,
+    "ptBR": VIBE_SOURCE_PHRASES_PT,
+    "koKR": VIBE_SOURCE_PHRASES_KO,
+}
+
+_VIBE_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_MOOD_WORDS_RU,
+    "frFR": VIBE_MOOD_WORDS_FR,
+    "deDE": VIBE_MOOD_WORDS_DE,
+    "esES": VIBE_MOOD_WORDS_ES,
+    "ptBR": VIBE_MOOD_WORDS_PT,
+    "koKR": VIBE_MOOD_WORDS_KO,
+}
+
+# Portuguese is deliberately absent from _LANGUAGE_LOCALE_CODES:
+# 3.3.5a has no ptBR rows in *_template_locale (ptBR shipped with
+# Cataclysm), so mapping it there would make every localized
+# creature/item/quest name lookup query a locale the world DB never
+# has. The vibe wording needs no DB rows, so Portuguese resolves
+# through this small supplement instead.
+_VIBE_TEXT_EXTRA_LOCALE_CODES = {
+    "Portuguese": "ptBR",
+}
+
+
+def _get_vibe_text_locale_code() -> Optional[str]:
+    """Locale code for the session-vibe and per-bot mood
+    wording tables.
+
+    get_language_locale_code() first (so RU/FR/DE/ES/KO behave
+    exactly like every other localized lookup), then the
+    DB-free supplement above for Portuguese.
+    """
+    return (
+        get_language_locale_code()
+        or _VIBE_TEXT_EXTRA_LOCALE_CODES.get(_language)
+    )
+
+
+_VIBE_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": VIBE_LINE_TEMPLATES_RU,
+    "frFR": VIBE_LINE_TEMPLATES_FR,
+    "deDE": VIBE_LINE_TEMPLATES_DE,
+    "esES": VIBE_LINE_TEMPLATES_ES,
+    "ptBR": VIBE_LINE_TEMPLATES_PT,
+    "koKR": VIBE_LINE_TEMPLATES_KO,
+}
+
+_BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": BOT_MOOD_LINE_TEMPLATES_RU,
+    "frFR": BOT_MOOD_LINE_TEMPLATES_FR,
+    "deDE": BOT_MOOD_LINE_TEMPLATES_DE,
+    "esES": BOT_MOOD_LINE_TEMPLATES_ES,
+    "ptBR": BOT_MOOD_LINE_TEMPLATES_PT,
+    "koKR": BOT_MOOD_LINE_TEMPLATES_KO,
+}
+
+_BOT_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
+    "ruRU": BOT_MOOD_WORDS_RU,
+    "frFR": BOT_MOOD_WORDS_FR,
+    "deDE": BOT_MOOD_WORDS_DE,
+    "esES": BOT_MOOD_WORDS_ES,
+    "ptBR": BOT_MOOD_WORDS_PT,
+    "koKR": BOT_MOOD_WORDS_KO,
+}
+
+
+def get_vibe_line_templates() -> Dict[str, str]:
+    """Whole-sentence session-vibe templates for the configured
+    language.
+
+    The entire line is localized, scaffolding included: an English
+    frame with localized words dropped into it reads as broken
+    grammar in both languages (see VIBE_LINE_TEMPLATES in
+    chatter_constants.py). Same locale-fallback pattern as
+    get_zone_flavor(); an unmapped locale, or a key a locale table
+    happens to be missing, falls back to the English template.
+    """
+    locale = _get_vibe_text_locale_code()
+    localized = (
+        _VIBE_LINE_TEMPLATE_LOCALE_MAPS.get(locale)
+        if locale else None
+    )
+    if not localized:
+        return dict(VIBE_LINE_TEMPLATES)
+    merged = dict(VIBE_LINE_TEMPLATES)
+    merged.update(localized)
+    return merged
+
+
+def get_bot_mood_line(
+    mood_label: Optional[str], alongside_vibe: bool = False,
+) -> str:
+    """Render the per-bot mood line in the configured language.
+
+    Companion to get_vibe_line_templates(): the label and the mood
+    word are localized together, so a localized vibe sentence is
+    never introduced by an English "Your own mood:" label.
+
+    mood_label is a get_bot_mood_label() value (see MOOD_LABELS in
+    chatter_group_state.py); an unmapped label keeps its English
+    word rather than blanking the line. alongside_vibe picks the
+    wording that tells the two mood axes apart. Returns "" when
+    there is no mood to report.
+    """
+    if not mood_label:
+        return ""
+    key = str(mood_label).strip().lower().replace('_', ' ')
+    if not key:
+        return ""
+    locale = _get_vibe_text_locale_code()
+    word = key
+    templates = BOT_MOOD_LINE_TEMPLATES
+    if locale:
+        localized_words = _BOT_MOOD_WORD_LOCALE_MAPS.get(locale)
+        if localized_words and key in localized_words:
+            word = localized_words[key]
+        localized_tpl = (
+            _BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS.get(locale)
+        )
+        if localized_tpl:
+            templates = localized_tpl
+    slot = 'own' if alongside_vibe else 'current'
+    template = templates.get(
+        slot, BOT_MOOD_LINE_TEMPLATES[slot]
+    )
+    return template.format(mood=word)
+
+
+def get_vibe_source_phrase(source_type: Optional[str]) -> Optional[str]:
+    """Short event phrase for the memory_type that set a group's
+    session vibe, e.g. 'wipe' -> "a recent wipe".
+
+    Prefers the configured language's phrasing (via
+    _VIBE_SOURCE_PHRASE_LOCALE_MAPS), falling back to the English
+    VIBE_SOURCE_PHRASES entry, mirroring get_zone_flavor()'s
+    locale-fallback pattern. Returns None for an empty or unmapped
+    memory_type so the caller can drop back to sourceless phrasing.
+    """
+    if not source_type:
+        return None
+    key = str(source_type).strip().lower()
+    if not key:
+        return None
+    locale = _get_vibe_text_locale_code()
+    if locale:
+        localized_map = _VIBE_SOURCE_PHRASE_LOCALE_MAPS.get(locale)
+        if localized_map and key in localized_map:
+            return localized_map[key]
+    return VIBE_SOURCE_PHRASES.get(key)
+
+
+def get_vibe_mood_word(vibe: Optional[str]) -> Optional[str]:
+    """Localized descriptor for a session vibe / memory mood.
+
+    Same locale-fallback pattern as get_vibe_source_phrase(); an
+    unmapped locale or an unknown mood returns the (normalized)
+    English word rather than nothing, so the prompt sentence is
+    always complete.
+    """
+    if not vibe:
+        return None
+    key = str(vibe).strip().lower().replace('_', ' ')
+    if not key:
+        return None
+    locale = _get_vibe_text_locale_code()
+    if locale:
+        localized_map = _VIBE_MOOD_WORD_LOCALE_MAPS.get(locale)
+        if localized_map and key in localized_map:
+            return localized_map[key]
+    return key
 
 
 # Cache for Blizzard-localized creature/NPC names, keyed
@@ -2037,8 +2261,11 @@ def append_json_instruction(
     """
     if message_only:
         lang_rule = get_language_rule()
+        lore_rule = get_lore_guardrail_rule()
         if lang_rule:
             prompt = prompt + lang_rule
+        if lore_rule:
+            prompt = prompt + lore_rule
         block = (
             "\n\nRESPONSE FORMAT: You MUST respond with "
             "ONLY valid JSON. No other text.\n"
@@ -2051,6 +2278,7 @@ def append_json_instruction(
             "in the prompt exactly — never exceed the "
             "stated character limit."
             f"{lang_rule}"
+            f"{lore_rule}"
         )
         return PromptParts(prompt, block)
     # Apply ActionChance RNG: allow_action=True means
@@ -2091,13 +2319,17 @@ def append_json_instruction(
         )
 
     lang_rule = get_language_rule()
+    lore_rule = get_lore_guardrail_rule()
     # Also inject the language rule into the user
     # prompt so split-system providers (Anthropic)
     # see it close to generation — system prompts
     # lose steering weight against English few-shot
     # content that sits inside the user prompt.
+    # Same reasoning for the lore guardrail.
     if lang_rule:
         prompt = prompt + lang_rule
+    if lore_rule:
+        prompt = prompt + lore_rule
     block = (
         "\n\nRESPONSE FORMAT: You MUST respond with "
         "ONLY valid JSON. No other text.\n"
@@ -2112,6 +2344,7 @@ def append_json_instruction(
         "in the prompt exactly — never exceed the "
         "stated character limit."
         f"{lang_rule}"
+        f"{lore_rule}"
     )
     return PromptParts(prompt, block)
 
@@ -2130,8 +2363,11 @@ def append_conversation_json_instruction(
     text without action or emote fields.
     """
     lang_rule = get_language_rule()
+    lore_rule = get_lore_guardrail_rule()
     if lang_rule:
         prompt = prompt + lang_rule
+    if lore_rule:
+        prompt = prompt + lore_rule
 
     if message_only:
         example_msgs = ',\n  '.join(
@@ -2159,6 +2395,7 @@ def append_conversation_json_instruction(
             "in the prompt exactly â€” never exceed the "
             "stated character limit."
             f"{lang_rule}"
+            f"{lore_rule}"
         )
         return PromptParts(prompt, block)
 
@@ -2240,6 +2477,7 @@ def append_conversation_json_instruction(
         "in the prompt exactly — never exceed the "
         "stated character limit."
         f"{lang_rule}"
+        f"{lore_rule}"
     )
     return PromptParts(prompt, block)
 

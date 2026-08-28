@@ -19,6 +19,7 @@ from chatter_constants import (
     RP_MESSAGE_CATEGORIES, RP_LENGTH_HINTS,
     PERSONALITY_SPICES, RP_PERSONALITY_SPICES,
     CLASS_NAMES, RACE_NAMES, CLASS_ROLE_MAP,
+    VIBE_MOOD_FAMILIES, VIBE_FAMILY_MOODS,
 )
 from chatter_shared import (
     get_chatter_mode, build_race_class_context,
@@ -31,6 +32,8 @@ from chatter_shared import (
     append_conversation_json_instruction,
     select_conversation_message_count,
     get_subzone_name, get_subzone_lore,
+    get_vibe_mood_word, get_vibe_source_phrase,
+    get_vibe_line_templates, get_bot_mood_line,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,12 +150,119 @@ def pick_random_message_category(mode: str = 'normal') -> str:
     return random.choice(pool)
 
 
+# How fast a session vibe stops steering the mood
+# sequence: message 1 is always vibe-aligned, then the
+# odds fall off by this factor per message so the group
+# drifts back to normal instead of holding one mood for
+# a whole exchange.
+VIBE_MOOD_BIAS_DECAY = 0.55
+
+
+def get_vibe_mood_pool(session_vibe, mode: str = 'normal'):
+    """Map a session vibe to compatible conversation moods.
+
+    Session vibes are MEMORY_MOODS values (e.g. "humbled",
+    "triumphant", "grimly amused"); conversation moods are a
+    separate vocabulary. Returns None when the vibe is empty
+    or unrecognised, meaning "no bias, roll normally".
+    """
+    if not session_vibe:
+        return None
+    key = str(session_vibe).strip().lower().replace('_', ' ')
+    family = VIBE_MOOD_FAMILIES.get(key)
+    if not family:
+        return None
+    by_mode = VIBE_FAMILY_MOODS.get(
+        'roleplay' if mode == 'roleplay' else 'normal', {}
+    )
+    return by_mode.get(family) or None
+
+
+def build_session_vibe_line(
+    vibe, source_type=None,
+    distinct_from_bot_mood=False,
+):
+    """Render a group's session vibe as a grounded instruction.
+
+    A bare "Overall tone: humbled" competes with the race
+    profile, class profile, personality and the event itself,
+    and gives the model nothing concrete to be humbled ABOUT.
+    This names the cause (from llm_group_vibe.source_type, see
+    get_session_vibe_details()) and asks for the feeling to show
+    in the delivery rather than be stated.
+
+    The whole sentence is localized -- scaffolding included --
+    via get_vibe_line_templates(), with the mood word and event
+    phrase (get_vibe_mood_word() / get_vibe_source_phrase())
+    already inflected for the template they land in. An English
+    frame with foreign words slotted into it was grammatical in
+    neither language; an unmapped language renders the full
+    English sentence instead.
+
+    Args:
+        vibe: the vibe/mood word, e.g. "humbled"
+        source_type: memory_type that set it, or None for
+            legacy rows -- falls back to sourceless phrasing
+        distinct_from_bot_mood: True when a per-bot mood line
+            sits next to this one, so the prompt spells out
+            that the two are different axes and may disagree
+
+    Returns "" when there is no vibe, so callers can just
+    truth-test the result.
+    """
+    mood_word = get_vibe_mood_word(vibe)
+    if not mood_word:
+        return ""
+    templates = get_vibe_line_templates()
+    phrase = get_vibe_source_phrase(source_type)
+    if phrase:
+        line = templates['sourced'].format(
+            mood=mood_word, event=phrase,
+        )
+    else:
+        line = templates['sourceless'].format(mood=mood_word)
+    if distinct_from_bot_mood:
+        line += templates['distinct']
+    line += templates['instruction']
+    return line
+
+
+def build_bot_mood_line(mood_label, alongside_vibe=False):
+    """Render this bot's own mood line for a reaction prompt.
+
+    Thin presentation wrapper over get_bot_mood_line(): the label
+    and the mood word are localized together, so this line never
+    reintroduces the English-frame problem next to a localized
+    vibe sentence. Returns "" when there is no mood to report.
+    """
+    return get_bot_mood_line(
+        mood_label, alongside_vibe=alongside_vibe,
+    )
+
+
 def generate_conversation_mood_sequence(
-    message_count: int, mode: str = 'normal'
+    message_count: int, mode: str = 'normal',
+    session_vibe=None,
 ) -> List[str]:
-    """Generate a mood sequence for a conversation."""
+    """Generate a mood sequence for a conversation.
+
+    With an active session vibe the sequence opens on a
+    vibe-compatible mood and then decays back toward a
+    fully random roll (see VIBE_MOOD_BIAS_DECAY).
+    """
     pool = RP_MOODS if mode == 'roleplay' else MOODS
-    return [random.choice(pool) for _ in range(message_count)]
+    vibe_pool = get_vibe_mood_pool(session_vibe, mode)
+    if not vibe_pool:
+        return [random.choice(pool) for _ in range(message_count)]
+    moods = []
+    bias = 1.0
+    for _ in range(message_count):
+        if random.random() < bias:
+            moods.append(random.choice(vibe_pool))
+        else:
+            moods.append(random.choice(pool))
+        bias *= VIBE_MOOD_BIAS_DECAY
+    return moods
 
 
 # Conversation length labels â€” short descriptions

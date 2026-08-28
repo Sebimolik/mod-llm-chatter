@@ -8263,6 +8263,988 @@ RP_MOODS = [
 ]
 
 
+# =============================================================================
+# SESSION VIBE -> CONVERSATION MOOD MAPPING
+# =============================================================================
+# A session vibe is the mood of a recent high-importance memory
+# (see get_session_vibe() in chatter_memory.py). Those moods come
+# from MEMORY_MOODS and are a different vocabulary than the
+# per-message conversation moods above, so they are mapped through
+# a small set of emotional families first. Unknown vibes simply map
+# to nothing and the mood sequence stays fully random.
+VIBE_MOOD_FAMILIES = {
+    # elation after a win
+    "triumphant": "triumphant",
+    "exhilarated": "triumphant",
+    "victorious": "triumphant",
+    "gleeful": "triumphant",
+    "elated": "triumphant",
+    "jubilant": "triumphant",
+    "accomplished": "triumphant",
+    "proud": "triumphant",
+    "delighted": "triumphant",
+    "excited": "triumphant",
+    "satisfied": "triumphant",
+    "pleased": "triumphant",
+    "glad": "triumphant",
+    "cheerful": "triumphant",
+    "inspired": "triumphant",
+    # knocked down, regrouping
+    "humbled": "somber",
+    "rueful": "somber",
+    "stoic": "somber",
+    "resilient": "somber",
+    "determined": "somber",
+    "breathless": "somber",
+    "relieved": "somber",
+    "moved": "somber",
+    "frustrated": "somber",
+    "disappointed": "somber",
+    # danger, urgency, aggression
+    "alarmed": "tense",
+    "alert": "tense",
+    "cautious": "tense",
+    "focused": "tense",
+    "eager": "tense",
+    "adventurous": "tense",
+    "fierce": "tense",
+    "ruthless": "tense",
+    # affection and camaraderie
+    "warm": "warm",
+    "fond": "warm",
+    "grateful": "warm",
+    "affectionate": "warm",
+    "respectful": "warm",
+    "engaged": "warm",
+    "approving": "warm",
+    "admiring": "warm",
+    "impressed": "warm",
+    # quiet, reflective
+    "nostalgic": "wistful",
+    "wistful": "wistful",
+    "contemplative": "wistful",
+    "reflective": "wistful",
+    "thoughtful": "wistful",
+    "awed": "wistful",
+    # wondering about something
+    "curious": "curious",
+    "intrigued": "curious",
+    "surprised": "curious",
+    # levity
+    "playful": "amused",
+    "amused": "amused",
+    "grimly amused": "amused",
+    "envious": "amused",
+}
+
+# Family -> the subset of MOODS / RP_MOODS that reads as compatible
+# with that family. Every string below must exist in the matching
+# pool above, otherwise the LLM gets a mood it was never told about.
+VIBE_FAMILY_MOODS = {
+    "normal": {
+        "triumphant": [
+            "proud", "enthusiastic", "showing off",
+            "happy", "competitive",
+        ],
+        "somber": [
+            "disappointed", "self-deprecating", "tired",
+            "deadpan", "philosophical",
+        ],
+        "tense": [
+            "impatient", "competitive", "dramatic",
+            "questioning", "helpful",
+        ],
+        "warm": [
+            "grateful", "happy", "helpful", "enthusiastic",
+        ],
+        "wistful": [
+            "nostalgic", "philosophical", "neutral", "deadpan",
+        ],
+        "curious": [
+            "questioning", "confused", "surprised", "geeky",
+        ],
+        "amused": [
+            "joking around", "finding everything hilarious",
+            "cracking wise", "dry and snarky",
+        ],
+    },
+    "roleplay": {
+        "triumphant": [
+            "playfully smug", "content", "impressed", "hopeful",
+        ],
+        "somber": [
+            "gruff", "tired", "gallows humor",
+            "matter-of-fact", "thoughtful",
+        ],
+        "tense": [
+            "wary", "restless", "cautious",
+            "suspicious", "irritated",
+        ],
+        "warm": [
+            "grateful", "friendly", "content", "impressed",
+        ],
+        "wistful": [
+            "nostalgic", "thoughtful", "calm", "content",
+        ],
+        "curious": [
+            "curious", "thoughtful", "impressed", "distracted",
+        ],
+        "amused": [
+            "amused", "dry humor", "wisecracking",
+            "playfully smug",
+        ],
+    },
+}
+
+# =============================================================================
+# SESSION VIBE -> GROUNDED PROMPT WORDING
+# =============================================================================
+# A bare mood word ("humbled") gives the model nothing to write a
+# specific line about. llm_group_vibe.source_type records the
+# memory_type of the memory that set the vibe, and these tables turn
+# that into a short event phrase so the prompt can name the cause
+# ("still humbled after being cut down to the last of them"). Keys
+# are the llm_bot_memories.memory_type ENUM values; anything missing
+# falls back to the sourceless phrasing in build_session_vibe_line().
+#
+# The phrases are written in-world, in the words a Warcraft
+# character would actually use. Player-side vocabulary -- "wipe",
+# "boss", "level", "achievement", "PvP", "party chat" -- names
+# nothing that exists inside the fiction, and whatever register the
+# instruction is written in is the register the model answers in, so
+# meta wording here surfaces as meta wording in the bot's line. No
+# proper nouns appear either: one phrase covers every occurrence of
+# its event type, anywhere in the world.
+VIBE_SOURCE_PHRASES = {
+    'wipe': "being cut down to the last of them",
+    'boss_kill': "felling a terrible foe",
+    'rare_kill': "hunting down a rare and dangerous beast",
+    'achievement': "a feat worth remembering",
+    'level_up': "hard-won growth in skill",
+    'quest_complete': "seeing a task through to the end",
+    'dungeon': "the last stretch of those depths",
+    'bg_win': "winning the day in battle",
+    'bg_loss': "losing the day in battle",
+    'pvp_kill': "besting an enemy in combat",
+    'discovery': "setting eyes on unfamiliar country",
+    'player_message': "something said among them",
+    'party_member': "a moment shared with one of their own",
+    'gear_change': "someone's new arms and armor",
+    'mount_change': "someone's new steed",
+    'first_meeting': "falling in with someone new",
+    'ambient': "a quiet moment on the road",
+    'condensed': "everything they have been through together",
+}
+
+# Localized event phrases, mirroring the ZONE_FLAVOR_* /
+# RACE_SPEECH_PROFILES_* per-language constants: an English mood or
+# event phrase dropped into a Russian prompt hands the model English
+# register to translate instead of native wording to write in.
+# Resolved through _VIBE_SOURCE_PHRASE_LOCALE_MAPS /
+# get_vibe_source_phrase() in chatter_shared.py; any locale or key
+# not covered falls back to the English table above.
+# Each phrase is shaped for the slot it fills in its own language's
+# sentence template (see VIBE_LINE_TEMPLATES_* below): Russian
+# genitive after "после", German dative after "nach",
+# French/Spanish infinitive or noun phrase after "après"/"tras".
+# The surrounding sentence is localized too, so these fragments
+# never sit inside an English frame.
+# Like the English table, these are in-world wordings rather than
+# translations of player jargon -- "вайп"/"Wipe"/"wipe" and the
+# other loanwords they replaced were meta vocabulary in every
+# language.
+# Confidence: the few surviving game terms use the official client
+# localizations ("Reittier", "monture", "montura", "montaria",
+# "탈것"); everything else is best-effort hand-written prose, not
+# sourced from Blizzard text.
+VIBE_SOURCE_PHRASES_RU = {
+    'wipe': "того, как их всех перебили",
+    'boss_kill': "падения могучего врага",
+    'rare_kill': "охоты на редкого и опасного зверя",
+    'achievement': "подвига, о котором стоит помнить",
+    'level_up': "тяжело давшегося роста мастерства",
+    'quest_complete': "доведённого до конца дела",
+    'dungeon': "того, что они прошли в тех подземельях",
+    'bg_win': "победы в большом сражении",
+    'bg_loss': "поражения в большом сражении",
+    'pvp_kill': "победы над врагом в схватке",
+    'discovery': "того, как перед ними открылись незнакомые земли",
+    'player_message': "сказанного между ними",
+    'party_member': "мгновения, разделённого с товарищем",
+    'gear_change': "чьего-то нового оружия и доспехов",
+    'mount_change': "чьего-то нового скакуна",
+    'first_meeting': "знакомства с новым спутником",
+    'ambient': "тихой минуты в пути",
+    'condensed': "всего пережитого вместе",
+}
+
+VIBE_SOURCE_PHRASES_FR = {
+    'wipe': "être tombés jusqu'au dernier",
+    'boss_kill': "avoir abattu un adversaire redoutable",
+    'rare_kill': "avoir traqué une bête rare et dangereuse",
+    'achievement': "un exploit dont on se souviendra",
+    'level_up': "des progrès durement acquis",
+    'quest_complete': "avoir mené une tâche à son terme",
+    'dungeon': "la dernière portion de ces souterrains",
+    'bg_win': "une bataille remportée",
+    'bg_loss': "une bataille perdue",
+    'pvp_kill': "avoir eu raison d'un ennemi au combat",
+    'discovery': "avoir posé les yeux sur des terres inconnues",
+    'player_message': "ce qui s'est dit entre eux",
+    'party_member': "un moment partagé avec l'un des leurs",
+    'gear_change': "l'armement neuf de quelqu'un",
+    'mount_change': "la nouvelle monture de quelqu'un",
+    'first_meeting': "une nouvelle rencontre en chemin",
+    'ambient': "un moment calme sur la route",
+    'condensed': "tout ce qu'ils ont traversé ensemble",
+}
+
+VIBE_SOURCE_PHRASES_DE = {
+    'wipe': "dem Fall der ganzen Schar",
+    'boss_kill': "dem Fall eines furchtbaren Gegners",
+    'rare_kill': "der Jagd auf eine seltene, gefährliche Bestie",
+    'achievement': "einer unvergesslichen Tat",
+    'level_up': "einem hart erkämpften Zuwachs an Können",
+    'quest_complete': "einem zu Ende gebrachten Auftrag",
+    'dungeon': "dem letzten Abschnitt in jenen Tiefen",
+    'bg_win': "einer gewonnenen Schlacht",
+    'bg_loss': "einer verlorenen Schlacht",
+    'pvp_kill': "dem Sieg über einen Feind im Kampf",
+    'discovery': "dem Anblick unbekannten Landes",
+    'player_message': "einem Wortwechsel unter ihnen",
+    'party_member': "einem gemeinsamen Moment mit einem der Ihren",
+    'gear_change': "jemandes neuer Waffe und Rüstung",
+    'mount_change': "jemandes neuem Reittier",
+    'first_meeting': "einer neuen Bekanntschaft",
+    'ambient': "einem ruhigen Moment unterwegs",
+    'condensed': "allem gemeinsam Durchgestandenen",
+}
+
+VIBE_SOURCE_PHRASES_ES = {
+    'wipe': "caer todos hasta el último",
+    'boss_kill': "abatir a un enemigo temible",
+    'rare_kill': "dar caza a una bestia rara y peligrosa",
+    'achievement': "una hazaña digna de recordar",
+    'level_up': "un avance ganado a pulso",
+    'quest_complete': "llevar un encargo hasta el final",
+    'dungeon': "el último tramo de aquellas profundidades",
+    'bg_win': "una batalla ganada",
+    'bg_loss': "una batalla perdida",
+    'pvp_kill': "vencer a un enemigo en combate",
+    'discovery': "poner los ojos en tierras desconocidas",
+    'player_message': "lo que se dijo entre ellos",
+    'party_member': "un momento compartido con uno de los suyos",
+    'gear_change': "las armas nuevas de alguien",
+    'mount_change': "la nueva montura de alguien",
+    'first_meeting': "conocer a alguien nuevo en el camino",
+    'ambient': "un momento tranquilo en el camino",
+    'condensed': "todo lo que han pasado juntos",
+}
+
+# Localized vibe/mood descriptors. Keys are the (space-normalized)
+# MEMORY_MOODS vocabulary, i.e. the same key set as
+# VIBE_MOOD_FAMILIES above; values describe a *group* of people, so
+# they are plural where the language marks it (Russian plural
+# nominative, French/Spanish masculine plural, German uninflected
+# predicate adjectives). Resolved through
+# _VIBE_MOOD_WORD_LOCALE_MAPS / get_vibe_mood_word() in
+# chatter_shared.py; an unmapped locale or mood falls back to the
+# English word. Confidence: best-effort hand-written renderings --
+# these moods have no official Blizzard localization to draw on.
+VIBE_MOOD_WORDS_RU = {
+    'accomplished': "с чувством выполненного долга",
+    'admiring': "восхищённые",
+    'adventurous': "жаждущие приключений",
+    'affectionate': "душевные",
+    'alarmed': "встревоженные",
+    'alert': "настороженные",
+    'amused': "развеселившиеся",
+    'approving': "одобрительные",
+    'awed': "благоговеющие",
+    'breathless': "запыхавшиеся",
+    'cautious': "осторожные",
+    'cheerful': "жизнерадостные",
+    'contemplative': "задумчивые",
+    'curious': "любопытные",
+    'delighted': "в восторге",
+    'determined': "полные решимости",
+    'disappointed': "разочарованные",
+    'eager': "рвущиеся в бой",
+    'elated': "окрылённые",
+    'engaged': "увлечённые",
+    'envious': "завидующие",
+    'excited': "взбудораженные",
+    'exhilarated': "на подъёме",
+    'fierce': "свирепые",
+    'focused': "сосредоточенные",
+    'fond': "с теплотой друг к другу",
+    'frustrated': "раздосадованные",
+    'glad': "обрадованные",
+    'gleeful': "весёлые",
+    'grateful': "благодарные",
+    'grimly amused': "с мрачной усмешкой",
+    'humbled': "присмиревшие",
+    'impressed': "впечатлённые",
+    'inspired': "воодушевлённые",
+    'intrigued': "заинтригованные",
+    'jubilant': "ликующие",
+    'moved': "растроганные",
+    'nostalgic': "ностальгирующие",
+    'playful': "игривые",
+    'pleased': "довольные",
+    'proud': "гордые",
+    'reflective': "погружённые в раздумья",
+    'relieved': "испытывающие облегчение",
+    'resilient': "несломленные",
+    'respectful': "почтительные",
+    'rueful': "полные сожаления",
+    'ruthless': "беспощадные",
+    'satisfied': "удовлетворённые",
+    'stoic': "стоически спокойные",
+    'surprised': "удивлённые",
+    'thoughtful': "вдумчивые",
+    'triumphant': "торжествующие",
+    'victorious': "упивающиеся победой",
+    'warm': "полные тепла друг к другу",
+    'wistful': "с лёгкой грустью",
+}
+
+VIBE_MOOD_WORDS_FR = {
+    'accomplished': "satisfaits du devoir accompli",
+    'admiring': "admiratifs",
+    'adventurous': "avides d'aventure",
+    'affectionate': "affectueux",
+    'alarmed': "alarmés",
+    'alert': "aux aguets",
+    'amused': "amusés",
+    'approving': "approbateurs",
+    'awed': "émerveillés",
+    'breathless': "hors d'haleine",
+    'cautious': "prudents",
+    'cheerful': "guillerets",
+    'contemplative': "contemplatifs",
+    'curious': "curieux",
+    'delighted': "ravis",
+    'determined': "déterminés",
+    'disappointed': "déçus",
+    'eager': "impatients d'en découdre",
+    'elated': "aux anges",
+    'engaged': "captivés",
+    'envious': "envieux",
+    'excited': "excités",
+    'exhilarated': "galvanisés",
+    'fierce': "farouches",
+    'focused': "concentrés",
+    'fond': "pleins d'affection",
+    'frustrated': "frustrés",
+    'glad': "heureux",
+    'gleeful': "réjouis",
+    'grateful': "reconnaissants",
+    'grimly amused': "d'une gaieté sombre",
+    'humbled': "remis à leur place",
+    'impressed': "impressionnés",
+    'inspired': "inspirés",
+    'intrigued': "intrigués",
+    'jubilant': "en liesse",
+    'moved': "émus",
+    'nostalgic': "nostalgiques",
+    'playful': "espiègles",
+    'pleased': "contents",
+    'proud': "fiers",
+    'reflective': "songeurs",
+    'relieved': "soulagés",
+    'resilient': "inébranlables",
+    'respectful': "respectueux",
+    'rueful': "pleins de regrets",
+    'ruthless': "impitoyables",
+    'satisfied': "satisfaits",
+    'stoic': "stoïques",
+    'surprised': "surpris",
+    'thoughtful': "pensifs",
+    'triumphant': "triomphants",
+    'victorious': "victorieux",
+    'warm': "chaleureux",
+    'wistful': "mélancoliques",
+}
+
+VIBE_MOOD_WORDS_DE = {
+    'accomplished': "zufrieden mit dem Geleisteten",
+    'admiring': "bewundernd",
+    'adventurous': "abenteuerlustig",
+    'affectionate': "herzlich zugetan",
+    'alarmed': "alarmiert",
+    'alert': "wachsam",
+    'amused': "belustigt",
+    'approving': "zustimmend",
+    'awed': "ehrfürchtig",
+    'breathless': "außer Atem",
+    'cautious': "vorsichtig",
+    'cheerful': "fröhlich",
+    'contemplative': "versonnen",
+    'curious': "neugierig",
+    'delighted': "entzückt",
+    'determined': "entschlossen",
+    'disappointed': "enttäuscht",
+    'eager': "kampflustig",
+    'elated': "beschwingt",
+    'engaged': "gefesselt",
+    'envious': "neidisch",
+    'excited': "aufgeregt",
+    'exhilarated': "euphorisch",
+    'fierce': "grimmig",
+    'focused': "konzentriert",
+    'fond': "einander zugetan",
+    'frustrated': "frustriert",
+    'glad': "froh",
+    'gleeful': "ausgelassen",
+    'grateful': "dankbar",
+    'grimly amused': "grimmig belustigt",
+    'humbled': "kleinlaut",
+    'impressed': "beeindruckt",
+    'inspired': "beflügelt",
+    'intrigued': "neugierig geworden",
+    'jubilant': "jubelnd",
+    'moved': "gerührt",
+    'nostalgic': "nostalgisch",
+    'playful': "verspielt",
+    'pleased': "zufrieden",
+    'proud': "stolz",
+    'reflective': "in Gedanken versunken",
+    'relieved': "erleichtert",
+    'resilient': "unbeugsam",
+    'respectful': "respektvoll",
+    'rueful': "reuevoll",
+    'ruthless': "schonungslos",
+    'satisfied': "zufriedengestellt",
+    'stoic': "stoisch",
+    'surprised': "überrascht",
+    'thoughtful': "nachdenklich",
+    'triumphant': "triumphierend",
+    'victorious': "siegreich",
+    'warm': "warmherzig",
+    'wistful': "wehmütig",
+}
+
+VIBE_MOOD_WORDS_ES = {
+    'accomplished': "con el deber cumplido",
+    'admiring': "admirados",
+    'adventurous': "con ganas de aventura",
+    'affectionate': "cariñosos",
+    'alarmed': "alarmados",
+    'alert': "alerta",
+    'amused': "divertidos",
+    'approving': "aprobadores",
+    'awed': "sobrecogidos",
+    'breathless': "sin aliento",
+    'cautious': "cautelosos",
+    'cheerful': "alegres",
+    'contemplative': "contemplativos",
+    'curious': "curiosos",
+    'delighted': "encantados",
+    'determined': "decididos",
+    'disappointed': "decepcionados",
+    'eager': "ansiosos por entrar en acción",
+    'elated': "eufóricos",
+    'engaged': "absortos",
+    'envious': "envidiosos",
+    'excited': "emocionados",
+    'exhilarated': "exultantes",
+    'fierce': "feroces",
+    'focused': "concentrados",
+    'fond': "llenos de afecto",
+    'frustrated': "frustrados",
+    'glad': "contentos",
+    'gleeful': "risueños",
+    'grateful': "agradecidos",
+    'grimly amused': "con humor sombrío",
+    'humbled': "humillados",
+    'impressed': "impresionados",
+    'inspired': "inspirados",
+    'intrigued': "intrigados",
+    'jubilant': "jubilosos",
+    'moved': "conmovidos",
+    'nostalgic': "nostálgicos",
+    'playful': "juguetones",
+    'pleased': "complacidos",
+    'proud': "orgullosos",
+    'reflective': "reflexivos",
+    'relieved': "aliviados",
+    'resilient': "inquebrantables",
+    'respectful': "respetuosos",
+    'rueful': "llenos de pesar",
+    'ruthless': "implacables",
+    'satisfied': "satisfechos",
+    'stoic': "estoicos",
+    'surprised': "sorprendidos",
+    'thoughtful': "pensativos",
+    'triumphant': "triunfantes",
+    'victorious': "victoriosos",
+    'warm': "cálidos",
+    'wistful': "melancólicos",
+}
+
+
+# Portuguese and Korean are supported output languages (see
+# _LANGUAGE_LABELS in chatter_shared.py) even though they lack
+# full-scale flavor-text coverage elsewhere. These strings carry no
+# proper nouns and depend on no other localized data, so there is no
+# baseline to run ahead of.
+# Confidence: PT/KO are best-effort hand-written renderings by a
+# non-native writer -- lower confidence than the RU/FR/DE/ES tables
+# above and worth a native review; the one game term they still
+# contain ("montaria", "탈것") follows the usual client vocabulary,
+# and the rest is in-world prose rather than player jargon.
+VIBE_SOURCE_PHRASES_PT = {
+    'wipe': "caírem todos até o último",
+    'boss_kill': "derrubar um inimigo temível",
+    'rare_kill': "caçar uma fera rara e perigosa",
+    'achievement': "um feito digno de memória",
+    'level_up': "um avanço conquistado a duras penas",
+    'quest_complete': "levar uma tarefa até o fim",
+    'dungeon': "o último trecho daquelas profundezas",
+    'bg_win': "uma batalha vencida",
+    'bg_loss': "uma batalha perdida",
+    'pvp_kill': "vencer um inimigo em combate",
+    'discovery': "avistar terras desconhecidas",
+    'player_message': "o que se disse entre eles",
+    'party_member': "um momento partilhado com um dos seus",
+    'gear_change': "as armas novas de alguém",
+    'mount_change': "a montaria nova de alguém",
+    'first_meeting': "conhecer alguém novo na estrada",
+    'ambient': "um momento tranquilo na estrada",
+    'condensed': "tudo o que passaram juntos",
+}
+
+VIBE_SOURCE_PHRASES_KO = {
+    'wipe': "다 함께 쓰러진 일",
+    'boss_kill': "무서운 적을 쓰러뜨린 일",
+    'rare_kill': "희귀하고 위험한 야수를 사냥한 일",
+    'achievement': "기억에 남을 위업",
+    'level_up': "힘겹게 얻은 성장",
+    'quest_complete': "맡은 일을 끝까지 해낸 일",
+    'dungeon': "그 깊은 곳에서 넘긴 마지막 고비",
+    'bg_win': "싸움에서 거둔 승리",
+    'bg_loss': "싸움에서 당한 패배",
+    'pvp_kill': "적을 싸움에서 꺾은 일",
+    'discovery': "낯선 땅을 처음 본 일",
+    'player_message': "서로 주고받은 이야기",
+    'party_member': "동료와 나눈 한순간",
+    'gear_change': "누군가의 새 무기와 갑옷",
+    'mount_change': "누군가의 새 탈것",
+    'first_meeting': "길에서 만난 새로운 이",
+    'ambient': "길 위의 조용한 한때",
+    'condensed': "함께 겪어온 모든 일",
+}
+
+VIBE_MOOD_WORDS_PT = {
+    'accomplished': "com o dever cumprido",
+    'admiring': "admirados",
+    'adventurous': "com sede de aventura",
+    'affectionate': "afetuosos",
+    'alarmed': "alarmados",
+    'alert': "em alerta",
+    'amused': "divertidos",
+    'approving': "aprovadores",
+    'awed': "maravilhados",
+    'breathless': "sem fôlego",
+    'cautious': "cautelosos",
+    'cheerful': "animados",
+    'contemplative': "contemplativos",
+    'curious': "curiosos",
+    'delighted': "encantados",
+    'determined': "determinados",
+    'disappointed': "decepcionados",
+    'eager': "ansiosos por ação",
+    'elated': "eufóricos",
+    'engaged': "absortos",
+    'envious': "invejosos",
+    'excited': "empolgados",
+    'exhilarated': "exultantes",
+    'fierce': "ferozes",
+    'focused': "concentrados",
+    'fond': "cheios de carinho",
+    'frustrated': "frustrados",
+    'glad': "felizes",
+    'gleeful': "risonhos",
+    'grateful': "gratos",
+    'grimly amused': "com humor sombrio",
+    'humbled': "humilhados",
+    'impressed': "impressionados",
+    'inspired': "inspirados",
+    'intrigued': "intrigados",
+    'jubilant': "jubilosos",
+    'moved': "comovidos",
+    'nostalgic': "nostálgicos",
+    'playful': "brincalhões",
+    'pleased': "contentes",
+    'proud': "orgulhosos",
+    'reflective': "reflexivos",
+    'relieved': "aliviados",
+    'resilient': "inabaláveis",
+    'respectful': "respeitosos",
+    'rueful': "cheios de pesar",
+    'ruthless': "implacáveis",
+    'satisfied': "satisfeitos",
+    'stoic': "estoicos",
+    'surprised': "surpresos",
+    'thoughtful': "pensativos",
+    'triumphant': "triunfantes",
+    'victorious': "vitoriosos",
+    'warm': "calorosos",
+    'wistful': "melancólicos",
+}
+
+VIBE_MOOD_WORDS_KO = {
+    'accomplished': "해냈다는 뿌듯함에 찬",
+    'admiring': "감탄한",
+    'adventurous': "모험심에 들뜬",
+    'affectionate': "정이 넘치는",
+    'alarmed': "놀라 경계하는",
+    'alert': "바짝 긴장한",
+    'amused': "재미있어하는",
+    'approving': "인정하는",
+    'awed': "경외에 찬",
+    'breathless': "숨이 턱에 찬",
+    'cautious': "조심스러운",
+    'cheerful': "쾌활한",
+    'contemplative': "사색에 잠긴",
+    'curious': "호기심에 찬",
+    'delighted': "기뻐하는",
+    'determined': "결의에 찬",
+    'disappointed': "실망한",
+    'eager': "싸울 기세가 오른",
+    'elated': "들뜬",
+    'engaged': "몰입한",
+    'envious': "부러워하는",
+    'excited': "흥분한",
+    'exhilarated': "짜릿함에 취한",
+    'fierce': "사나운",
+    'focused': "집중한",
+    'fond': "서로에게 살가운",
+    'frustrated': "답답해하는",
+    'glad': "반가운",
+    'gleeful': "신이 난",
+    'grateful': "고마워하는",
+    'grimly amused': "씁쓸하게 웃는",
+    'humbled': "겸허해진",
+    'impressed': "감탄한",
+    'inspired': "고무된",
+    'intrigued': "흥미가 동한",
+    'jubilant': "환호에 찬",
+    'moved': "뭉클해진",
+    'nostalgic': "그리움에 잠긴",
+    'playful': "장난기 어린",
+    'pleased': "흡족한",
+    'proud': "자랑스러워하는",
+    'reflective': "생각에 잠긴",
+    'relieved': "안도한",
+    'resilient': "꺾이지 않은",
+    'respectful': "존중이 담긴",
+    'rueful': "후회가 남은",
+    'ruthless': "무자비한",
+    'satisfied': "만족한",
+    'stoic': "담담한",
+    'surprised': "놀란",
+    'thoughtful': "사려 깊은",
+    'triumphant': "승리에 도취된",
+    'victorious': "승리한",
+    'warm': "따뜻한",
+    'wistful': "아련한",
+}
+
+
+
+# =============================================================================
+# SESSION VIBE -> LOCALIZED SENTENCE TEMPLATES
+# =============================================================================
+# Whole-sentence session-vibe templates, one complete set per
+# language. An English frame with localized words slotted into it
+# ("The group is still присмиревшие after недавнего вайпа") is
+# coherent in neither language: each fragment was written to carry
+# the case/particles its own language's preposition governs
+# (Russian genitive after "после", German dative after "nach",
+# Korean noun particles), and none of those govern anything after
+# English "after". So the whole line -- scaffolding included --
+# renders in the target language, or entirely in English.
+#
+# Keys:
+#   'sourced'     -- {mood} + {event}, used when llm_group_vibe
+#                    .source_type maps to a known event phrase
+#   'sourceless'  -- {mood} only, for legacy/NULL/unmapped sources
+#   'distinct'    -- appended when a per-bot mood line sits above
+#   'instruction' -- the "show it, don't announce it" tail
+# 'distinct' and 'instruction' start with a space: they are
+# concatenated onto the sentence above them.
+#
+# Each template is built around the form its language's mood words
+# and event phrases already have, so the inserted words are
+# grammatically correct where they land:
+#   RU  plural nominative subject ("Все в отряде ... {mood}") takes
+#       the plural mood words; "после" takes the genitive phrases.
+#   FR/ES/PT  plural subject ("Les membres du groupe ...") takes the
+#       masculine-plural mood words; "après"/"tras"/"após" take
+#       the noun-or-infinitive phrases. Portuguese uses "após"
+#       rather than "depois de" precisely because "de" would have
+#       to contract with an article inside the slot ("depois do
+#       último trecho"), which a template cannot do from outside.
+#   DE  "nach {event}" keeps the dative event phrases in the slot
+#       that actually governs dative, and the mood words stay
+#       uninflected predicate adjectives.
+#   KO  the mood words are adnominal forms, so they modify a head
+#       noun ("{mood} 분위기"), and the event nouns take "이후로".
+# Resolved through _VIBE_LINE_TEMPLATE_LOCALE_MAPS /
+# get_vibe_line_templates() in chatter_shared.py; an unmapped
+# locale falls back to this English set in full.
+VIBE_LINE_TEMPLATES = {
+    'sourced': "The group is still {mood} after {event}.",
+    'sourceless': (
+        "The group's mood right now is {mood}, after"
+        " something that just happened."
+    ),
+    'distinct': (
+        " That is the whole party's weather, not your own"
+        " mood above -- yours may honestly differ."
+    ),
+    'instruction': (
+        " Let it color how you speak -- the feeling should"
+        " show in your delivery, never be announced."
+    ),
+}
+
+# Confidence: hand-written prose, not sourced from Blizzard text --
+# these sentences have no official localization to draw on. RU/FR/
+# DE/ES are written with reasonable confidence; PT/KO are
+# best-effort and worth a native review. No proper nouns appear.
+VIBE_LINE_TEMPLATES_RU = {
+    'sourced': "Все в отряде всё ещё {mood} после {event}.",
+    'sourceless': (
+        "Сейчас все в отряде {mood} — что-то только что"
+        " произошло."
+    ),
+    'distinct': (
+        " Это настроение всего отряда, а не твоё собственное,"
+        " указанное выше, — они вполне могут не совпадать."
+    ),
+    'instruction': (
+        " Пусть это окрашивает твою речь: чувство должно"
+        " проявляться в подаче, а не проговариваться вслух."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_FR = {
+    'sourced': (
+        "Les membres du groupe sont encore {mood} après"
+        " {event}."
+    ),
+    'sourceless': (
+        "Les membres du groupe sont {mood} en ce moment,"
+        " après quelque chose qui vient de se passer."
+    ),
+    'distinct': (
+        " C'est l'ambiance de tout le groupe, pas ton humeur"
+        " personnelle indiquée plus haut : les deux peuvent"
+        " très bien diverger."
+    ),
+    'instruction': (
+        " Laisse cela teinter ta façon de parler : le"
+        " sentiment doit transparaître dans le ton, jamais"
+        " être annoncé."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_DE = {
+    'sourced': "Die Gruppe ist nach {event} noch immer {mood}.",
+    'sourceless': (
+        "Die Gruppe ist gerade {mood}, nach etwas, das eben"
+        " passiert ist."
+    ),
+    'distinct': (
+        " Das ist die Stimmung der ganzen Gruppe, nicht deine"
+        " eigene von oben -- die beiden dürfen durchaus"
+        " auseinandergehen."
+    ),
+    'instruction': (
+        " Lass das deine Redeweise färben: Das Gefühl soll im"
+        " Ton mitschwingen, nie ausgesprochen werden."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_ES = {
+    'sourced': (
+        "Los miembros del grupo siguen {mood} tras {event}."
+    ),
+    'sourceless': (
+        "Los miembros del grupo están {mood} ahora mismo,"
+        " tras algo que acaba de pasar."
+    ),
+    'distinct': (
+        " Ese es el ambiente de todo el grupo, no tu propio"
+        " estado de ánimo de arriba: los dos pueden diferir"
+        " perfectamente."
+    ),
+    'instruction': (
+        " Deja que eso tiña tu forma de hablar: el"
+        " sentimiento debe notarse en el tono, nunca"
+        " anunciarse."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_PT = {
+    'sourced': (
+        "Os membros do grupo continuam {mood} após {event}."
+    ),
+    'sourceless': (
+        "Os membros do grupo estão {mood} agora, após algo"
+        " que acabou de acontecer."
+    ),
+    'distinct': (
+        " Esse é o clima do grupo inteiro, não o seu próprio"
+        " humor indicado acima: os dois podem divergir"
+        " tranquilamente."
+    ),
+    'instruction': (
+        " Deixe isso tingir o seu jeito de falar: o"
+        " sentimento deve transparecer no tom, nunca ser"
+        " anunciado."
+    ),
+}
+
+VIBE_LINE_TEMPLATES_KO = {
+    'sourced': "{event} 이후로 파티 전체가 아직 {mood} 분위기다.",
+    'sourceless': (
+        "방금 무슨 일이 있었는지, 파티 전체가 {mood} 분위기다."
+    ),
+    'distinct': (
+        " 그건 파티 전체의 분위기이지 위에 적힌 네 기분이 아니다."
+        " 둘은 얼마든지 다를 수 있다."
+    ),
+    'instruction': (
+        " 그 감정이 말투에 배어 나오게 하되, 절대 말로 설명하지"
+        " 마라."
+    ),
+}
+
+
+# =============================================================================
+# PER-BOT MOOD LINE -> LOCALIZED PROMPT WORDING
+# =============================================================================
+# The companion line to the session vibe above: this bot's own mood
+# drift (see MOOD_LABELS in chatter_group_state.py), rendered next
+# to the vibe sentence in build_mood_and_vibe_suffix(). A localized
+# vibe sentence sitting under an English "Your own mood: cheerful"
+# label reintroduces the same hybrid problem in miniature, so the
+# label and the word are localized together, as one template per
+# language.
+#
+# Keys: 'own' when a vibe line sits alongside (the two moods need
+# telling apart), 'current' when this is the only mood line.
+# {mood} is filled from the tables below.
+BOT_MOOD_LINE_TEMPLATES = {
+    'own': "Your own mood: {mood}",
+    'current': "Current mood: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_RU = {
+    'own': "Твоё собственное настроение: {mood}",
+    'current': "Текущее настроение: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_FR = {
+    'own': "Ton humeur à toi : {mood}",
+    'current': "Humeur actuelle : {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_DE = {
+    'own': "Deine eigene Stimmung: {mood}",
+    'current': "Aktuelle Stimmung: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_ES = {
+    'own': "Tu propio estado de ánimo: {mood}",
+    'current': "Estado de ánimo actual: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_PT = {
+    'own': "O seu próprio humor: {mood}",
+    'current': "Humor atual: {mood}",
+}
+
+BOT_MOOD_LINE_TEMPLATES_KO = {
+    'own': "너 자신의 기분: {mood}",
+    'current': "현재 기분: {mood}",
+}
+
+# Localized per-bot mood words. Keys are the labels produced by
+# get_bot_mood_label() (MOOD_LABELS in chatter_group_state.py).
+# Unlike the group-vibe words these describe a single bot, so they
+# are singular, and each set is inflected for the label template it
+# is dropped into: RU neuter singular (agreeing with
+# "настроение"), FR feminine singular ("humeur"), ES/PT masculine
+# singular ("estado de ánimo" / "humor"), DE uninflected predicate
+# adjectives, KO nominalized forms that stand alone after a colon.
+# Confidence: hand-written prose with no official source; PT/KO
+# lower confidence than RU/FR/DE/ES.
+BOT_MOOD_WORDS_RU = {
+    'miserable': "подавленное",
+    'gloomy': "мрачное",
+    'tired': "усталое",
+    'neutral': "ровное",
+    'content': "довольное",
+    'cheerful': "жизнерадостное",
+    'ecstatic': "восторженное",
+}
+
+BOT_MOOD_WORDS_FR = {
+    'miserable': "exécrable",
+    'gloomy': "morose",
+    'tired': "fatiguée",
+    'neutral': "neutre",
+    'content': "satisfaite",
+    'cheerful': "guillerette",
+    'ecstatic': "euphorique",
+}
+
+BOT_MOOD_WORDS_DE = {
+    'miserable': "elend",
+    'gloomy': "düster",
+    'tired': "müde",
+    'neutral': "neutral",
+    'content': "zufrieden",
+    'cheerful': "fröhlich",
+    'ecstatic': "überglücklich",
+}
+
+BOT_MOOD_WORDS_ES = {
+    'miserable': "pésimo",
+    'gloomy': "sombrío",
+    'tired': "cansado",
+    'neutral': "neutral",
+    'content': "contento",
+    'cheerful': "alegre",
+    'ecstatic': "eufórico",
+}
+
+BOT_MOOD_WORDS_PT = {
+    'miserable': "péssimo",
+    'gloomy': "sombrio",
+    'tired': "cansado",
+    'neutral': "neutro",
+    'content': "contente",
+    'cheerful': "animado",
+    'ecstatic': "eufórico",
+}
+
+BOT_MOOD_WORDS_KO = {
+    'miserable': "비참함",
+    'gloomy': "침울함",
+    'tired': "지쳐 있음",
+    'neutral': "평범함",
+    'content': "만족스러움",
+    'cheerful': "쾌활함",
+    'ecstatic': "황홀함",
+}
+
+
 RP_CREATIVE_TWISTS = [
     "Use a casual saying from your culture",
     "Mention something from your past briefly",
