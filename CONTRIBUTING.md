@@ -149,16 +149,42 @@ The logger writes to `/logs/` inside the bridge container. You need to:
 
 ## Testing
 
-There is no automated test suite yet. All testing is manual and
-in-game.
+Most testing is manual and in-game, but the Python side of the bridge
+has a growing test suite under `tools/tests/`.
+
+### Running the Python tests
+
+The tests are plain scripts with a `main() -> int`, not pytest. Run them
+directly with the project virtualenv interpreter, from the repo root:
+
+```bash
+# one test file
+tools/venv/bin/python3 tools/tests/test_memory_condensation.py
+
+# the whole suite
+for f in tools/tests/test_*.py; do
+  tools/venv/bin/python3 "$f" || echo "FAIL $f"
+done
+
+# import/cycle smoke check
+tools/venv/bin/python3 tools/import_smoke_check.py
+```
+
+Each script exits non-zero on failure. They stub out the database and the
+LLM client, so no server, bridge, or API key is needed.
+
+Optional: `tools/install-hooks.sh` installs a pre-push hook that runs the
+Python compile check, the import smoke check, and the full test suite
+before every push.
 
 ### Before submitting a PR
 
-1. Start the server and bridge with your changes
-2. Log in and verify the feature works as expected
-3. Check bridge logs for errors: `docker logs ac-llm-chatter-bridge`
-4. Check worldserver logs for module errors
-5. Verify you haven't broken existing features (group chatter, General
+1. Run the Python test suite and the import smoke check (above)
+2. Start the server and bridge with your changes
+3. Log in and verify the feature works as expected
+4. Check bridge logs for errors: `docker logs ac-llm-chatter-bridge`
+5. Check worldserver logs for module errors
+6. Verify you haven't broken existing features (group chatter, General
    chat, BG/raid if relevant)
 
 ### Common test scenarios
@@ -181,7 +207,12 @@ in-game.
 - If adding config keys, include them in `conf/mod_llm_chatter.conf.dist`
   with description comments
 - If changing SQL schema, include a migration file in
-  `data/sql/db-characters/updates/`
+  `data/sql/characters/updates/` (dated, idempotent, guarded with an
+  `information_schema` check) **and** mirror the same change into
+  `data/sql/characters/base/00000000_llm_chatter_tables.sql` in the same
+  commit -- fresh installs only apply the base file, not the dated
+  updates, so a migration without a matching base-schema edit breaks
+  new installs
 
 ### What we look for in reviews
 

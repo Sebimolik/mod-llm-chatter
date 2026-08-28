@@ -7,3 +7,9 @@ dev-only
 .DS_Store
 Gemini.md
 logs/
+tools/venv/
+# Runtime artifacts of a manually launched bridge: bridge.pid is the
+# single-instance lock written by tools/llm_chatter_bridge.py; bridge.out
+# is the conventional stdout redirect target when running it with nohup.
+tools/bridge.out
+tools/bridge.pid

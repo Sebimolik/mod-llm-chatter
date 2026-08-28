@@ -526,14 +526,14 @@ This asymmetry is known and acceptable in the shipped source state.
 | `tools/chatter_shared.py` | Shared prompt, parse, count, and delay helpers |
 | `tools/chatter_text.py` | Parsing, sanitization, anti-repetition |
 | `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; `label=` param logs every call via `chatter_request_logger` |
-| `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup |
+| `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup. Also owns `llm_group_vibe` persistence (`upsert_group_vibe()`, `get_group_vibe()`, `delete_group_vibe()` — all accept a caller-owned connection so the hot memory-write path never opens a second one; the delete is conditional on the observed `set_at` so a concurrent newer vibe survives) and drops the vibe row in `cleanup_stale_groups()` / `cleanup_all_session_data()` |
 | `tools/chatter_links.py` | WoW link parsing and prompt-side link enrichment for player messages |
-| `tools/chatter_prompts.py` | Ambient/event prompt builders |
+| `tools/chatter_prompts.py` | Ambient/event prompt builders; session-vibe rendering (`build_session_vibe_line()` — fully localized, names the cause from `llm_group_vibe.source_type` — plus `get_vibe_mood_word()`, `get_vibe_source_phrase()`, `get_vibe_mood_pool()`) |
 | `tools/chatter_general.py` | `player_general_msg` Python path |
-| `tools/chatter_memory.py` | Persistent memory system: session tracking, background memory generation via `queue_memory()`, flush/activate on farewell, orphan recovery. Key helpers: `_resolve_location()`, `_ensure_cap_and_insert()`, `_count_active_memories()`, `_evict_one_used()`. Memory prompts thread `player_name` so the LLM references the player by name (DB fallback from `player_guid` when caller doesn't supply it) |
+| `tools/chatter_memory.py` | Persistent memory system: session tracking, background memory generation via `queue_memory()`/`queue_shared_event_memory()`, flush/activate on farewell, orphan recovery plus the startup cap trim (`activate_orphaned_memories()`, guarded against `MaxPerBotPlayer <= 0`), per-bot-per-player cap/eviction and importance scoring (`_ensure_cap_and_insert()`, `_count_active_memories()`, `_evict_one_used()`), decay-aware recall scoring (`_effective_score_sql()`) and the shared top-row protection (`_top_row_exclusion_sql()`) that eviction, condensation and the startup trim all reuse. Owns three independent single-purpose executors and their subsystems: **relationship summaries** (`relationship_executor`, `_maybe_queue_relationship_update()`, `_maybe_update_relationship()`, `_sanitized_relationship_watermark()`, `get_relationship_summary()`) keyed by the `updated_through_created_at` timestamp watermark and written under optimistic concurrency; **low-value-memory condensation** (`condensation_executor`, `_maybe_trigger_condensation()`, `_condense_low_value_memories()`, `_get_condensation_candidates()`, `_rewind_relationship_watermark()`) that gradually folds a bounded, least-valuable-first batch of a pair's below-`ProtectFloor` memories into digest rows (`memory_type='condensed'`, inheriting the oldest source's `created_at`, bounded by `condensation_generation`) instead of either evicting them outright or condensing an entire backlog away in one pass; and **session vibe** (`get_session_vibe_details()`/`get_session_vibe()`, lazy expiry, negative-result cache) that biases idle-chatter tone and the per-message conversation mood sequence off a recent high-importance memory. Key helper: `_resolve_location()`. Memory prompts thread `player_name` so the LLM references the player by name (DB fallback from `player_guid` when caller doesn't supply it) |
 | `tools/chatter_cache.py` | Pre-cache refill |
 | `tools/chatter_events.py` | Event context building and cleanup |
-| `tools/chatter_constants.py` | Static constants and lore data: zone names/levels/flavor, race/class speech profiles, personality traits (16 categories, 264 traits), BG lore, item/weapon/armor classification maps, item quality names/colors, raid map IDs, dungeon flavor, emote keywords |
+| `tools/chatter_constants.py` | Static constants and lore data: zone names/levels/flavor, race/class speech profiles, personality traits (16 categories, 264 traits), BG lore, item/weapon/armor classification maps, item quality names/colors, raid map IDs, dungeon flavor, emote keywords, session vibe -> conversation mood mapping (`VIBE_MOOD_FAMILIES`, `VIBE_FAMILY_MOODS`) |
 | `tools/talent_catalog.py` | Talent description catalog used by prompt-side talent injection |
 | `tools/spell_names.py` | Spell name/description loader used by DB and link helpers |
 
@@ -903,6 +903,15 @@ source:
 | General-channel Python behavior | `tools/chatter_general.py` |
 | General-to-party relay behavior | `tools/chatter_group_general_reaction.py` |
 | DB inserts, history tables, zone/query cache behavior | `tools/chatter_db.py` |
+| Memory generation, eviction, importance/decay scoring | `tools/chatter_memory.py` |
+| Memory condensation (candidate selection, digest prompt, generation cap) | `tools/chatter_memory.py` |
+| Bot-player relationship summaries and the watermark | `tools/chatter_memory.py` |
+| Session vibe set/expiry/caching logic | `tools/chatter_memory.py` |
+| Session vibe persistence SQL (`llm_group_vibe`) | `tools/chatter_db.py` |
+| Session vibe prompt wording / localization | `tools/chatter_prompts.py` |
+| Vibe -> conversation-mood family mapping | `tools/chatter_constants.py` |
+| `.llmc memory` / `.llmc memoryclean` command behavior | `src/LLMChatterCommand.cpp` |
+| Memory/relationship/vibe schema changes | `data/sql/characters/updates/` (new dated file) **and** `data/sql/characters/base/00000000_llm_chatter_tables.sql` (mirror) |
 | Shared parsing/sanitization | `tools/chatter_text.py` |
 | Provider/model calls | `tools/chatter_llm.py` |
 | Shared compatibility helpers | `tools/chatter_shared.py` |
@@ -980,6 +989,63 @@ Any new C++ hook override must add the correct enum to its constructor's
 
 Do not edit `LLMChatterScript.cpp` for new features.
 
+### Memory background work: split the connection, respect the watermark
+
+`chatter_memory.py`'s two background passes — `_condense_low_value_memories()`
+and `_maybe_update_relationship()` — both make an LLM call in the middle of a
+read/modify/write cycle. Two rules apply to anything added there, and both
+have already caused real bugs:
+
+**1. Never hold one connection across the LLM call.** Each pass uses *two*
+short-lived connections: a read connection that selects candidates and
+resolves identities and is **closed before** `call_llm()`, and a fresh write
+connection opened only once a usable response is in hand. mysql-connector runs
+with autocommit off, so a connection left open across a multi-second round-trip
+pins that SELECT's transaction and read view and blocks InnoDB purge for the
+whole call. Anything the write phase needs from the read phase must be captured
+as a **plain Python value** before the read connection closes — never as
+cursor/connection state. Atomicity is only ever needed across the write phase's
+own statements, which share one `commit()`.
+
+**2. The relationship watermark can legitimately move backward, and the two
+passes race.** `llm_bot_relationships.updated_through_created_at` marks the
+newest memory already folded into the summary. A condensation digest inherits
+its **oldest** source's `created_at` (so its decay clock isn't reset), which
+means a digest can land *behind* a watermark that had already passed some of
+the sources it absorbed — and those sources are then deleted, so that content
+would be unreachable forever. Condensation therefore rewinds the watermark in
+the same transaction (`_rewind_relationship_watermark()`, `UPDATE`-only,
+guarded to move it strictly backward and never create a row).
+
+The two passes run on **independent executors** (`condensation_executor` and
+`relationship_executor`) and `_condensing_pairs` only excludes a second
+*condensation* pass, so a rewind can commit for a pair while a relationship
+pass's LLM call is in flight. That is why the relationship write is optimistic
+(`UPDATE ... AND updated_through_created_at <=> watermark_at_read`) and keeps
+the summary but leaves the watermark alone when it loses the race. A blind
+upsert, or a `GREATEST()` guard, would silently undo the rewind and strand the
+digest permanently — `GREATEST()` fails for exactly the same reason as the
+blind write: it also refuses to go backward.
+
+If you add another writer of that column, it must obey both rules. Full
+walkthrough: `docs/mod-llm-chatter-documentation.md` §13n, "Relationship
+tracking" step 3 and "Memory condensation" step 6.
+
+### Deletion rules must match across every eviction path
+
+`_evict_one_used()`, `_get_condensation_candidates()` and the startup cap trim
+in `activate_orphaned_memories()` all delete or retire `llm_bot_memories`
+rows. All three must order by the decay-aware `_effective_score_sql()` (not raw
+`importance_score`) and protect the pair's top row via
+`_top_row_exclusion_sql()`. Deleting by a different rule in one path is how a
+row the other paths would have protected gets dropped anyway. Likewise, any
+path that consumes `LLMChatter.Memory.MaxPerBotPlayer` must bail on a
+non-positive value rather than treating it as "delete everything": an
+unguarded `ids[:len(ids)]` slice would wipe every active memory a pair has.
+
+Note that none of these three paths exempt `memory_type = 'first_meeting'`.
+See the Known Gaps below.
+
 ### Battleground routing
 
 BG-wide only:
@@ -1003,9 +1069,23 @@ This reduces duplicate near-identical lines across party and raid.
 | `llm_group_bot_traits` | Python + C++ travel refresh | Python | Group traits/state, location, and live travel context |
 | `llm_group_chat_history` | Python | Python | Group anti-repetition history |
 | `llm_general_chat_history` | C++/Python read path | Python/C++ | General-channel history |
+| `llm_bot_memories` | Python | Python + C++ read | Per-bot-per-player memory journal; `importance_score` + `created_at` drive decay-aware ranking, `condensation_generation` caps digests-of-digests. Read directly by `.llmc memory` |
+| `llm_bot_identities` | Python | Python | Persistent bot personality traits and backstory |
+| `llm_bot_relationships` | Python | Python + C++ read | One running LLM-maintained relationship summary per bot-player pair, plus the `updated_through_created_at` timestamp watermark. Written under optimistic concurrency, rewound by condensation — see Common Pitfalls |
+| `llm_group_vibe` | Python | Python | Per-group ambient mood (`vibe`, `source_type`, `set_at`), persisted so it survives bridge restarts and the session CLEANUP wipe. Lazily expired on read; deleted on group teardown because group ids are reissued after a worldserver restart |
 
 ## Known Gaps
 
+- `memory_type = 'first_meeting'` rows are not exempt from `_evict_one_used()`,
+  condensation candidate selection, or the orphan-recovery cap trim. They are
+  only immune to the short-session discard (they are inserted `active=1`) and
+  otherwise rely on the generic top-row protection. Pre-existing, surfaced by
+  an upstream PR discussion; planned as a separate follow-up
+- `.llmc memoryclean` is in-game only — the `.llmc` root is registered
+  `Console::No`, so it cannot be run from the server console or over SOAP.
+  The same cleanup runs unattended every 24 hours via
+  `purge_orphaned_memories()`, so this is a convenience limitation, not a
+  functional one
 - exhaustive in-game validation of every event path and tuning edge case
 - hostile multi-target spell-attribution edge case not yet fully covered
 - boss pull/kill/wipe events need live in-game testing via actual boss

@@ -65,6 +65,42 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 * **Regression coverage**: Focused tests protect both Anthropic request
   paths from future SDK argument regressions.
 
+### 2026-08-22 - Bots Remember You Now
+
+Your bot companions have real memories. They notice the moments you share —
+boss kills, level-ups, a big quest finished as a group, a wipe that went
+badly, a new mount, a new title — and bring them up later the way a friend
+would.
+
+* **They compare notes on you**: group with more than one of your own bots and
+  they'll sometimes talk about you to each other.
+* **Some moments matter more than others**, and the small ones fade first —
+  routine banter thins out over the following weeks, while the genuinely big
+  things stay put indefinitely.
+* **Memories get tidied, not thrown away**: rather than deleting the oldest
+  entry whenever a bot runs out of room — which would leave you with nothing
+  but last week — a bot folds a handful of its *least* memorable entries into
+  one short note that keeps the gist, quietly and a few at a time. Important
+  memories are never eligible, the single most meaningful memory a bot has of
+  you is protected outright, and a note can only be folded down so many times,
+  so it can't drift away from what actually happened.
+* **Bots build up a feeling about you**: alongside the specific memories, each
+  bot keeps one short, evolving sense of how it *feels* about you — warmth,
+  wariness, running jokes, whatever your history together has actually earned.
+  It colours how a bot talks to you rather than being something it recites.
+* **A group's mood lingers**: after something significant the party stays in
+  that mood instead of snapping back to neutral the moment the fight ends —
+  still buzzing after a great kill, a bit rattled after a rough wipe. A bot
+  won't just sound rattled, it'll say what rattled it. The mood survives a
+  server restart and fades on its own after about ten minutes.
+* **Curious what a bot remembers?** `.llmc memory <botname>` tells you, with
+  that bot's feeling about you at the top.
+* **Optional: run it on a cheap model.** None of this text is ever shown to you
+  word-for-word — it's stored and reworded by your main model before it reaches
+  chat. So if you point `LLMChatter.QuickAnalyze.Model` at the cheapest model
+  your provider offers, all the memory bookkeeping moves there and costs you
+  almost nothing. Off by default; see [Tuning Bot Memory](#tuning-bot-memory).
+
 ### 2026-08-22 - Localization, Battleground, and Prompt Fixes
 
 * **Female characters are addressed as female**: in languages that inflect
@@ -79,6 +115,13 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
 * **Localized world flavor**: zone, dungeon and battleground flavor text is now
   written in Russian, French, German and Spanish instead of being fed to the
   model in English.
+* **Flag carriers speak up again**: a bot that picked up or dropped the flag in
+  a battleground was meant to call it out, and had been silently failing to.
+  It does now.
+* **Creative twists are suggestions again**: the random "creative twist" line
+  was handed to the model as an instruction rather than an option, which forced
+  unrelated imagery into lines that didn't want it and produced some strained
+  similes. It's now offered as optional flavor, to use only where it fits.
 * **The startup health check probes more reliably**: its provider test call
   capped the reply at five tokens, tight enough that a model opening with any
   preamble could come back empty and get the working endpoint marked down. It
@@ -429,6 +472,95 @@ All values are percentages (0-100) unless noted. Setting any
 chance to `0` disables that trigger entirely. See the config
 file comments for the full list of tunable keys.
 
+### Tuning Bot Memory
+
+Memory works out of the box and needs no tuning. These keys are here for
+admins who want bots to remember more (or less), or who care about what the
+memory system costs in LLM calls.
+
+**How much a bot remembers about one player:**
+
+```ini
+# Active memories kept per bot-player pair. Higher = longer history,
+# slightly bigger prompts and a bit more background tidying work.
+LLMChatter.Memory.MaxPerBotPlayer = 30
+
+# Minutes a group has to last before that session's memories are kept
+# at all. Raise it if you don't want brief invites leaving traces.
+LLMChatter.Memory.SessionMinutes = 3
+
+# Memories at or below this score fade with age; anything higher never
+# fades. DecayDays is how long one point of fading takes.
+LLMChatter.Memory.DecayMaxImportance = 3
+LLMChatter.Memory.DecayDays = 30
+```
+
+**Keeping the cost modest.** Memories, condensed notes and relationship
+summaries are never shown to a player word-for-word — they're stored, fed back
+in as context, and reworded by the main model before anything reaches chat. So
+all of that work can be routed to a cheaper "quick" model instead of your
+main one — it's opt-in, not automatic:
+
+```ini
+# Requires LLMChatter.QuickAnalyze.Provider and .Model to be set below;
+# does nothing (falls back to the main model) if either is left empty.
+LLMChatter.Memory.UseQuickModel = 1
+```
+
+**How tidying (condensation) works.** Rather than deleting the oldest memory
+whenever the cap is hit, a bot folds a few of its least meaningful memories of
+you into one short note. It starts doing this *before* the cap is reached, so
+nothing has to be thrown away:
+
+```ini
+LLMChatter.Memory.Condensation.Enable = 1
+
+# Start tidying once a pair is this % full (80% of MaxPerBotPlayer).
+LLMChatter.Memory.Condensation.TriggerPercent = 80
+
+# Memories at or above this importance are never tidied. Lower it and
+# more gets summarized away; raise it and bots keep more verbatim detail.
+LLMChatter.Memory.Condensation.ProtectFloor = 7
+```
+
+Four further keys (`Condensation.MinCandidates`, `.MaxCandidates`,
+`.MaxDigests` and `.MaxGenerations`) control how gradual the tidying is. The
+defaults are deliberately conservative — see the config file comments if you
+want to change them.
+
+Set `Condensation.Enable = 0` to turn tidying off entirely — memories are then
+simply evicted at the cap instead, oldest and least meaningful first.
+
+**Relationship summaries** (the "how this bot feels about you" line):
+
+```ini
+LLMChatter.Memory.Relationship.Enable = 1
+
+# New memories needed before the summary is rewritten. Raise it for
+# fewer LLM calls, lower it for a faster-evolving relationship.
+LLMChatter.Memory.Relationship.UpdateThreshold = 5
+
+LLMChatter.Memory.Relationship.MaxChars = 400
+```
+
+**Group mood (the "vibe")** — how long a party stays in the mood of something
+that just happened, and how big a moment has to be to set it:
+
+```ini
+# Seconds a mood lingers. Raise it for moods that carry across a whole
+# dungeon; lower it for a party that resets quickly.
+LLMChatter.GroupChatter.VibeDurationSeconds = 600
+
+# Importance a memory must reach to set the mood (1-10). Raise it so
+# only genuinely big moments change the party's tone.
+LLMChatter.GroupChatter.VibeImportanceThreshold = 5
+```
+
+**Maintenance.** Memories and relationship summaries belonging to deleted
+characters are cleaned up automatically every 24 hours. A GM can also run it on
+demand in-game with `.llmc memoryclean` (in-game only — it is not available
+from the server console).
+
 ### Known Limitations
 - **Ollama / open-source models**: Local inference requires fast hardware (sub-5s responses). Models below 8B frequently produce malformed JSON, ignore length constraints, or echo prompt instructions. Cloud-hosted Ollama models vary in quality — reasoning models (deepseek, qwen3.5, glm) are incompatible. For reliable results, use Claude Haiku or GPT-4o-mini
 - Ollama cloud models add routing overhead compared to direct Anthropic/OpenAI APIs
@@ -726,6 +858,21 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260725_guild_login_greeting.sql
 
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_gear_mount_change_event_types.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_llm_bot_relationships.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_llm_group_vibe.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_memory_importance_zone_and_altbot.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260828_memory_type_additions.sql
+
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260320_bot_memory_system.sql
@@ -771,6 +918,21 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260725_guild_login_greeting.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_gear_mount_change_event_types.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_llm_bot_relationships.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_llm_group_vibe.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_memory_importance_zone_and_altbot.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260828_memory_type_additions.sql
 ```
 
 Migrations are idempotent — safe to run on an already

@@ -280,6 +280,28 @@ LLMChatter.Provider = anthropic
 #
 LLMChatter.Model = claude-haiku-4-5-20251001
 
+#
+#   LLMChatter.QuickAnalyze.Provider
+#       Optional separate provider for cheap "internal" LLM
+#       work that no player ever reads verbatim: addressee
+#       detection, stored memories, memory digests and
+#       relationship summaries. Leave empty to reuse
+#       LLMChatter.Provider.
+#       Default: (empty)
+#
+LLMChatter.QuickAnalyze.Provider =
+
+#
+#   LLMChatter.QuickAnalyze.Model
+#       Model used for that internal work. Point this at the
+#       cheapest model your provider offers -- it typically
+#       carries the memory/relationship traffic. Leave empty
+#       to fall back to LLMChatter.Model (i.e. no change in
+#       behaviour or cost).
+#       Default: (empty)
+#
+LLMChatter.QuickAnalyze.Model =
+
 ###############################################################################
 # ANTHROPIC SETTINGS [BRIDGE] (only needed if Provider = anthropic)
 ###############################################################################
@@ -936,6 +958,28 @@ LLMChatter.GroupChatter.IdleChance = 15
 LLMChatter.GroupChatter.ConversationBias = 50
 
 #
+#   LLMChatter.GroupChatter.VibeImportanceThreshold
+#       A newly-generated bot memory whose LLM-assigned
+#       importance_score is >= this value sets the group's
+#       ambient "session vibe" (see VibeDurationSeconds).
+#       Idle chatter tone selection is then biased toward
+#       that vibe instead of a fully random roll. Range 1-10
+#       (matches importance_score).
+#       Default: 5
+#
+LLMChatter.GroupChatter.VibeImportanceThreshold = 5
+
+#
+#   LLMChatter.GroupChatter.VibeDurationSeconds
+#       How long (in seconds) a session vibe set via
+#       VibeImportanceThreshold stays active before idle
+#       chatter tone selection reverts to a fully random
+#       roll. Lazily checked on read, not a timer.
+#       Default: 600
+#
+LLMChatter.GroupChatter.VibeDurationSeconds = 600
+
+#
 #   LLMChatter.GroupChatter.IdleCooldown
 #       Minimum seconds between idle chatter triggers
 #       for the same group.
@@ -992,6 +1036,42 @@ LLMChatter.GroupChatter.CorpseRunChance = 80
 #       Default: 120
 #
 LLMChatter.GroupChatter.CorpseRunCooldown = 120
+
+#
+#   LLMChatter.GroupChatter.GearChangeGenerationChance
+#       Percent chance (0-100) that a bot notices and
+#       comments on the real player equipping a new
+#       (uncommon+) item. First equip observed per player
+#       per bridge process lifetime never reacts -- it is
+#       treated as the login re-equip-from-DB baseline,
+#       not a real change.
+#       Default: 25
+#
+LLMChatter.GroupChatter.GearChangeGenerationChance = 25
+
+#
+#   LLMChatter.GroupChatter.GearChangeCooldown
+#       Minimum seconds between gear-change comments for
+#       the same group.
+#       Default: 180
+#
+LLMChatter.GroupChatter.GearChangeCooldown = 180
+
+#
+#   LLMChatter.GroupChatter.MountChangeGenerationChance
+#       Percent chance (0-100) that a bot notices and
+#       comments on the real player summoning a mount.
+#       Default: 30
+#
+LLMChatter.GroupChatter.MountChangeGenerationChance = 30
+
+#
+#   LLMChatter.GroupChatter.MountChangeCooldown
+#       Minimum seconds between mount-change comments for
+#       the same group.
+#       Default: 180
+#
+LLMChatter.GroupChatter.MountChangeCooldown = 180
 
 #
 #   LLMChatter.GroupChatter.LootChanceGreen
@@ -2323,6 +2403,21 @@ LLMChatter.Memory.SessionMinutes = 3
 LLMChatter.Memory.MaxPerBotPlayer = 30
 
 #
+#   LLMChatter.Memory.UseQuickModel
+#       Route memory generation, shared-event memories,
+#       condensation digests and relationship summaries to
+#       LLMChatter.QuickAnalyze.Model instead of
+#       LLMChatter.Model. That text is stored and re-injected
+#       as context, never spoken to a player verbatim, so the
+#       cheap model is normally the right call. Set to 0 to
+#       force this work back onto the main model if stored
+#       memories read noticeably worse.
+#       No effect when LLMChatter.QuickAnalyze.Model is empty.
+#       Default: 1
+#
+LLMChatter.Memory.UseQuickModel = 1
+
+#
 #   LLMChatter.Memory.IdentityVersion
 #       Bump this to force all bots to regenerate their
 #       persistent personality (traits + farewell). Useful
@@ -2373,20 +2468,28 @@ LLMChatter.Memory.AchievementGenerationChance = 60
 LLMChatter.Memory.LevelUpGenerationChance = 60
 
 #
+#   LLMChatter.Memory.GearChangeGenerationChance
+#       Percent chance (0-100) that a gear-change
+#       reaction generates a persistent memory.
+#       Default: 50
+#
+LLMChatter.Memory.GearChangeGenerationChance = 50
+
+#
+#   LLMChatter.Memory.MountChangeGenerationChance
+#       Percent chance (0-100) that a mount-change
+#       reaction generates a persistent memory.
+#       Default: 50
+#
+LLMChatter.Memory.MountChangeGenerationChance = 50
+
+#
 #   LLMChatter.Memory.BGMatchGenerationChance
 #       Percent chance (0-100) that a BG match result
 #       generates a persistent memory.
 #       Default: 45
 #
 LLMChatter.Memory.BGMatchGenerationChance = 45
-
-#
-#   LLMChatter.Memory.DiscoveryGenerationChance
-#       Percent chance (0-100) that discovering a new
-#       area generates a persistent memory.
-#       Default: 30
-#
-LLMChatter.Memory.DiscoveryGenerationChance = 30
 
 #
 #   LLMChatter.Memory.PvPKillGenerationChance
@@ -2436,6 +2539,154 @@ LLMChatter.Memory.PartyMemberGenerationChance = 50
 #       Default: 20
 #
 LLMChatter.Memory.IdleRecallChance = 20
+
+#
+#   LLMChatter.Memory.MaxInjectTokens
+#       Maximum approximate token budget for memories
+#       injected into a prompt.
+#       Default: 400
+#
+LLMChatter.Memory.MaxInjectTokens = 400
+
+#
+#   LLMChatter.Memory.DecayMaxImportance
+#       Highest importance score (1-10) still subject
+#       to decay. Memories at or below this score fade
+#       out of retrieval as they age; anything above it
+#       keeps its score forever.
+#       Default: 3
+#
+LLMChatter.Memory.DecayMaxImportance = 3
+
+#
+#   LLMChatter.Memory.DecayDays
+#       Days a decaying memory takes to lose one point
+#       of importance, floored at 1.
+#       Default: 30
+#
+LLMChatter.Memory.DecayDays = 30
+
+#
+#   LLMChatter.Memory.Relationship.Enable
+#       Master toggle for background relationship-summary
+#       condensation. When disabled, no llm_bot_relationships
+#       rows are created or updated (existing rows are left
+#       alone and still surfaced by .llmc memory / prompts).
+#       Default: 1
+#
+LLMChatter.Memory.Relationship.Enable = 1
+
+#
+#   LLMChatter.Memory.Relationship.UpdateThreshold
+#       New active memories needed for a bot-player pair,
+#       since the last relationship update, before a
+#       background re-summarization is triggered at farewell.
+#       Default: 5
+#
+LLMChatter.Memory.Relationship.UpdateThreshold = 5
+
+#
+#   LLMChatter.Memory.Relationship.MaxChars
+#       Maximum stored relationship-summary length.
+#       Default: 400
+#
+LLMChatter.Memory.Relationship.MaxChars = 400
+
+#
+#   LLMChatter.Memory.Relationship.MaxTokens
+#       Output budget for the relationship-condensation
+#       LLM call. The configured chatter provider and model
+#       are reused.
+#       Default: 300
+#
+LLMChatter.Memory.Relationship.MaxTokens = 300
+
+#
+#   LLMChatter.Memory.Condensation.Enable
+#       Master toggle for background low-value-memory
+#       condensation. When disabled, no digest memories are
+#       ever created (existing ones, if any, are left alone).
+#       Default: 1
+#
+LLMChatter.Memory.Condensation.Enable = 1
+
+#
+#   LLMChatter.Memory.Condensation.TriggerPercent
+#       Percent of LLMChatter.Memory.MaxPerBotPlayer a
+#       bot-player pair's active memory count must reach
+#       before a background condensation pass is submitted.
+#       Fires proactively, before the hard row cap, so it
+#       never races against the cap's synchronous eviction.
+#       Default: 80
+#
+LLMChatter.Memory.Condensation.TriggerPercent = 80
+
+#
+#   LLMChatter.Memory.Condensation.ProtectFloor
+#       Memories at or above this importance score are never
+#       condensed (only rows scoring below it are eligible
+#       candidates). Matches the importance rubric's
+#       Milestones tier (see _IMPORTANCE_RUBRIC in
+#       chatter_memory.py).
+#       Default: 7
+#
+LLMChatter.Memory.Condensation.ProtectFloor = 7
+
+#
+#   LLMChatter.Memory.Condensation.MinCandidates
+#       Minimum eligible candidate memories a bot-player pair
+#       must have before a condensation LLM call is worth
+#       making. Below this, condensation is skipped silently
+#       until more low-value memories accumulate.
+#       Default: 4
+#
+LLMChatter.Memory.Condensation.MinCandidates = 4
+
+#
+#   LLMChatter.Memory.Condensation.MaxCandidates
+#       Maximum eligible candidate memories (least-valuable
+#       first, by decay-aware effective_score) pulled into a
+#       single condensation pass. Keeps condensation gradual
+#       and incremental -- a bot-player pair with many more
+#       eligible rows than this is tidied a bounded handful at
+#       a time across several triggers, instead of every
+#       eligible row being folded into MaxDigests digests in
+#       one shot.
+#       Default: 8
+#
+LLMChatter.Memory.Condensation.MaxCandidates = 8
+
+#
+#   LLMChatter.Memory.Condensation.MaxDigests
+#       Maximum digest memories one condensation pass may
+#       produce from a single candidate batch.
+#       Default: 2
+#
+LLMChatter.Memory.Condensation.MaxDigests = 2
+
+#
+#   LLMChatter.Memory.Condensation.MaxTokens
+#       Output budget for the condensation LLM call. The
+#       configured chatter provider and model are reused.
+#       Sized for up to MaxDigests (default 2) digests plus
+#       JSON scaffolding -- 300 risked truncation/parse
+#       failures on a full 2-digest response.
+#       Default: 500
+#
+LLMChatter.Memory.Condensation.MaxTokens = 500
+
+#
+#   LLMChatter.Memory.Condensation.MaxGenerations
+#       How many rounds of condensation a memory may pass
+#       through. A digest carries max(source generations) + 1,
+#       and rows that already reached this number are never
+#       condensed again. Digests always land below ProtectFloor
+#       by construction, so without this cap they would be
+#       folded into digests of digests indefinitely, drifting
+#       further from the source facts each round.
+#       Default: 2
+#
+LLMChatter.Memory.Condensation.MaxGenerations = 2
 
 ###############################################################################
 # BACKSTORY

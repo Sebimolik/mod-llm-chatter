@@ -1721,28 +1721,77 @@ Bots accumulate a bounded journal of shared moments with real players.
 On re-invite, the bot delivers a reunion greeting that references past
 experiences rather than treating the player as a stranger.
 
+Memories are only generated for player-owned ("alt") bots — never for
+random/ownerless bots — and every memory carries a 1-10 importance score.
+Low-importance memories decay and are the first to be evicted as a
+bot–player pair's memory pool grows, while high-importance memories (raid
+boss kills, core narrative moments) persist indefinitely. The single
+highest-value memory for each bot–player pair is always protected from
+eviction (see "Eviction guard" below), and party-wide events (boss/rare
+kills, wipes) generate one shared memory per event instead of one per
+bot.
+
+Three subsystems sit on top of that journal, each documented in its own
+subsection below:
+
+- **Condensation** — before the hard cap is reached, a pair's least valuable
+  memories are folded into short digests instead of simply being deleted, so
+  the pool stays meaningful rather than either growing forever or being
+  trimmed to bare deletions.
+- **Relationship tracking** — a single running summary per pair of how the
+  bot generally *feels* about that player, kept current by a timestamp
+  watermark over the journal.
+- **Session vibe** — a short-lived group-wide mood cue set by a
+  sufficiently important memory, so a party's tone lingers after something
+  significant instead of resetting instantly.
+
+Condensation and relationship tracking interact in a non-obvious way (a
+digest can land *behind* the relationship watermark, and the two run on
+independent executors); that interaction is spelled out in
+"Relationship tracking" step 3 and "Memory condensation" step 6.
+
 ### Memory lifecycle
 
 1. **Group join** (`process_group_join_event` / `process_group_join_batch_event`)
    - `start_session()` registers the bot in the in-memory session tracker
-   - `get_bot_memories()` fetches up to 3 random `active=1` memories for this
-     bot–player pair
+   - `get_bot_memories()` fetches up to 3 active memories for this
+     bot–player pair, ranked by decay-aware `effective_score` (see
+     "Importance scoring and decay" below) and trimmed to
+     `LLMChatter.Memory.MaxInjectTokens`
    - If memories exist: `player_name_known=True` → reunion greeting mode
    - If no memories (first meeting): a `first_meeting` memory is inserted
      directly with `active=1` and `memory_type='first_meeting'`, guarded by
      `INSERT...SELECT...WHERE NOT EXISTS` to prevent duplicates on re-join.
-     This memory is immune to both short-session discard and cap pruning.
+     This memory is immune to short-session discard, because it is inserted
+     `active=1` and that discard only targets `active=0` rows. It is not
+     otherwise privileged: see "Known gap: `first_meeting` rows are not
+     protected from deletion" below.
+   - C++ resolves `is_altbot` (`PlayerbotAI::IsAltBot()`) at join time and
+     puts it in the join event payload; `assign_bot_traits()` in Python
+     writes it into `llm_group_bot_traits.is_altbot`. Only altbots ever get
+     memories generated for them (see "Altbot-only generation" below).
 
 2. **During the session** — event handlers may call `_generate_and_store_memory()`
-   to produce LLM-generated memories (boss kills, notable events). These are
-   inserted with `active=0` until flush.
+   (via `queue_memory()`) to produce LLM-generated memories (boss kills, notable
+   events) for a single bot, or `queue_shared_event_memory()` for party-wide
+   kill/wipe events (see "Shared event memories" below). These are
+   inserted with `active=0` until flush, and each carries an
+   LLM-assigned `importance_score` (1-10; defaults to 5 if the LLM
+   response is missing or unparseable).
 
 3. **Group farewell** (`process_group_farewell_event` → `flush_session_memories()`)
-   - If session was long enough (`SessionMinutes` threshold): activates `active=0`
-     rows and prunes oldest memories to the `MaxPerBotPlayer` cap.
-     `first_meeting` rows are excluded from the prune DELETE.
+   - If session was long enough (`SessionMinutes` threshold): activates this
+     bot's `active=0` session rows, then calls
+     `_maybe_queue_relationship_update()` on the same open cursor (see
+     "Relationship tracking" below), then prunes down to the
+     `MaxPerBotPlayer` cap by calling `_evict_one_used()` in a loop until the
+     pair is back under the cap or nothing is left to evict. The prune carries
+     no `memory_type` exemption — the only row it protects is the pair's single
+     highest-`effective_score` row (see "Eviction guard"). `first_meeting` rows
+     are eligible like any other; see "Known gap" below.
    - If session was too short: deletes all `active=0` rows for this session.
-     `first_meeting` rows are `active=1` and unaffected.
+     `first_meeting` rows are inserted `active=1`, so this path never touches
+     them.
 
 4. **Reunion greeting** — when `get_bot_memories()` returns a non-empty list,
    the greeting prompt enters reunion mode: injects `<past_memories>` block,
@@ -1751,30 +1800,649 @@ experiences rather than treating the player as a stranger.
    meeting (where `memories=[]`) always produces a fresh greeting even though
    `player_name_known` is set to `True` for internal tracking.
 
+5. **Cap enforcement** — when a bot–player pair's active memory count
+   hits `MaxPerBotPlayer`, `_ensure_cap_and_insert()` calls
+   `_evict_one_used()` synchronously before inserting the new memory (see
+   "Eviction guard" below for the rule protecting the single most
+   valuable memory from ever being evicted).
+
+### Importance scoring and decay
+
+Every memory the LLM generates is asked to also rate the moment on a
+1-10 importance scale, using the same rubric text
+(`_IMPORTANCE_RUBRIC` in `chatter_memory.py`) across single-bot memory
+generation and shared event memories:
+
+- **1-3 (Ambient)** — casual chat, minor zone banter
+- **4-6 (Narrative)** — personal preferences stated by the player, minor
+  achievements
+- **7-8 (Milestones)** — leveling milestones, acquiring rare gear, wipe
+  encounters
+- **9-10 (Core Bonds)** — defeating raid bosses together, major
+  narrative turning points
+
+Retrieval (`get_bot_memories()`) and eviction (`_evict_one_used()`) both
+rank memories by a decay-aware `effective_score` rather than the raw
+`importance_score`:
+
+- Memories with `importance_score <= LLMChatter.Memory.DecayMaxImportance`
+  (default `3`, ambient) decay by roughly one point per
+  `LLMChatter.Memory.DecayDays` days (default `30`), floored at 1:
+  `GREATEST(1, importance_score - TIMESTAMPDIFF(DAY, created_at, NOW())
+  / 30)`. The expression is built by `_effective_score_sql()`.
+- Memories above that threshold (narrative and up) never decay — they
+  keep their raw score indefinitely.
+
+This means ambient chatter fades out of relevance over time while
+milestone and core-bond memories keep surfacing in reunion greetings and
+recall no matter how old they are.
+
+`get_bot_memories()` uses `effective_score` for both the row-count cap
+(`count`, default 3) and a token budget
+(`LLMChatter.Memory.MaxInjectTokens`, default 400): it over-fetches a
+larger candidate pool, then accumulates candidates in `effective_score`
+order until either the row count or token budget would be exceeded. The
+first candidate is always kept even if it alone exceeds the budget, so a
+single oversized memory can never starve the result to empty. Only the
+memories actually selected are marked `used = 1`.
+
+### Altbot-only generation
+
+Memory generation is restricted to player-owned bots — bots the player
+actually controls as an alt via mod-playerbots — and skipped for random/
+ownerless bots that happen to be in the party. The flag flows from C++
+through to the Python generation gate:
+
+1. `PlayerbotAI::IsAltBot()` is evaluated when a bot joins a group, in
+   `LLMChatterGroupJoin.cpp` (`QueueBotGreetingEvent()` and
+   `EnsureGroupJoinQueued()`/`FlushGroupJoinBatches()`).
+2. The result is written both into the `bot_group_join`/
+   `bot_group_join_batch` event payload as `is_altbot` and persisted to
+   `llm_group_bot_traits.is_altbot` (default `1`, so pre-existing rows and
+   any lookup failure fail open as altbot).
+3. `queue_memory()` (single-bot memory generation) calls `_is_altbot()`
+   to look up `llm_group_bot_traits.is_altbot` for the bot before
+   submitting any generation job; non-altbots return early and never
+   reach the LLM.
+4. `queue_shared_event_memory()` (party-wide kill/wipe memories) does not
+   re-check `is_altbot` itself — its callers (`_kill_post_success()`,
+   `_wipe_post_success()` in `chatter_group_handlers.py`) already filter
+   the candidate bot list with `... AND t.is_altbot = 1` before calling
+   it.
+
+### Eviction guard
+
+`_evict_one_used()` never evicts the single highest-`effective_score`
+memory for a given `(bot_guid, player_guid)` pair. Both of its DELETE
+queries (the preferred `used=1` pass and the `used=0` fallback pass, see
+"Importance scoring and decay" above) exclude that pair's current top row
+via a subquery:
+
+```sql
+AND id != (SELECT id FROM (
+  SELECT id FROM llm_bot_memories
+  WHERE bot_guid = %s AND player_guid = %s AND active = 1
+  ORDER BY effective_score DESC, created_at DESC LIMIT 1
+) t)
+```
+
+(MySQL requires the extra subquery wrapping since you can't otherwise
+select from the same table you're deleting from.) This guarantees a bot
+never fully forgets the single most meaningful moment it shares with a
+player, without needing a background condensation pass to preserve it —
+if the memory pool ever fills up, only the lowest-value rows get evicted,
+one at a time, and the top row is always the last one left standing. On a
+pool with only one row, that row is by definition the top row, so both
+queries find nothing eligible to evict and `_evict_one_used()` simply
+returns `False` — the same "nothing to evict" outcome
+`_ensure_cap_and_insert()` handles by declining the insert.
+
+### Shared event memories (kill/wipe batching)
+
+Boss/rare kills and wipes are witnessed by the whole party at once, so
+instead of one LLM call per altbot present, `queue_shared_event_memory()`
+makes a single call via `_generate_shared_event_memory()` and inserts the
+resulting memory verbatim into every present altbot's memory pool.
+
+The prompt deliberately asks for a first-person-**plural** memory
+("we"/"our party") rather than a first-person-singular one, and the
+identical text is stored for each bot — there is no per-bot name
+substitution or templating. This was chosen because every bot genuinely
+witnessed the same event together, so a shared "we" memory reads as more
+truthful than several bots independently claiming an identical personal
+"I" story, and it avoids baking any placeholder/substitution syntax into
+stored memory text that would otherwise leak into `get_bot_memories()`
+and other consumers.
+
+### Player memory inspection command
+
+`.llmc memory <botname>` (`SEC_PLAYER`, `src/LLMChatterCommand.cpp`)
+lets a player see what one of their own bots remembers about them. Unlike
+the rest of the `.llmc` surface (which is addon-protocol traffic sent by
+the Chatter Companion addon and replies via `SendAddonLine`/`CHATTER_ADDON`),
+this subcommand is meant to be typed directly in chat and replies with
+plain `SendSysMessage`/`PSendSysMessage` text.
+
+The bot name is resolved to a `bot_guid` the same way `roster`/`forget`
+scope bots to a player: a case-insensitive match against `characters.name`
+restricted to bots that already have at least one `llm_bot_memories` row
+for `player_guid = <invoking player>`. A player can never query another
+player's bot memories this way, since the resolution itself is scoped to
+their own `player_guid`.
+
+It's a synchronous `CharacterDatabase.Query` read — no event is queued
+and the Python bridge is never involved, since this is a read-only lookup
+with no LLM generation needed. Rows are ordered by the same decay-aware
+effective-importance expression as `get_bot_memories()`
+(`_effective_score_sql()` in `chatter_memory.py`), reimplemented inline in
+SQL and driven by the same `LLMChatter.Memory.DecayMaxImportance` /
+`LLMChatter.Memory.DecayDays` config keys, capped at the 10 highest-ranked
+`active = 1` memories.
+
+### Manual and automatic cleanup
+
+`.llmc memoryclean` (GM-only, `src/LLMChatterCommand.cpp`) runs two
+`DELETE`s directly against `CharacterDatabase`, dropping `llm_bot_memories`
+and `llm_bot_relationships` rows whose `bot_guid`/`player_guid` no longer
+resolve to an existing character (e.g. after a character deletion) — the same
+`characters`-orphan `LEFT JOIN` shape in both statements, and the same pattern
+`.llmc forget` already uses.
+
+It is a subcommand of the module's single `.llmc` root (there is no separate
+`.llm` root command — `llm` is a literal prefix of `llmc`, which AzerothCore's
+partial-match command dispatcher resolves ambiguously). Because that root is
+registered `SEC_PLAYER` for the player-facing subcommands, `memoryclean`
+enforces `SEC_GAMEMASTER` itself via `ChatHandler::IsAvailable()` inside
+`HandleRootCommand()` rather than through the command table.
+
+**Known capability gap:** `.llmc memoryclean` is in-game only — the `.llmc`
+root is registered `Console::No`, so it cannot be run from the server console
+or over SOAP. The same cleanup runs unattended every 24 hours via
+`purge_orphaned_memories()`, so this is a convenience limitation, not a
+functional one.
+
+The same cleanup also runs automatically: `llm_chatter_bridge.py`'s main
+loop calls `purge_orphaned_memories()` (which issues the identical pair of
+`DELETE`s) on a fixed 24-hour interval (`memory_gc_interval`), independent
+of whether a GM ever runs the manual command.
+
+### Relationship tracking
+
+Distinct from the `llm_bot_memories` journal, `llm_bot_relationships` holds
+ONE running, LLM-maintained description per `(bot_guid, player_guid)` pair
+of how that bot generally *feels* about that specific player — a standing
+disposition, not a list of specific recollections.
+
+**The watermark is a timestamp, not an id.** `updated_through_created_at`
+(DATETIME, default `1970-01-01 00:00:00` — the "nothing folded in yet"
+sentinel, expressible as DATETIME precisely because it is out of range for
+TIMESTAMP) records the `created_at` of the newest memory already absorbed
+into the summary. It replaced an earlier `updated_through_memory_id` column,
+which condensation broke: condensation deletes its source rows and re-inserts
+their content as digests with fresh, higher auto-increment ids, so an id
+watermark made already-summarized material look brand new. A digest inherits
+its *oldest* source's `created_at`, so a timestamp watermark does not have
+that problem — but it creates a different one, handled in step 3 below.
+
+1. **Trigger** — right after `flush_session_memories()` activates a
+   departing bot's session rows (`rows_activated > 0`),
+   `_maybe_queue_relationship_update()` reuses the same open cursor to
+   compare the count of `active = 1` memories with
+   `created_at > updated_through_created_at` (epoch for a first-time pair
+   with no row yet) against
+   `LLMChatter.Memory.Relationship.UpdateThreshold`. Meeting the threshold
+   submits `_maybe_update_relationship()` to `relationship_executor` — a
+   dedicated, single-worker `ThreadPoolExecutor` kept separate from both
+   `memory_executor` and `condensation_executor` so this lower-frequency
+   background work never competes with latency-sensitive memory generation.
+   Everything here is wrapped in try/except: it can never block or fail the
+   farewell flow it is piggybacking on.
+2. **Summarization** — `_maybe_update_relationship()` runs on **two
+   short-lived connections**, never one held across the LLM call:
+   - *Read connection*: fetches the current summary and watermark, pulls
+     active memories newer than the watermark ordered by
+     `(created_at, id)` and capped at `_RELATIONSHIP_MAX_INPUT_CHARS`
+     (~6000 chars, mirroring the Guild Chat session summarizer's
+     `SummaryMaxInputChars` concept — see 13s below), extends that trim
+     forward to cover every remaining row sharing the last kept row's
+     `created_at` (`_extend_candidates_to_timestamp_boundary()`, so a trim
+     through the middle of a same-second group cannot orphan the leftovers
+     behind a strict `created_at >` comparison), and resolves display
+     names. Then it **closes, before the LLM call**. mysql-connector runs
+     with autocommit off, so holding it open would pin that SELECT's read
+     view — and InnoDB purge — for the entire multi-second round-trip.
+   - The memories are rendered into the prompt with
+     `sanitize_memory_for_prompt(..., max_chars=MEMORY_TEXT_MAX_CHARS)`
+     (500), not the routine 200-char preview default: the watermark
+     advances past every row folded in here, so each one gets exactly this
+     one chance to reach the summary. The prompt goes through the same
+     `append_json_instruction(..., message_only=True)` call the Guild
+     session summarizer uses, so the language rule and lore guardrail are
+     applied identically and must not be injected a second time by hand.
+     Like all memory-side internal work it routes to the cheap model when
+     `LLMChatter.Memory.UseQuickModel` is on.
+   - *Write connection*: opened only once a usable summary is in hand. The
+     response is hard-truncated to
+     `LLMChatter.Memory.Relationship.MaxChars` via `_trim_summary()`
+     (shared through `chatter_text.py`, not a third near-identical copy).
+3. **Optimistic concurrency on the write** — this is the least obvious part
+   of the whole memory system, and the reason the write is not a blind
+   upsert.
+
+   `_condense_low_value_memories()` runs on a *different* executor
+   (`condensation_executor`) and is unaware of this one; the
+   `_condensing_pairs` guard set only prevents a second *condensation* pass
+   for a pair, not a concurrent relationship pass. Condensation can
+   therefore commit `_rewind_relationship_watermark()` for this exact pair
+   while the LLM call in step 2 is still in flight, deliberately moving
+   `updated_through_created_at` **backward** so a freshly written digest
+   gets re-folded here next time (see "Memory condensation" below for why
+   it must).
+
+   If this pass then wrote its own (now stale, higher) watermark
+   unconditionally it would silently undo that rewind and strand the
+   digest's content permanently — the digest's source rows are already
+   deleted, and the digest itself sorts behind the higher watermark, so no
+   later pass could ever reach it. A `GREATEST()` guard fails for exactly
+   the same reason: it also refuses to go backward. So:
+   - If a relationship row existed at read time, the advance is a
+     conditional `UPDATE ... AND updated_through_created_at <=> %s`
+     against `watermark_at_read` — the raw value captured from the read
+     connection *before it closed* (a plain Python value, so the
+     connection swap is irrelevant). `<=>` rather than `=` so a NULL
+     watermark compares correctly.
+   - If that UPDATE matches zero rows, someone moved the watermark
+     underneath us. The pass still writes the **summary** (it is real LLM
+     work, and re-folding already-summarized material is harmless by
+     design — the prompt is "update this summary with these memories") but
+     leaves the watermark exactly where the other writer put it, so the
+     next pass resumes from the real position instead of skipping whatever
+     the rewind was recovering.
+   - If no row existed at read time there is no watermark to race against
+     (the rewind helper never *creates* a row), so a plain
+     `INSERT ... ON DUPLICATE KEY UPDATE` is correct.
+4. **Watermark sanity check** — `_sanitized_relationship_watermark()` runs
+   on every read. A watermark ahead of the database clock can never be
+   passed by `created_at > watermark`, so the pair would stall silently
+   forever; that case is logged loudly and reset to the epoch, re-folding
+   the pair once (cheap and self-correcting). A watermark merely newer than
+   the pair's newest memory is *not* an error — it is the normal state
+   right after condensing already-summarized rows, and the pair's next
+   memory clears it.
+5. **Fail-safe** — on no new memories, an LLM call failure, or an empty/
+   unparseable response, the function returns without writing anything;
+   the watermark is left untouched so the next qualifying farewell
+   retries. Never a partial or corrupt overwrite.
+6. **Read paths** — `get_relationship_summary(db, bot_guid, player_guid)`
+   returns the current summary or `None` (first-time pair / never
+   reached the threshold). `chatter_group.py` fetches it right before
+   the player-scoped prompt builders it feeds
+   (`build_player_response_prompt()`'s two call sites and
+   `build_bot_question_prompt()`'s LEAN MEMORY PATH call site) and passes
+   it as `relationship_summary=`. Both prompt builders inject it as a
+   `<relationship>` block positioned after identity/personality/tone and
+   before `<past_memories>`, explicitly framed as an ongoing disposition
+   ("let this color your tone, not the topic") rather than something to
+   recite — the same distinction already drawn between `<past_memories>`
+   and `<party_memories>`.
+7. **Command surfacing** — `.llmc memory <botname>` prints one extra line,
+   `"<Bot>'s feelings about you: <summary>"`, ahead of the memory list,
+   truncated with the same `TruncateMemoryText(..., 400)` used for
+   individual memory previews. Silently omitted if no row exists yet —
+   no "no relationship yet" noise.
+8. **Cleanup** — both `purge_orphaned_memories()` (24-hour periodic pass)
+   and `.llmc memoryclean` (GM command) now issue a second `DELETE`
+   against `llm_bot_relationships` with the identical
+   `characters`-orphan `LEFT JOIN` shape as `llm_bot_memories`, in the
+   same function/command.
+
+### Memory condensation
+
+Distinct from both eviction (`_evict_one_used()`, hard-cap driven, deletes
+with no replacement) and relationship tracking (a running disposition
+summary), condensation proactively folds a bot-player pair's *low-value*
+memories into a small number of higher-quality digest memories, so a
+pair's memory pool stays meaningful instead of either growing forever or
+being trimmed down to bare deletions once it hits the cap.
+
+1. **Trigger** — `_ensure_cap_and_insert()` calls
+   `_maybe_trigger_condensation()` right after every successful insert,
+   passing the pool's *derived* post-insert size (pre-insert count, plus one
+   if the row landed active, minus one if an eviction made room) rather than
+   re-querying, since this sits on the hot path of every memory write. Once
+   a pair's active memory count crosses
+   `LLMChatter.Memory.Condensation.TriggerPercent` of
+   `LLMChatter.Memory.MaxPerBotPlayer`, a background job is submitted to
+   `condensation_executor` — a dedicated, single-worker `ThreadPoolExecutor`
+   kept separate from both `memory_executor` and `relationship_executor` so
+   a slow condensation LLM call can never compete with either. A
+   `MaxPerBotPlayer <= 0` misconfiguration returns early rather than
+   dividing through it. A `(bot_guid, player_guid)` guard set
+   (`_condensing_pairs`) prevents duplicate concurrent submissions for the
+   same pair; the `submit()` call itself is wrapped in a try/except so an
+   executor-shutdown race can never leave a pair stuck in the guard set (which
+   would block that pair's condensation forever) or propagate past the insert
+   it's piggybacking on.
+
+   Note the trigger is deliberately **proactive**, firing well before the
+   hard cap. A reactive trigger (condensing at the cap) would always lose the
+   race against `_evict_one_used()`, which runs inline while condensation
+   needs an LLM round-trip — by the time the pass finished, eviction would
+   already have deleted the rows it meant to fold.
+2. **Candidate selection (read phase)** — `_get_condensation_candidates()`
+   selects the pair's active rows with `importance_score` **below**
+   `LLMChatter.Memory.Condensation.ProtectFloor`, excludes rows whose
+   `condensation_generation` has already reached
+   `LLMChatter.Memory.Condensation.MaxGenerations`, excludes the pair's
+   single highest-`effective_score` row (the same guard `_evict_one_used()`
+   uses, via `_top_row_exclusion_sql()`, so a bot's most valuable memory of a
+   player is never condensed away), orders by decay-aware `effective_score`
+   ascending (least valuable first), and caps the result at
+   `LLMChatter.Memory.Condensation.MaxCandidates` rows (clamped up to the
+   default if configured `< 1`).
+
+   Because rows are ordered least-valuable-first and the `LIMIT` is applied
+   in SQL, an oversized pool of eligible memories is condensed *gradually
+   over several passes* — the "leave core memories alone, tidy the routine
+   stuff a little at a time" behavior — rather than an entire backlog being
+   folded into `MaxDigests` digests in one shot.
+
+   At least `LLMChatter.Memory.Condensation.MinCandidates` rows (clamped up
+   to the default if configured `< 2`, since folding fewer than two rows is
+   not condensation) must survive selection or the pass is skipped silently;
+   the trigger fires again next time a qualifying insert crosses the
+   threshold.
+3. **Prompt** — `_build_condensation_prompt()` asks the LLM to fold the
+   candidate batch into 1 to `LLMChatter.Memory.Condensation.MaxDigests`
+   digest memories, reusing `_IMPORTANCE_RUBRIC` so a digest's suggested
+   importance stays on the same 1-10 scale as every other
+   memory-generation prompt in this file, and threading bot and player
+   identity so grammatical gender stays correct.
+
+   The candidate texts are rendered with
+   `sanitize_memory_for_prompt(..., max_chars=MEMORY_TEXT_MAX_CHARS)` —
+   the full 500-char stored ceiling, **not** the routine 200-char
+   (`DEFAULT_PROMPT_MEMORY_CHARS`) preview used for ordinary recall
+   injection. Condensation *deletes* every row it shows the model, so
+   anything the prompt truncated away would be destroyed without the model
+   ever having seen it.
+
+   The batch is additionally capped by cumulative character count
+   (`_cap_candidates_by_chars()` against `_CONDENSATION_MAX_INPUT_CHARS`,
+   defense in depth mirroring `_RELATIONSHIP_MAX_INPUT_CHARS`) so a prompt
+   is provably bounded regardless of how `MaxCandidates` or individual
+   memory lengths are configured. Whatever survives that trim is exactly
+   what is folded *and* deleted — a memory cut by the char budget is left
+   untouched for a future pass, never silently deleted unrepresented. At
+   least the first candidate is always kept, so one oversized memory can't
+   stall condensation entirely.
+
+   `MaxDigests` is clamped to `max(1, MinCandidates - 1)`. Digest inserts
+   bypass `_ensure_cap_and_insert()`, so they are not themselves cap-checked
+   or eviction-guarded; that is only safe while a pass strictly *shrinks*
+   the pool. With `MaxDigests >= MinCandidates` a pass could replace N rows
+   with N or more digests and, repeated, grow the pool past
+   `MaxPerBotPlayer` with nothing to trim it back.
+4. **Connection lifecycle — two short-lived connections, never one**
+   The read phase (candidate selection plus bot/player identity lookups)
+   runs on one connection which is **closed before the LLM call**, and the
+   write phase opens a fresh one only once a usable response is in hand.
+   mysql-connector runs with autocommit off, so keeping the read connection
+   open would hold that SELECT's transaction and read view — and pin InnoDB's
+   purge — for the whole multi-second round-trip. Atomicity is only ever
+   needed across the insert-then-delete pair, and that lives entirely on the
+   second connection.
+5. **Storage and atomicity (write phase)** — on the write connection, in
+   **one transaction sharing a single `conn.commit()`**: insert the digest
+   row(s), delete the source rows, and (if needed) rewind the relationship
+   watermark. A crash between insert and delete can therefore never lose
+   memories without gaining their replacement.
+
+   Each digest's `importance_score` is bounded by
+   `min(llm_suggested_score, max(source_importances))`, so a digest can
+   never look more important than the single most important memory it
+   absorbed. Since every source is already below `ProtectFloor` by
+   construction, that also guarantees a digest can never itself cross the
+   protect floor — which is exactly why re-condensation has to be bounded by
+   `condensation_generation` instead.
+
+   Three details keep a digest from crowding out the real memories that
+   outlive it:
+   - it inherits the **oldest** source's `created_at` rather than `NOW()`,
+     so its decay clock is not reset and it can never score higher than the
+     already-decayed rows it replaced. The auto-increment `id` still records
+     real insertion order for auditing;
+   - it is inserted `used=1`, so `_evict_one_used()`'s preference for `used`
+     rows treats it like any other read memory rather than making it last to
+     go;
+   - it carries `max(source generations) + 1` in `condensation_generation`,
+     capping how many times the same material can be re-folded
+     (`MaxGenerations`, default 2: originals are gen 0, can fold into a gen-1
+     digest, which can fold into a gen-2 digest, which is final).
+6. **Relationship watermark rewind (same transaction)** — inheriting the
+   oldest source's `created_at` interacts badly with the relationship
+   summary's watermark, so condensation repairs it inline.
+
+   `_maybe_update_relationship()` picks up new material with
+   `created_at > updated_through_created_at`. Folding a source memory
+   *newer* than that watermark into a digest stamped *older* than it would
+   leave that content permanently invisible to relationship tracking: the
+   sources are deleted and the digest sorts behind the watermark, so no
+   later pass can ever reach it — and each further pass can fold yet another
+   already-summarized memory into an older-stamped digest, so the loss
+   compounds instead of resolving.
+
+   `_rewind_relationship_watermark()` therefore sets the watermark to one
+   second before the digest's `created_at` whenever a condensed source was
+   newer than it, guaranteeing the next relationship pass re-folds the
+   digest. Re-folding already-summarized material is harmless (the prompt is
+   "update this summary with these memories"); losing it is not.
+
+   Two hard guarantees, both enforced in the `UPDATE`'s WHERE clause:
+   - **rewind only, never advance** — the update requires the current
+     watermark to be strictly newer than the target, so a pair whose
+     watermark already sits behind the digest keeps it and does not skip
+     unrelated unsummarized memories in between;
+   - **never creates a row** — it is an `UPDATE`, not an upsert, so a pair
+     with no relationship row yet stays without one; the relationship pass
+     creates that row on its own terms.
+
+   It also only fires when a source really was newer than the watermark:
+   ordinary condensation of long-summarized memories changes nothing. See
+   "Relationship tracking" step 3 above for the optimistic-concurrency guard
+   on the other side of this interaction, which exists specifically so a
+   concurrent relationship pass cannot clobber this rewind.
+7. **Fail-safe** — on any failure (LLM call failure, missing/unparseable
+   response, or zero usable digests), the function logs and aborts with
+   no fallback deletion of source rows — a malformed response never
+   causes data loss, unlike the eviction path it complements. The
+   `_condensing_pairs` entry is always cleared in a `finally` block, and
+   both connections are closed there too, so a failed run never permanently
+   blocks future attempts or leaks a connection.
+
+### Session vibe
+
+A group carries a short-lived ambient "vibe" — a mood cue that lingers after
+something significant happens, so the party doesn't snap back to a neutral
+tone the moment a wipe or a boss kill is over.
+
+1. **Set** — `_ensure_cap_and_insert()` writes the vibe whenever a newly
+   inserted memory's `importance_score` is at or above
+   `LLMChatter.GroupChatter.VibeImportanceThreshold` (default `5`). It
+   stores the memory's `mood` as the vibe and its `memory_type` as
+   `source_type`, so the prompt can name the *cause* and not just the mood.
+   The in-memory session (if one exists) is updated **and** the row is
+   UPSERTed into `llm_group_vibe` via `upsert_group_vibe()` in
+   `chatter_db.py`, reusing the caller's connection rather than opening a
+   second one on the hot path. The DB write is unconditional: gating it on a
+   live in-memory session would drop the vibe exactly when it matters most
+   (right after a restart or a session CLEANUP wipe). This block is
+   deliberately *not* lock-protected — it can already run inside the
+   non-reentrant per-group lock, so re-acquiring would deadlock, and a couple
+   of plain field writes are safe enough for a best-effort cue. Both the
+   `importance` and `group_id` values are range-coerced against the unsigned
+   columns so a malformed score can't fail the INSERT under strict mode, and
+   the whole persist is fail-open (a DB hiccup must never break the memory
+   insert it's part of).
+2. **Read and lazy expiry** — `get_session_vibe_details(group_id, config)`
+   returns `(vibe, source_type)`, or `(None, None)`. There is no background
+   timer; the vibe simply "expires" once
+   `LLMChatter.GroupChatter.VibeDurationSeconds` (default `600`) have elapsed
+   since `set_at`, and callers re-check on every read. Expiry is anchored to
+   the **original** `set_at`, so a restart cannot extend a vibe's lifetime.
+   The read fast-paths the in-memory value, falls back to the DB row when
+   that is missing or expired, and re-seeds the in-memory session from the DB
+   so repeat reads stay cheap. A row found expired is deleted **conditionally
+   on the `set_at` that was read** (`delete_group_vibe()`), so a
+   concurrently-written newer vibe is never destroyed.
+3. **Duration validation** — `VibeDurationSeconds` is parsed defensively.
+   Empty, non-numeric, NaN, infinite, zero and negative values are all
+   rejected in favour of the documented `DEFAULT_VIBE_DURATION_SECONDS`
+   (600). Zero/negative are specifically rejected rather than honoured
+   because they would expire every vibe the instant it was set, with no other
+   symptom — the feature would look simply broken. Because this runs on the
+   group-event hot path, the warning is emitted **once per distinct bad
+   value** (`_warn_invalid_vibe_duration()`), which keeps a misconfiguration
+   visible without flooding the log and still re-reports if the admin edits
+   the key to a *different* bad value.
+4. **Negative-result cache** — the common case is "this group has no vibe",
+   and paying for a DB round-trip on every group event to learn that is
+   wasteful. When a DB check finds no usable vibe, the session records a
+   `vibe_miss_until` marker suppressing further checks for
+   `_VIBE_MISS_CACHE_SECONDS` (45s). This is only consulted when the
+   in-memory fast path already found nothing, and it is cleared the instant a
+   vibe is actually written (`_ensure_cap_and_insert()` pops it), so the
+   staleness window can only ever delay discovering an **absence**, never
+   hide a live vibe.
+5. **Teardown** — `teardown_group_session()` clears the in-memory session
+   and its lock; `cleanup_stale_groups()` in `chatter_db.py` also deletes the
+   group's `llm_group_vibe` row, and `cleanup_all_session_data()` truncates
+   the table when no players are online. This matters: group ids are reissued
+   after a worldserver restart, so a leftover row would let a disbanded
+   group's mood bleed into an unrelated party that inherits its id while the
+   vibe is still inside its window.
+6. **Consumers** — `chatter_group.py` (idle chatter, player-response and
+   bot-question paths) and `chatter_handler_pipeline.py` (the shared group
+   reaction pipeline) call `get_session_vibe_details()` and render it with
+   `build_session_vibe_line()` in `chatter_prompts.py`, which names the cause
+   from `source_type` and asks for the feeling to show in the *delivery*
+   rather than be stated. The whole sentence — scaffolding included — is
+   localized. `get_vibe_mood_pool()` additionally maps the vibe onto the
+   separate conversation-mood vocabulary via `VIBE_MOOD_FAMILIES` /
+   `VIBE_FAMILY_MOODS` in `chatter_constants.py`, biasing the mood roll
+   instead of replacing it. `get_session_vibe()` is a thin wrapper for
+   callers that only need the word.
+
+### Orphan recovery and startup cap enforcement
+
+`activate_orphaned_memories()` runs at bridge startup and promotes `active=0`
+rows left behind by sessions that ended without a clean farewell (bridge
+crash, server restart). Groups still present in `llm_group_bot_traits` are
+skipped — those are live sessions that rehydration will handle. A pair whose
+orphaned rows span at least `SessionMinutes` is promoted to `active=1`;
+anything shorter is discarded.
+
+A bulk promotion can push a pair over `LLMChatter.Memory.MaxPerBotPlayer`, so
+the function trims each promoted pair back down afterwards. Two properties of
+that trim matter:
+
+- **`max_per <= 0` is treated as a misconfiguration, not as "forget
+  everything."** Without the guard the excess slice degenerates to
+  `ids[:len(ids)]` and silently wipes every active memory the pair has, at
+  startup. It now logs a warning and skips the trim, matching how every other
+  cap-consuming path in the file bails.
+- **It deletes by the same rule as every other eviction path.** Ordering uses
+  the decay-aware `_effective_score_sql()` (not raw `importance_score`), and
+  the pair's single top-scoring row is protected via
+  `_top_row_exclusion_sql()`, exactly as in `_evict_one_used()` and
+  `_get_condensation_candidates()`. Deleting by a *different* rule here is
+  precisely how a row that eviction would have protected gets dropped
+  instead. Because the protected top row is excluded from the candidate id
+  list, the pair's real active count is `len(ids) + 1`.
+
+### Known gap: `first_meeting` rows are not protected from deletion
+
+Older revisions of this document described `first_meeting` memories as
+"immune to prune". **That is not what the code does, and the wording has been
+corrected above.** As of this branch:
+
+- `_evict_one_used()` has no `memory_type` filter — a `first_meeting` row is
+  an ordinary eviction candidate.
+- `_get_condensation_candidates()` has no `memory_type` filter either, and
+  `insert_first_meeting_memory()` stores importance `5` by default, which is
+  below the default `ProtectFloor` of `7` — so first-meeting memories are
+  condensation-eligible.
+- the orphan-recovery cap trim in `activate_orphaned_memories()` likewise has
+  no exemption.
+
+The only protection a `first_meeting` row actually receives is the generic
+top-row exclusion (`_top_row_exclusion_sql()`), which protects it only while
+it happens to be the pair's single highest-`effective_score` memory. It *is*
+genuinely immune to short-session discard, because it is inserted `active=1`
+and that DELETE only targets `active=0` rows, and
+`insert_first_meeting_memory()` will never create a duplicate for a pair that
+already has one.
+
+This is a **pre-existing gap, not something this branch introduced** — it was
+surfaced in the discussion on upstream PR #54. Adding a
+`memory_type != 'first_meeting'` exemption to all three paths is planned as a
+separate follow-up; it is deliberately out of scope here because it changes
+retention behavior rather than documenting it. Until then, treat any claim of
+first-meeting immunity as scoped strictly to the short-session discard path.
+
 ### Files
 
 | File | Role |
 |------|------|
-| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), flush, retrieval |
-| `chatter_group.py` | Calls `start_session`, `get_bot_memories`, first-meeting insert |
-| `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection |
+| `chatter_memory.py` | Session tracking, memory generation (with `player_name` threading and DB fallback), importance scoring, decay-aware retrieval/eviction (with top-memory eviction guard), shared event memories, orphan recovery + startup cap trim (`activate_orphaned_memories`), orphan purge, flush, retrieval; relationship tracking (`relationship_executor`, `_maybe_queue_relationship_update`, `_maybe_update_relationship`, `_sanitized_relationship_watermark`, `_extend_candidates_to_timestamp_boundary`, `get_relationship_summary`); low-value-memory condensation (`condensation_executor`, `_maybe_trigger_condensation`, `_condense_low_value_memories`, `_get_condensation_candidates`, `_cap_candidates_by_chars`, `_insert_memory_row`, `_rewind_relationship_watermark`); session vibe read/expiry (`get_session_vibe_details`, `get_session_vibe`, `_warn_invalid_vibe_duration`, `_VIBE_MISS_CACHE_SECONDS` negative cache) |
+| `chatter_db.py` | `llm_group_vibe` persistence helpers (`upsert_group_vibe`, `get_group_vibe`, `delete_group_vibe` — all accept a caller-owned connection); deletes the group's vibe row in `cleanup_stale_groups()` and clears the table in `cleanup_all_session_data()` |
+| `chatter_prompts.py` | `build_session_vibe_line()` (localized, names the cause from `source_type`), `get_vibe_mood_word()`, `get_vibe_source_phrase()`, `get_vibe_mood_pool()` |
+| `chatter_handler_pipeline.py` | Reads the session vibe in the shared `run_group_handler()` pipeline and injects the rendered vibe line alongside the per-bot mood line |
+| `chatter_group.py` | Calls `start_session`, `get_bot_memories`, `get_relationship_summary`, first-meeting insert |
+| `chatter_group_handlers.py` | `_kill_post_success()` / `_wipe_post_success()` filter altbot candidates and call `queue_shared_event_memory()` for party-wide kill/wipe memories |
+| `chatter_group_prompts.py` | `build_bot_greeting_prompt` — reunion mode and `<past_memories>` injection; `build_player_response_prompt()` / `build_bot_question_prompt()` — `<relationship>` block injection |
+| `llm_chatter_bridge.py` | 24-hour periodic `purge_orphaned_memories()` call in the main loop; drains `memory_executor`, `relationship_executor`, and `condensation_executor` on shutdown |
+| `src/LLMChatterCommand.cpp` | `.llmc memoryclean` GM command, runs the orphan-purge `DELETE`s directly |
+| `src/LLMChatterCommand.cpp` | `.llmc memory <botname>` player command, synchronous decay-ordered memory readout plus the relationship line |
+| `src/LLMChatterGroupJoin.cpp` | Resolves `PlayerbotAI::IsAltBot()` at join time and threads `is_altbot` into the join event payload |
 
 ### Database tables
 
 | Table | Purpose |
 |-------|---------|
-| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, etc. |
+| `llm_bot_memories` | Per-bot-per-player memory journal. `memory_type` includes `first_meeting`, `boss_kill`, `party_member`, `ambient`, `condensed` (see "Memory condensation" above), etc. `importance_score` (TINYINT UNSIGNED, default 5) drives decay-aware ranking; `condensation_generation` (TINYINT UNSIGNED, default 0) caps how many times the same material may be re-folded. |
 | `llm_bot_identities` | Persistent personality traits keyed by `bot_guid`. Regenerated only on `IdentityVersion` bump. |
+| `llm_group_bot_traits` | `is_altbot` (TINYINT(1), default 1) marks whether a bot is player-owned; gates memory generation. |
+| `llm_bot_relationships` | One running LLM-maintained `summary` per `(bot_guid, player_guid)`, plus `updated_through_created_at` (DATETIME, default `1970-01-01 00:00:00`) — the timestamp watermark marking the newest memory already folded into the summary. Replaced the earlier `updated_through_memory_id` column, which condensation broke (migrations `20260828_relationship_timestamp_watermark.sql`, `20260830_drop_relationship_id_watermark.sql`). Condensed from `llm_bot_memories`, not itself journaled. |
+| `llm_group_vibe` | One row per `group_id` holding the group's current ambient mood: `vibe` (the mood word), `source_type` (the `memory_type` that set it; NULL = unknown cause, prompt falls back to sourceless phrasing), `importance`, and `set_at` (unix seconds, the expiry anchor). UPSERTed on any memory crossing `VibeImportanceThreshold`, lazily expired on read, deleted on group teardown. |
 
 ### Config keys
 
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `LLMChatter.Memory.Enable` | `1` | Master toggle |
-| `LLMChatter.Memory.SessionMinutes` | `15` | Minimum session length to activate memories |
-| `LLMChatter.Memory.MaxPerBotPlayer` | `50` | Cap on active memories per bot–player pair |
-| `LLMChatter.Memory.RecallChance` | `30` | % chance a specific memory is highlighted in reunion greeting |
+| `LLMChatter.Memory.SessionMinutes` | `3` | Minimum session length (minutes) before a session's memories are activated |
+| `LLMChatter.Memory.MaxPerBotPlayer` | `30` | Cap on active memories per bot–player pair. Also the base for the condensation trigger; a non-positive value disables the condensation trigger and the startup cap trim rather than deleting everything |
+| `LLMChatter.Memory.RecallChance` | `20` | % chance a specific memory is highlighted in reunion greeting |
+| `LLMChatter.Memory.UseQuickModel` | `1` | When a quick model IS configured (`LLMChatter.QuickAnalyze.Provider`/`.Model`, both empty by default), route memory-side internal LLM work (memory generation, shared-event memories, condensation digests, relationship summaries) to it instead of `LLMChatter.Model`. This text is never read verbatim by a player — it is stored, re-injected as context, and re-worded by the main model before it reaches chat — so it is safe to route cheaply once a quick model exists. No effect at all if no quick model is configured; set `0` to force memory work onto the main model even when one is |
 | `LLMChatter.Memory.IdentityVersion` | `1` | Bump to force personality regeneration for all bots |
+| `LLMChatter.Memory.MaxInjectTokens` | `400` | Approximate token budget for memories injected into a single prompt (reunion greeting, recall) |
+| `LLMChatter.Memory.DecayMaxImportance` | `3` | Highest importance score still subject to decay; higher-scored memories never decay |
+| `LLMChatter.Memory.DecayDays` | `30` | Days a decaying memory takes to lose one point of importance (floored at 1) |
+| `LLMChatter.Memory.Relationship.Enable` | `1` | Master toggle for background relationship-summary condensation |
+| `LLMChatter.Memory.Relationship.UpdateThreshold` | `5` | New active memories needed since the last update before a re-summarization is triggered at farewell |
+| `LLMChatter.Memory.Relationship.MaxChars` | `400` | Maximum stored relationship-summary length |
+| `LLMChatter.Memory.Relationship.MaxTokens` | `300` | Output budget for the relationship-condensation LLM call |
+| `LLMChatter.Memory.Condensation.Enable` | `1` | Master toggle for background low-value-memory condensation |
+| `LLMChatter.Memory.Condensation.TriggerPercent` | `80` | Percent of `MaxPerBotPlayer` a pair's active memory count must reach before a condensation pass is submitted |
+| `LLMChatter.Memory.Condensation.ProtectFloor` | `7` | Memories at or above this importance score are never condensed |
+| `LLMChatter.Memory.Condensation.MinCandidates` | `4` | Minimum eligible candidates required before a condensation LLM call is worth making |
+| `LLMChatter.Memory.Condensation.MaxCandidates` | `8` | Maximum least-valuable eligible candidates pulled into a single condensation pass; keeps condensation gradual and incremental instead of folding an entire oversized pool away in one shot |
+| `LLMChatter.Memory.Condensation.MaxDigests` | `2` | Maximum digest memories one condensation pass may produce. Clamped at runtime to `max(1, MinCandidates - 1)` so a pass always retires at least one row and can never grow the memory pool |
+| `LLMChatter.Memory.Condensation.MaxTokens` | `500` | Output budget for the condensation LLM call |
+| `LLMChatter.Memory.Condensation.MaxGenerations` | `2` | How deep digests-of-digests may go. A digest carries `max(source generations) + 1`; rows at or above this are never picked as candidates again. Without it, digests (always below `ProtectFloor` by construction) would be re-condensed forever, drifting further from the source facts each round |
+| `LLMChatter.GroupChatter.VibeImportanceThreshold` | `5` | Minimum `importance_score` a new memory must reach to set the group's ambient session vibe. Raise it so only genuinely big moments change the party's mood |
+| `LLMChatter.GroupChatter.VibeDurationSeconds` | `600` | How long a session vibe stays active, measured from when it was set. Non-positive, non-numeric, NaN and infinite values are rejected in favour of the 600s default with a one-time warning, since they would expire every vibe instantly |
 
 ---
 
@@ -2436,10 +3104,12 @@ Typical multi-message JSON shape:
 | `llm_chatter_queue` | C++ | Python | Ambient request queue |
 | `llm_chatter_messages` | Python | C++ | Outbound delivery queue (includes `npc_spawn_id` for NPC speakers and `player_guid` for proximity scene tracking) |
 | `llm_group_cached_responses` | Python | C++ | Pre-cached instant reactions |
-| `llm_group_bot_traits` | Python + C++ travel refresh | Python | Group personality, location, and live travel state |
+| `llm_group_bot_traits` | Python + C++ travel refresh | Python | Group personality, location, live travel state, and `is_altbot` (player-owned bot flag; gates memory generation) |
 | `llm_group_chat_history` | Python | Python | Group anti-repetition history |
 | `llm_general_chat_history` | C++/Python read path | Python/C++ | General-channel history |
-| `llm_bot_memories` | Python | Python | Per-bot-per-player memory journal (active=1 persists; first_meeting immune to prune) |
+| `llm_bot_memories` | Python | Python | Per-bot-per-player memory journal (`active=1` persists). `importance_score` drives decay-aware retrieval, eviction and condensation candidacy, including the top-memory guard; `condensation_generation` caps digests-of-digests. No `memory_type` is exempt from deletion — `first_meeting` rows are immune only to the short-session discard, not to eviction/condensation/cap trim (see 13n, "Known gap") |
+| `llm_bot_relationships` | Python | Python + C++ read | One running LLM-maintained relationship summary per bot–player pair, plus the `updated_through_created_at` timestamp watermark. Written by `_maybe_update_relationship()` under optimistic concurrency, rewound by condensation (see 13n); read by `.llmc memory` |
+| `llm_group_vibe` | Python | Python | Persisted per-group ambient mood (`vibe`, `source_type`, `set_at`) so it survives bridge restarts and the session CLEANUP wipe; lazily expired on read, purged on group teardown (see 13n) |
 | `llm_bot_identities` | Python | Python | Persistent bot personality traits; regenerated on IdentityVersion bump |
 
 ---
@@ -2486,6 +3156,17 @@ Wait for explicit user approval before running build steps.
 
 ## 17. Known Gaps
 
+- `memory_type = 'first_meeting'` rows are **not** exempt from
+  `_evict_one_used()`, condensation candidate selection, or the
+  orphan-recovery cap trim.
+  Pre-existing gap surfaced by an upstream PR discussion; planned as a
+  separate follow-up. See 13n, "Known gap: `first_meeting` rows are not
+  protected from deletion"
+- `.llmc memoryclean` is in-game only — the `.llmc` root is registered
+  `Console::No`, so it cannot be run from the server console or over SOAP.
+  The same cleanup runs unattended every 24 hours via
+  `purge_orphaned_memories()`, so this is a convenience limitation, not a
+  functional one
 - Boss pull/kill/wipe events need live in-game testing via actual boss
   encounters
 - Hostile multi-target spell-attribution edge case not fully covered

@@ -1,0 +1,74 @@
+#!/bin/bash
+# Pre-push verification for mod-llm-chatter.
+#
+# Runs the fast, safe part of the project verification checklist before
+# allowing a push:
+#   1. py_compile every tracked *.py file (catches syntax errors).
+#   2. tools/import_smoke_check.py (import/cycle safety).
+#   3. every tools/tests/test_*.py (plain scripts with main() -> int,
+#      run with the project interpreter, NOT pytest).
+#
+# Deliberately NOT run here: tools/chatter_healthcheck.py. It opens a
+# live DB connection and isn't safe/fast/guaranteed-available in a
+# pre-push context (no DB on a fresh clone/CI box, and we don't want a
+# git hook depending on live server state). Run it manually before
+# pushing anything that touches schema, config keys, or memory logic.
+#
+# Bypass in a genuine emergency: git push --no-verify
+# (then run the full checklist by hand as soon as possible after).
+
+set -u
+
+REPO_ROOT="$(cd "$(git rev-parse --show-toplevel)" && pwd)"
+cd "$REPO_ROOT" || exit 1
+
+# Prefer the project virtualenv, fall back to whatever python3 is on
+# PATH. A contributor without tools/venv still gets the checks; a
+# contributor without any python3 at all gets a warning, not a blocked
+# push -- this hook must never be the reason someone cannot push.
+VENV_PY="$REPO_ROOT/tools/venv/bin/python3"
+if [ ! -x "$VENV_PY" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        VENV_PY="$(command -v python3)"
+        echo "pre-push: tools/venv not found, using $VENV_PY from PATH." >&2
+    else
+        echo "pre-push: no python3 interpreter found; skipping checks." >&2
+        exit 0
+    fi
+fi
+
+fail=0
+
+echo "pre-push: compiling tracked Python files..."
+py_files=$(git ls-files -- 'tools/*.py' | grep -v '/venv/')
+if [ -n "$py_files" ]; then
+    # shellcheck disable=SC2086
+    if ! "$VENV_PY" -m py_compile $py_files; then
+        echo "pre-push: py_compile FAILED" >&2
+        fail=1
+    fi
+fi
+
+echo "pre-push: import smoke check..."
+if ! "$VENV_PY" tools/import_smoke_check.py; then
+    echo "pre-push: import_smoke_check.py FAILED" >&2
+    fail=1
+fi
+
+echo "pre-push: running tools/tests/test_*.py..."
+shopt -s nullglob
+for f in tools/tests/test_*.py; do
+    if ! "$VENV_PY" "$f"; then
+        echo "pre-push: FAIL $f" >&2
+        fail=1
+    fi
+done
+shopt -u nullglob
+
+if [ "$fail" -ne 0 ]; then
+    echo "pre-push: verification failed, push blocked. Fix the above or bypass with 'git push --no-verify' (emergency only)." >&2
+    exit 1
+fi
+
+echo "pre-push: all checks passed."
+exit 0
