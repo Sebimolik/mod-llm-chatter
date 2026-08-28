@@ -34,6 +34,7 @@ from chatter_shared import (
     select_conversation_message_count,
 )
 from chatter_text import (
+    _trim_summary,
     cleanup_message,
     parse_single_response,
     strip_speaker_prefix,
@@ -827,14 +828,6 @@ def _generate_multi_reply(
             reference_plans,
         )
     return messages
-
-
-def _trim_summary(text: str, maximum: int) -> str:
-    text = " ".join(str(text or '').split())
-    if len(text) <= maximum:
-        return text
-    shortened = text[:maximum].rsplit(' ', 1)[0]
-    return shortened.rstrip(' ,;:-') + "."
 
 
 def _maybe_summarize_session(

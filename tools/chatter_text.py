@@ -33,6 +33,65 @@ def _validate_emote(emote_str: Optional[str]) -> Optional[str]:
     return None
 
 
+def _strip_markdown_fence(response: str) -> str:
+    """Strip a ```json ... ``` (or bare ``` ... ```)
+    fence that LLMs sometimes wrap JSON responses in.
+    """
+    cleaned = response.strip()
+    cleaned = re.sub(
+        r'```(?:json)?', '', cleaned,
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned
+
+
+def extract_json_object(
+    response: str, required_key: str = 'message'
+) -> Optional[dict]:
+    """Robustly extract a JSON object dict from a raw
+    LLM response.
+
+    Strips a ```json fence, then tries parsing the
+    whole cleaned response, falling back to the last
+    regex-matched embedded {...} block containing
+    required_key. Shared by parse_single_response()
+    and callers with other field schemas.
+
+    Returns the parsed dict (guaranteed to contain
+    required_key), or None.
+    """
+    if not response:
+        return None
+
+    cleaned = _strip_markdown_fence(response)
+
+    # Try direct parse first, then extract embedded
+    # JSON if the LLM leaked reasoning around it.
+    candidates = [cleaned]
+    # Look for { ... } blocks containing required_key.
+    # Use the last match — if the LLM revised its
+    # answer, the final JSON is the intended one.
+    matches = re.findall(
+        r'\{[^{}]*"' + re.escape(required_key)
+        + r'"[^{}]*\}',
+        cleaned,
+    )
+    if matches:
+        candidates.append(matches[-1])
+
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+            if (
+                isinstance(data, dict)
+                and required_key in data
+            ):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
+
+
 def parse_single_response(response: str) -> dict:
     """Parse a single LLM response that may be JSON
     with message/emote/action fields.
@@ -47,50 +106,31 @@ def parse_single_response(response: str) -> dict:
             'action': None,
         }
 
-    cleaned = response.strip()
-    # Strip ```json wrapper
-    cleaned = re.sub(
-        r'```(?:json)?', '', cleaned,
-        flags=re.IGNORECASE
-    ).strip()
-
-    # Try direct parse first, then extract embedded
-    # JSON if the LLM leaked reasoning around it.
-    candidates = [cleaned]
-    # Look for { ... } blocks containing "message".
-    # Use the last match — if the LLM revised its
-    # answer, the final JSON is the intended one.
-    matches = re.findall(
-        r'\{[^{}]*"message"[^{}]*\}', cleaned
+    data = extract_json_object(
+        response, required_key='message'
     )
-    if matches:
-        candidates.append(matches[-1])
+    if data is not None:
+        msg = data.get('message', '')
+        if isinstance(msg, str):
+            msg = msg.strip().strip('"')
+        else:
+            msg = str(msg).strip()
 
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-            if isinstance(data, dict) and 'message' in data:
-                msg = data.get('message', '')
-                if isinstance(msg, str):
-                    msg = msg.strip().strip('"')
-                else:
-                    msg = str(msg).strip()
+        # Validate emote
+        raw_emote = data.get('emote')
+        emote = _validate_emote(raw_emote)
 
-                # Validate emote
-                raw_emote = data.get('emote')
-                emote = _validate_emote(raw_emote)
+        # Sanitize action
+        raw_action = data.get('action')
+        action = _sanitize_action(raw_action)
 
-                # Sanitize action
-                raw_action = data.get('action')
-                action = _sanitize_action(raw_action)
+        return {
+            'message': msg,
+            'emote': emote,
+            'action': action,
+        }
 
-                return {
-                    'message': msg,
-                    'emote': emote,
-                    'action': action,
-                }
-        except (json.JSONDecodeError, ValueError):
-            continue
+    cleaned = _strip_markdown_fence(response)
 
     # Fallback: extract "message" value from truncated
     # JSON (max_tokens cutoff before closing brace)
@@ -469,3 +509,17 @@ def pick_statement_length() -> Tuple[int, int, str]:
     return lo, hi, label
 
 
+def _trim_summary(text: str, maximum: int) -> str:
+    """Collapse whitespace and hard-cap a summary string
+    at a word boundary, ending with a period.
+
+    Shared by the guild session summarizer
+    (chatter_guild_player.py) and the relationship-summary
+    updater (chatter_memory.py) so both use one truncation
+    rule instead of near-duplicate implementations.
+    """
+    text = " ".join(str(text or '').split())
+    if len(text) <= maximum:
+        return text
+    shortened = text[:maximum].rsplit(' ', 1)[0]
+    return shortened.rstrip(' ,;:-') + "."

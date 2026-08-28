@@ -11,7 +11,7 @@ Owns:
 - Memory retrieval for reunion greetings
 """
 
-import json
+import datetime
 import logging
 import random
 import re
@@ -22,11 +22,22 @@ from typing import Dict, Optional
 
 from chatter_db import (
     get_db_connection, get_group_location,
+    delete_group_vibe, get_group_vibe,
+    upsert_group_vibe,
 )
 from chatter_shared import (
     get_zone_name, get_dungeon_flavor,
     format_location_label,
     build_bot_identity,
+    estimate_tokens,
+    get_gender_label,
+    get_race_name, get_class_name,
+    append_json_instruction,
+)
+from chatter_text import (
+    _trim_summary,
+    extract_json_object,
+    parse_single_response,
 )
 from chatter_llm import call_llm, get_llm_client
 
@@ -94,12 +105,180 @@ MEMORY_MOODS = {
         'fierce', 'satisfied', 'exhilarated',
         'proud', 'ruthless',
     ],
+    'gear_change': [
+        'impressed', 'admiring', 'envious',
+        'curious', 'approving',
+    ],
+    'mount_change': [
+        'impressed', 'admiring', 'delighted',
+        'curious', 'approving',
+    ],
 }
 
 MEMORY_EXPRESSION_STYLES = [
     'poetic', 'understated', 'vivid',
     'wry', 'sincere',
 ]
+
+# memory_type -> one-line prompt description, shared by
+# _call_llm_for_memory() and
+# _generate_shared_event_memory().
+_MEMORY_TYPE_DESCRIPTIONS = {
+    'ambient': "a quiet moment during travel",
+    'boss_kill': "defeating a powerful enemy together",
+    'wipe': "a total party wipe",
+    'rare_kill': "finding and slaying a rare creature",
+    'dungeon': "entering a dungeon or raid",
+    'party_member': "adventuring alongside a companion",
+    'player_message': "something the player said in chat",
+    'quest_complete': "completing a quest together",
+    'achievement': "earning an achievement",
+    'level_up': "reaching a new level",
+    'bg_win': "winning a battleground",
+    'bg_loss': "losing a battleground",
+    'discovery': "discovering a new area",
+    'pvp_kill': "defeating an enemy player in combat",
+    'gear_change': "noticing the player's new gear",
+    'mount_change': "noticing the player's new mount",
+}
+
+# 1-10 importance rubric appended to every memory prompt
+# so single-bot and shared-event memories are rated on
+# an identical scale.
+_IMPORTANCE_RUBRIC = (
+    "Also rate how important/memorable this "
+    "moment is on a 1-10 scale:\n"
+    "- 1-3 (Ambient): casual chat, minor zone"
+    " banter\n"
+    "- 4-6 (Narrative): personal preferences"
+    " stated by the player, minor achievements\n"
+    "- 7-8 (Milestones): leveling milestones,"
+    " acquiring rare gear, wipe encounters\n"
+    "- 9-10 (Core Bonds): defeating raid bosses"
+    " together, major narrative turning points\n\n"
+)
+
+DEFAULT_DECAY_MAX_IMPORTANCE = 3
+DEFAULT_DECAY_DAYS = 30
+
+# Fallback for LLMChatter.GroupChatter.VibeDurationSeconds, used
+# when the configured value is missing or not a usable positive
+# number. Mirrors the conf.dist default.
+DEFAULT_VIBE_DURATION_SECONDS = 600.0
+
+# How long get_session_vibe_details() remembers "this group has no
+# active vibe" before paying for another DB round-trip. Without
+# this, every group event for a group with no vibe -- the common
+# case -- opens a fresh connection just to learn nothing changed.
+# Invalidated immediately whenever a vibe is actually set for the
+# group, so the staleness window only ever delays discovering an
+# ABSENCE, never a live vibe.
+_VIBE_MISS_CACHE_SECONDS = 45.0
+
+# Hard ceiling on a single stored memory's text, enforced when a
+# generated memory or condensation digest is validated before
+# insert. Prompt-facing helpers that must show a memory in FULL
+# (condensation, relationship summaries -- both of which either
+# delete or permanently supersede the rows they read) pass this
+# to sanitize_memory_for_prompt() as max_chars, so the LLM always
+# sees everything that was actually stored.
+MEMORY_TEXT_MAX_CHARS = 500
+
+# Default prompt-side truncation for memories that are merely
+# quoted as context and whose source rows survive untouched
+# (recall/context injection). Keeps routine prompts small.
+DEFAULT_PROMPT_MEMORY_CHARS = 200
+
+# Condensation defaults (see LLMChatter.Memory.Condensation.*
+# in conf.dist and _maybe_trigger_condensation() /
+# _condense_low_value_memories() below).
+DEFAULT_CONDENSATION_TRIGGER_PERCENT = 80
+DEFAULT_CONDENSATION_PROTECT_FLOOR = 7
+DEFAULT_CONDENSATION_MIN_CANDIDATES = 4
+DEFAULT_CONDENSATION_MAX_DIGESTS = 2
+DEFAULT_CONDENSATION_MAX_CANDIDATES = 8
+# A digest's generation is max(source generations) + 1, and rows
+# at or above this generation are never picked as candidates
+# again -- so with the default 2, an original memory (gen 0) can
+# be folded into a gen-1 digest, gen-1 digests can be folded into
+# a gen-2 digest, and gen-2 digests are final. Without this cap
+# digests stay below ProtectFloor by construction and would be
+# re-condensed forever, drifting further from the source facts
+# each round.
+DEFAULT_CONDENSATION_MAX_GENERATIONS = 2
+
+# Zero value for llm_bot_relationships.updated_through_created_at
+# ("nothing folded into the summary yet"). Matches the column's
+# schema default; DATETIME (not TIMESTAMP) precisely so this
+# out-of-range-for-TIMESTAMP sentinel is storable.
+RELATIONSHIP_WATERMARK_EPOCH = datetime.datetime(1970, 1, 1)
+
+# Input char budget for one condensation LLM call, mirroring
+# _RELATIONSHIP_MAX_INPUT_CHARS below -- defense in depth against an
+# unbounded prompt. In practice DEFAULT_CONDENSATION_MAX_CANDIDATES
+# already keeps a single batch well under this, but the guard stays
+# in place regardless of how MaxCandidates is configured.
+_CONDENSATION_MAX_INPUT_CHARS = 6000
+
+
+def _memory_uses_quick_model(config):
+    """Whether internal memory-side LLM work should run on
+    the cheap QuickAnalyze model.
+
+    Memory generation, shared-event memories, condensation
+    digests and relationship summaries all produce text a
+    player never reads verbatim -- it is stored, later
+    re-injected as context, and re-worded by the main model
+    before anything reaches chat. So these default to the
+    cheap model. LLMChatter.Memory.UseQuickModel = 0 forces
+    them back onto LLMChatter.Model for admins who find the
+    stored text noticeably worse.
+
+    No-op on servers with no LLMChatter.QuickAnalyze.Model
+    configured: call_llm() then falls back to the main
+    model anyway.
+    """
+    return str((config or {}).get(
+        'LLMChatter.Memory.UseQuickModel', 1
+    )).strip() not in ('0', 'false', 'no')
+
+
+def _effective_score_sql(config=None):
+    """Build the decay-aware "effective importance" SQL
+    expression used by get_bot_memories() and
+    _evict_one_used().
+
+    Memories at or below DecayMaxImportance lose about
+    one point per DecayDays days, floored at 1; higher
+    scores never decay. Both tunables are coerced to
+    int before interpolation.
+
+    IMPORTANT: src/LLMChatterCommand.cpp hand-reimplements
+    this exact formula for the `.llmc memory` display. Keep
+    the two in sync -- if the decay model changes here, the
+    C++ mirror must change with it.
+    """
+    cfg = config or {}
+    max_importance = int(cfg.get(
+        'LLMChatter.Memory.DecayMaxImportance',
+        DEFAULT_DECAY_MAX_IMPORTANCE,
+    ))
+    decay_days = int(cfg.get(
+        'LLMChatter.Memory.DecayDays',
+        DEFAULT_DECAY_DAYS,
+    ))
+    if decay_days < 1:
+        decay_days = DEFAULT_DECAY_DAYS
+    return (
+        "CASE"
+        " WHEN importance_score <= %d THEN"
+        "   GREATEST(1, importance_score -"
+        "     TIMESTAMPDIFF(DAY, created_at, NOW())"
+        " / %d)"
+        " ELSE importance_score"
+        " END"
+    ) % (max_importance, decay_days)
+
 
 # ============================================================
 # BACKGROUND EXECUTOR
@@ -109,6 +288,47 @@ memory_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="memory",
 )
+
+# Separate, lower-priority pool for relationship-summary
+# condensation (see _maybe_update_relationship() below).
+# Kept independent from memory_executor so this lower-
+# frequency background work never competes with the
+# latency-sensitive memory-generation jobs sharing that pool.
+relationship_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="relationship",
+)
+
+# Input char budget for one relationship-condensation LLM
+# call, mirroring the guild summarizer's SummaryMaxInputChars
+# concept. Not itself a runtime config key (see
+# LLMChatter.Memory.Relationship.* in the conf.dist for the
+# tunables that are).
+_RELATIONSHIP_MAX_INPUT_CHARS = 6000
+
+# Separate, single-worker pool for low-value-memory
+# condensation (see _maybe_trigger_condensation() /
+# _condense_low_value_memories() below). Kept independent
+# from both memory_executor (primary memory-generation
+# throughput) and relationship_executor -- condensation makes
+# its own LLM call and should never queue behind, or compete
+# with, either of those.
+condensation_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="condense",
+)
+
+# Set of (bot_guid, player_guid) pairs that currently have a
+# condensation job in flight (submitted to
+# condensation_executor but not yet finished). Guards against
+# duplicate submission when multiple concurrent inserts for
+# the same pair independently cross the
+# LLMChatter.Memory.Condensation.TriggerPercent threshold in
+# _maybe_trigger_condensation() -- cleared in
+# _condense_low_value_memories()'s finally block so a failed
+# run never permanently blocks future attempts.
+_condensing_pairs = set()
+_condensing_lock = threading.Lock()
 
 # ============================================================
 # THREAD-SAFE SESSION TRACKER
@@ -126,7 +346,6 @@ _active_sessions: Dict[int, dict] = {}
 
 _group_locks: Dict[int, threading.Lock] = {}
 _group_locks_meta = threading.Lock()
-
 
 def _get_group_lock(
     group_id: int, create: bool = True
@@ -186,6 +405,193 @@ def start_session(
             ].update(members)
 
 
+_warned_vibe_durations = set()
+
+
+def _warn_invalid_vibe_duration(raw_value):
+    """Log once per distinct bad
+    LLMChatter.GroupChatter.VibeDurationSeconds value.
+
+    get_session_vibe_details() runs on the group-event hot
+    path, so an unconditional warning here would flood the
+    log on every single event for a misconfigured server.
+    De-duplicating by value keeps the misconfiguration
+    visible exactly once while still re-reporting if the
+    admin edits the key to a different bad value.
+    """
+    key = repr(raw_value)
+    if key in _warned_vibe_durations:
+        return
+    _warned_vibe_durations.add(key)
+    logger.warning(
+        "LLMChatter.GroupChatter.VibeDurationSeconds=%r is not a "
+        "positive number; group vibes would expire the instant "
+        "they were set. Falling back to the documented default "
+        "of %s seconds.",
+        raw_value, DEFAULT_VIBE_DURATION_SECONDS,
+    )
+
+
+def get_session_vibe_details(group_id, config=None):
+    """Return (vibe, source_type) for the group's current
+    ambient session vibe, or (None, None).
+
+    Lazy decay, no background timer: the vibe is written
+    by _ensure_cap_and_insert() whenever a new memory's
+    importance_score crosses
+    LLMChatter.GroupChatter.VibeImportanceThreshold, and
+    simply "expires" once
+    LLMChatter.GroupChatter.VibeDurationSeconds have
+    elapsed -- callers just re-check the timestamp on
+    every read instead of anything clearing it eagerly.
+
+    source_type is the memory_type of the memory that set
+    the vibe (llm_group_vibe.source_type), which lets the
+    prompt name the cause instead of only the mood. It is
+    None for rows written before that column existed, so
+    callers must still render something sensible without it.
+
+    Persisted: each important memory also UPSERTs the vibe
+    into llm_group_vibe (see upsert_group_vibe() in
+    chatter_db.py), so the cue survives bridge restarts
+    and the in-memory session CLEANUP wipe. Reads fast-path
+    the in-memory value, then fall back to the DB row when
+    it is missing/expired, re-seeding the in-memory session
+    so repeat reads stay cheap. Expiry is anchored to the
+    ORIGINAL set_at timestamp, so a restart cannot extend a
+    vibe's lifetime.
+
+    Used by idle-chatter tone selection and by the group
+    reaction pipeline to bias the whole party's delivery
+    toward a recent emotionally-significant memory instead
+    of a fully random tone roll.
+    """
+    session = _active_sessions.get(group_id)
+    vibe = None
+    vibe_set_at = None
+    vibe_source = None
+    if session is not None:
+        vibe = session.get("vibe")
+        vibe_set_at = session.get("vibe_set_at")
+        vibe_source = session.get("vibe_source")
+    # Defensive parse: an empty/non-numeric/NaN/infinite/
+    # non-positive duration must not crash the tone path,
+    # silently disable decay (NaN makes every comparison
+    # False), or silently disable the whole feature. Zero or
+    # negative would expire every vibe the instant it was
+    # set, with no other symptom -- so it is rejected with a
+    # warning rather than honoured.
+    duration = DEFAULT_VIBE_DURATION_SECONDS
+    raw_duration = (config or {}).get(
+        'LLMChatter.GroupChatter.VibeDurationSeconds',
+        DEFAULT_VIBE_DURATION_SECONDS,
+    )
+    try:
+        parsed_duration = float(raw_duration)
+    except (TypeError, ValueError):
+        parsed_duration = None
+    if (
+        parsed_duration is None
+        or parsed_duration != parsed_duration
+        or abs(parsed_duration) == float('inf')
+        or parsed_duration <= 0
+    ):
+        _warn_invalid_vibe_duration(raw_duration)
+    else:
+        duration = parsed_duration
+    now = time.time()
+
+    # Negative-result cache: a recent DB check that found no
+    # usable vibe suppresses further checks for
+    # _VIBE_MISS_CACHE_SECONDS. Only consulted when the
+    # in-memory fast path above found nothing, and cleared
+    # by _ensure_cap_and_insert() the moment a vibe is set,
+    # so a live vibe is never hidden by it.
+    if session is not None and not (vibe and vibe_set_at):
+        if now < float(session.get('vibe_miss_until') or 0):
+            return None, None
+    if vibe and vibe_set_at:
+        if now - vibe_set_at < duration:
+            # Fast path: live in-memory value wins.
+            # MEMORY_MOODS entries are occasionally
+            # snake_case (e.g. "grimly_amused") --
+            # normalize to a plain phrase for use as a
+            # prompt tone.
+            return vibe.replace('_', ' '), vibe_source
+        # In-memory copy expired: fall through to the DB
+        # row, which carries the original set_at (a
+        # restart cannot extend the vibe's lifetime).
+    if not config:
+        return None, None
+
+    # DB fallback: one shared connection for read + delete.
+    conn = None
+    try:
+        conn = get_db_connection(config)
+        row = get_group_vibe(config, group_id, conn=conn)
+        if row is None:
+            if session is not None:
+                session.pop('vibe', None)
+                session.pop('vibe_set_at', None)
+                session.pop('vibe_source', None)
+                session['vibe_miss_until'] = (
+                    now + _VIBE_MISS_CACHE_SECONDS
+                )
+            return None, None
+        persisted_vibe, set_at, persisted_source = row
+        if now - set_at >= duration:
+            # Stale row: delete conditionally on the set_at
+            # we read so a concurrently-written newer vibe
+            # survives.
+            try:
+                delete_group_vibe(config, group_id, set_at,
+                                  conn=conn)
+            except Exception:
+                logger.warning(
+                    "Failed to delete stale group vibe for"
+                    " group %s", group_id,
+                    exc_info=True,
+                )
+            if session is not None:
+                session.pop('vibe', None)
+                session.pop('vibe_set_at', None)
+                session.pop('vibe_source', None)
+                session['vibe_miss_until'] = (
+                    now + _VIBE_MISS_CACHE_SECONDS
+                )
+            return None, None
+        if session is not None:
+            session["vibe"] = persisted_vibe
+            session["vibe_set_at"] = set_at
+            session["vibe_source"] = persisted_source
+            session.pop('vibe_miss_until', None)
+        return persisted_vibe.replace('_', ' '), persisted_source
+    except Exception:
+        logger.warning(
+            "Failed to load persisted group vibe for"
+            " group %s", group_id,
+            exc_info=True,
+        )
+        return None, None
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_session_vibe(group_id, config=None):
+    """Return just the group's current ambient session vibe
+    word, or None.
+
+    Thin wrapper over get_session_vibe_details() for the
+    callers that only steer a tone roll and have no use for
+    the triggering memory_type.
+    """
+    return get_session_vibe_details(group_id, config)[0]
+
+
 def teardown_group_session(group_id):
     """Clear in-memory session state for one group.
 
@@ -213,12 +619,50 @@ def clear_all_sessions():
 # QUEUE MEMORY
 # ============================================================
 
+def _is_altbot(db, group_id, bot_guid):
+    """Check whether a bot is player-owned (alt) vs.
+    a random/ownerless bot.
+
+    A missing connection, a missing row, and DB errors
+    all fail open (treated as altbot) to match the
+    is_altbot column's DEFAULT 1.
+
+    Args:
+        db: live DB connection (None = fail open)
+        group_id: group identifier
+        bot_guid: bot character guid
+    """
+    if db is None:
+        return True
+    try:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT is_altbot FROM"
+            " llm_group_bot_traits"
+            " WHERE group_id = %s"
+            "   AND bot_guid = %s",
+            (group_id, bot_guid),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return True
+        return bool(row[0])
+    except Exception:
+        logger.error(
+            "is_altbot lookup failed for "
+            "bot=%s group=%s",
+            bot_guid, group_id,
+            exc_info=True,
+        )
+        return True
+
+
 def queue_memory(
     config, group_id, bot_guid, player_guid,
     memory_type, event_context,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     db=None,
 ):
     """Validate eligibility and submit a memory
@@ -238,8 +682,9 @@ def queue_memory(
         bot_name: bot's character name
         bot_class: bot's class name
         bot_race: bot's race name
-        db: optional DB connection for location
-            lookup (avoids opening a new one)
+        db: optional DB connection reused for the
+            altbot/player/location lookups; one
+            connection is opened here if omitted
     """
     if not int(config.get(
         'LLMChatter.Memory.Enable', 1
@@ -258,10 +703,129 @@ def queue_memory(
         session_start = session["start"]
         p_guid = session["player_guid"]
 
-    # Use the session's player_guid if caller
-    # didn't provide one
-    if not player_guid:
-        player_guid = p_guid
+    own_db = False
+    if db is None:
+        try:
+            db = get_db_connection(config)
+            own_db = True
+        except Exception:
+            logger.error(
+                "queue_memory could not open a DB "
+                "connection for group %s", group_id,
+                exc_info=True,
+            )
+            db = None
+    try:
+        # Persistent memories are only generated for
+        # player-owned (alt) bots, never for random/
+        # ownerless bots.
+        if not _is_altbot(db, group_id, bot_guid):
+            logger.debug(
+                "skipping memory generation for "
+                "non-altbot bot_guid=%s group=%s",
+                bot_guid, group_id,
+            )
+            return
+
+        # Use the session's player_guid if caller
+        # didn't provide one
+        if not player_guid:
+            player_guid = p_guid
+
+        # Last resort: resolve from group members
+        # (handles bridge restart mid-session where
+        # session player_guid was lost)
+        if not player_guid:
+            try:
+                from chatter_db import (
+                    get_real_player_guid_for_group,
+                )
+                player_guid = (
+                    get_real_player_guid_for_group(
+                        db, group_id
+                    )
+                )
+            except Exception:
+                logger.error(
+                    "player_guid DB fallback failed "
+                    "for group %s", group_id,
+                    exc_info=True,
+                )
+
+        if not player_guid:
+            return  # can't create orphaned memory
+
+        # Resolve location NOW while traits exist
+        location, zone_id = _resolve_location(
+            db, config, group_id
+        )
+    finally:
+        if own_db and db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    memory_executor.submit(
+        _execute_generate_memory,
+        config=config,
+        group_id=group_id,
+        bot_guid=bot_guid,
+        player_guid=player_guid,
+        memory_type=memory_type,
+        event_context=event_context,
+        bot_name=bot_name,
+        bot_class=bot_class,
+        bot_race=bot_race,
+        bot_gender=bot_gender,
+        player_name=player_name,
+        player_gender=player_gender,
+        location=location,
+        zone_id=zone_id,
+        session_start=session_start,
+        insert_active=False,
+    )
+
+
+def queue_shared_event_memory(
+    config, group_id, memory_type, event_context,
+    bot_guids, db=None,
+):
+    """Submit ONE memory-generation task whose result is
+    inserted for every eligible bot in bot_guids.
+
+    Used for party-wide events (boss/rare kills, wipes):
+    a single LLM call replaces one call per bot. Callers
+    are responsible for passing altbots only.
+
+    Args:
+        config: bridge config dict
+        group_id: group identifier
+        memory_type: one of MEMORY_MOODS keys
+        event_context: brief description of the moment
+        bot_guids: iterable of altbot character guids
+        db: optional DB connection for the player_guid
+            fallback lookup
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Enable', 1
+    )):
+        return
+
+    lock = _get_group_lock(group_id, create=False)
+    if lock is None:
+        return
+    with lock:
+        session = _active_sessions.get(group_id)
+        if not session:
+            return
+        eligible_bots = (
+            set(bot_guids) & session["bots"]
+        )
+        if not eligible_bots:
+            return
+        session_start = session["start"]
+        player_guid = session["player_guid"]
 
     # Last resort: resolve from group members
     # (handles bridge restart mid-session where
@@ -286,27 +850,15 @@ def queue_memory(
     if not player_guid:
         return  # can't create orphaned memory
 
-    # Resolve location NOW while traits exist
-    location = _resolve_location(
-        db, config, group_id
-    )
-
     memory_executor.submit(
-        _execute_generate_memory,
+        _execute_shared_event_memory,
         config=config,
         group_id=group_id,
-        bot_guid=bot_guid,
+        bot_guids=eligible_bots,
         player_guid=player_guid,
         memory_type=memory_type,
         event_context=event_context,
-        bot_name=bot_name,
-        bot_class=bot_class,
-        bot_race=bot_race,
-        bot_gender=bot_gender,
-        player_name=player_name,
-        location=location,
         session_start=session_start,
-        insert_active=False,
     )
 
 
@@ -315,7 +867,8 @@ def queue_memory(
 # ============================================================
 
 def _resolve_location(db, config, group_id):
-    """Resolve player-centric location label.
+    """Resolve player-centric location label and its
+    numeric zone_id.
 
     Uses get_group_location() for zone/area/map,
     then get_dungeon_flavor() for instances or
@@ -329,9 +882,11 @@ def _resolve_location(db, config, group_id):
         config: bridge config dict
         group_id: group identifier
 
-    Returns a human-readable string like
-    "Teldrassil > Dolanaar" or "The Deadmines",
-    or empty string on failure.
+    Returns (location_str, zone_id) where location_str
+    is a human-readable string like "Teldrassil >
+    Dolanaar" or "The Deadmines" (empty string on
+    failure), and zone_id is the numeric zone id or
+    None if unknown.
     """
     own_db = False
     try:
@@ -339,18 +894,23 @@ def _resolve_location(db, config, group_id):
             db = get_db_connection(config)
             own_db = True
         z, a, m = get_group_location(db, group_id)
+        zone_id = z or None
         if not z and not m:
-            return ""
+            return "", zone_id
         # Dungeons/raids: use flavour name
         df = get_dungeon_flavor(m)
         if df:
-            return df.split(':')[0]
+            return df.split(':')[0], zone_id
         # Open world: "Zone > Subzone" or "Zone"
         if z:
-            return format_location_label(z, a)
-        return ""
+            return format_location_label(z, a), zone_id
+        return "", zone_id
     except Exception:
-        return ""
+        logger.debug(
+            "location resolution failed for "
+            "group=%s", group_id, exc_info=True,
+        )
+        return "", None
     finally:
         if own_db and db:
             try:
@@ -372,28 +932,114 @@ def _count_active_memories(cursor, bot_guid, player_guid):
     return row[0] if row else 0
 
 
-def _evict_one_used(cursor, conn, bot_guid, player_guid):
-    """Evict one random used memory.
+def _top_row_exclusion_sql(score_sql):
+    """SQL fragment excluding a bot-player pair's single
+    highest-effective_score active row.
+
+    Shared by _evict_one_used() (never evict a bot's most
+    valuable memory of a player) and
+    _get_condensation_candidates() (never condense it away
+    either) so the "most valuable memory is always
+    protected" guarantee lives in exactly one place instead
+    of two near-identical copies of this subquery.
+
+    MySQL requires the extra subquery wrapping since you
+    can't otherwise select from the same table you're
+    filtering against. Requires two extra (bot_guid,
+    player_guid) query parameters supplied by the caller, in
+    addition to whatever its own WHERE clause already needs.
+    """
+    return (
+        " AND id != (SELECT id FROM ("
+        "SELECT id FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        " ORDER BY "
+        + score_sql +
+        " DESC, created_at DESC"
+        " LIMIT 1"
+        ") t)"
+    )
+
+
+def _evict_one_used(
+    cursor, conn, bot_guid, player_guid, config=None,
+):
+    """Evict the least valuable memory to make room.
+
+    Prefers the lowest decay-aware effective_score
+    used=1 row (created_at ASC breaks ties), falling
+    back to the lowest-scoring row regardless of used
+    status so a pool full of unread memories can't
+    deadlock the cap. Both queries exclude the pair's
+    single highest-scoring row (see
+    _top_row_exclusion_sql()), so a bot never forgets
+    its most valuable memory about a player.
 
     Returns True if a row was deleted.
     """
+    score_sql = _effective_score_sql(config)
+    top_row_subquery = _top_row_exclusion_sql(score_sql)
     cursor.execute(
         "DELETE FROM llm_bot_memories"
         " WHERE bot_guid = %s"
         "   AND player_guid = %s"
         "   AND active = 1"
         "   AND used = 1"
-        " ORDER BY RAND() LIMIT 1",
-        (bot_guid, player_guid),
+        + top_row_subquery +
+        " ORDER BY "
+        + score_sql +
+        " ASC, created_at ASC"
+        " LIMIT 1",
+        (
+            bot_guid, player_guid,
+            bot_guid, player_guid,
+        ),
     )
     conn.commit()
-    return cursor.rowcount > 0
+    if cursor.rowcount > 0:
+        return True
+
+    # Fallback: no used=1 row was eligible. Pool is
+    # under generation pressure (filling up with
+    # memories that haven't been recalled yet) --
+    # evict the lowest-value row regardless of used
+    # status so the cap never gets permanently stuck.
+    cursor.execute(
+        "DELETE FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        + top_row_subquery +
+        " ORDER BY "
+        + score_sql +
+        " ASC, created_at ASC"
+        " LIMIT 1",
+        (
+            bot_guid, player_guid,
+            bot_guid, player_guid,
+        ),
+    )
+    conn.commit()
+    if cursor.rowcount > 0:
+        logger.info(
+            "Memory pool for bot=%s player=%s had no"
+            " used=1 rows to evict (generation"
+            " pressure: pool filled with unread"
+            " memories); evicted lowest-value unused"
+            " row instead",
+            bot_guid, player_guid,
+        )
+        return True
+    return False
 
 
 def _ensure_cap_and_insert(
-    conn, bot_guid, player_guid, group_id,
+    conn, config, bot_guid, player_guid, group_id,
     memory_type, memory_text, mood, emote,
     session_start, active, max_per,
+    importance=5, zone_id=None,
 ):
     """Check memory cap, evict if needed, insert.
 
@@ -403,9 +1049,14 @@ def _ensure_cap_and_insert(
     cnt = _count_active_memories(
         cursor, bot_guid, player_guid
     )
-    if cnt >= max_per:
+    evicted = False
+    # Only enforce the active cap when this insert is itself active:
+    # a pending (active=0) row doesn't consume an active slot, so evicting
+    # a real memory to make room for it would be a needless, permanent loss.
+    if active and cnt >= max_per:
         if not _evict_one_used(
-            cursor, conn, bot_guid, player_guid
+            cursor, conn, bot_guid, player_guid,
+            config,
         ):
             logger.debug(
                 "Memory pool full, no used"
@@ -413,23 +1064,935 @@ def _ensure_cap_and_insert(
                 " bot %s", bot_guid,
             )
             return False
+        evicted = True
     cursor.execute(
         "INSERT INTO llm_bot_memories"
         " (bot_guid, player_guid,"
         "  group_id, memory_type,"
         "  memory, mood, emote,"
-        "  active, session_start)"
+        "  active, session_start,"
+        "  importance_score, zone_id)"
         " VALUES"
-        " (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             bot_guid, player_guid,
             group_id, memory_type,
             memory_text, mood, emote,
             active, session_start,
+            importance, zone_id,
         ),
     )
     conn.commit()
+
+    # Session vibe: a sufficiently important memory
+    # colors the group's ambient idle-chatter tone for
+    # a while (see get_session_vibe() for the lazy-decay
+    # read side). The in-memory session is updated only
+    # when one exists, but the DB row is written either
+    # way -- the read side falls back to the DB
+    # unconditionally, so gating the write on a live
+    # session would drop the vibe exactly when it is
+    # needed most (after a restart or a session CLEANUP
+    # wipe). Rows for groups that are really gone are
+    # purged by cleanup_stale_groups() /
+    # cleanup_all_session_data(), so writing without a
+    # session does not leak.
+    # Not lock-protected: this call can already run
+    # inside the per-group lock (see
+    # _execute_generate_memory's insert_active=False
+    # path re-check block), and that lock is a plain
+    # (non-reentrant) threading.Lock, so acquiring it
+    # again here would deadlock. A couple of plain field
+    # writes are safe enough for a best-effort vibe cue.
+    vibe_threshold = int(config.get(
+        'LLMChatter.GroupChatter'
+        '.VibeImportanceThreshold', 5,
+    ))
+    if importance >= vibe_threshold:
+        session = _active_sessions.get(group_id)
+        if session is not None:
+            session["vibe"] = mood
+            session["vibe_set_at"] = time.time()
+            # The triggering memory_type: lets the prompt
+            # name the cause, not just the mood.
+            session["vibe_source"] = memory_type
+            # Drop any cached "no vibe here" marker so the
+            # read side sees this one immediately (see
+            # _VIBE_MISS_CACHE_SECONDS).
+            session.pop('vibe_miss_until', None)
+        # Persist so the vibe survives a bridge restart /
+        # session CLEANUP wipe. Reuses this function's
+        # connection rather than opening a second one on
+        # the hot path. Fail-open: a DB hiccup must never
+        # break the memory insert this block is part of.
+        try:
+            upsert_group_vibe(
+                config, group_id, mood, importance,
+                source_type=memory_type, conn=conn,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist group vibe for"
+                " group %s", group_id,
+                exc_info=True,
+            )
+
+    # Proactive condensation trigger: needs the pair's
+    # active count AFTER the insert above (and any eviction
+    # that made room for it), i.e. the pool's real current
+    # size rather than the pre-insert snapshot. Derived
+    # rather than re-queried -- _evict_one_used() removes
+    # exactly one active row and the insert adds one only
+    # when it lands active -- since this sits on the hot
+    # path of every single memory write.
+    new_count = cnt + (1 if active else 0)
+    if evicted:
+        new_count -= 1
+    _maybe_trigger_condensation(
+        config, bot_guid, player_guid, new_count, max_per,
+    )
+
     return True
+
+
+# ============================================================
+# CONDENSATION (background, low-value memory folding)
+# ============================================================
+#
+# Proactively folds a bot-player pair's low-value memories
+# into 1-2 higher-quality digests BEFORE the hard row cap is
+# hit, since a reactive trigger (checking at the cap) would
+# race against _ensure_cap_and_insert()'s synchronous
+# eviction above -- eviction always wins that race (it runs
+# inline, condensation would need an LLM round-trip), so by
+# the time a reactive condensation pass finished, eviction
+# would already have deleted the very rows it meant to fold.
+# ============================================================
+
+def _insert_memory_row(
+    cursor, bot_guid, player_guid, group_id,
+    memory_type, memory_text, mood, emote,
+    active, session_start, importance, zone_id=None,
+    used=0, created_at=None, condensation_generation=0,
+):
+    """Insert one llm_bot_memories row directly, bypassing
+    _ensure_cap_and_insert()'s cap/threshold checks.
+
+    Used by _condense_low_value_memories() to insert digest
+    rows: routing those through the public
+    _ensure_cap_and_insert() would re-trigger the cap and
+    condensation-threshold checks recursively while a
+    condensation pass is already in flight for this exact
+    pair. Does NOT commit -- the caller controls the
+    transaction boundary (digest insert(s) + source deletes
+    share one commit, see _condense_low_value_memories()).
+
+    created_at defaults to the column default (NOW()); pass an
+    explicit value to make a digest inherit its oldest source's
+    timestamp, so it keeps decaying on the clock its sources
+    were already on instead of resetting it (see
+    _condense_low_value_memories()).
+    """
+    cursor.execute(
+        "INSERT INTO llm_bot_memories"
+        " (bot_guid, player_guid,"
+        "  group_id, memory_type,"
+        "  memory, mood, emote,"
+        "  active, used, session_start,"
+        "  importance_score, zone_id,"
+        "  condensation_generation, created_at)"
+        " VALUES"
+        " (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+        + ("%s" if created_at is not None else "NOW()")
+        + ")",
+        (
+            bot_guid, player_guid,
+            group_id, memory_type,
+            memory_text, mood, emote,
+            active, used, session_start,
+            importance, zone_id,
+            condensation_generation,
+        ) + (
+            (created_at,) if created_at is not None else ()
+        ),
+    )
+
+
+def _get_condensation_candidates(
+    cursor, bot_guid, player_guid, config,
+):
+    """Fetch this pair's condensation candidates: active
+    rows scored below
+    LLMChatter.Memory.Condensation.ProtectFloor, excluding
+    the pair's single highest-effective_score row (same
+    guard _evict_one_used() uses, via
+    _top_row_exclusion_sql()), ordered by effective_score
+    ascending (least valuable first) and capped at
+    LLMChatter.Memory.Condensation.MaxCandidates rows.
+
+    The MaxCandidates cap keeps a single condensation pass
+    gradual and incremental -- folding a bounded handful of
+    the pair's least-valuable memories into a digest each
+    time the trigger fires, rather than sweeping every
+    below-floor row into at most MaxDigests digests in one
+    shot. Since rows are ordered least-valuable-first and
+    LIMIT is applied in SQL, an oversized pool of eligible
+    memories is condensed gradually over several passes
+    instead of being folded away in a single one.
+
+    Rows whose condensation_generation has already reached
+    LLMChatter.Memory.Condensation.MaxGenerations are excluded:
+    a digest always lands below ProtectFloor by construction, so
+    without a generation cap digests would be re-condensed round
+    after round (digests of digests), drifting further from the
+    facts they came from every time.
+    """
+    score_sql = _effective_score_sql(config)
+    protect_floor = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.ProtectFloor',
+        DEFAULT_CONDENSATION_PROTECT_FLOOR,
+    ))
+    max_candidates = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.MaxCandidates',
+        DEFAULT_CONDENSATION_MAX_CANDIDATES,
+    ))
+    if max_candidates < 1:
+        max_candidates = DEFAULT_CONDENSATION_MAX_CANDIDATES
+    max_generations = int((config or {}).get(
+        'LLMChatter.Memory.Condensation.MaxGenerations',
+        DEFAULT_CONDENSATION_MAX_GENERATIONS,
+    ))
+    if max_generations < 1:
+        max_generations = DEFAULT_CONDENSATION_MAX_GENERATIONS
+    cursor.execute(
+        "SELECT id, group_id, memory, importance_score,"
+        " created_at, condensation_generation, "
+        + score_sql + " AS effective_score"
+        " FROM llm_bot_memories"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND active = 1"
+        "   AND importance_score < %s"
+        "   AND condensation_generation < %s"
+        + _top_row_exclusion_sql(score_sql) +
+        " ORDER BY effective_score ASC, created_at ASC"
+        " LIMIT %s",
+        (
+            bot_guid, player_guid, protect_floor,
+            max_generations,
+            bot_guid, player_guid, max_candidates,
+        ),
+    )
+    return cursor.fetchall()
+
+
+def _cap_candidates_by_chars(candidates, max_chars):
+    """Trim a condensation candidate list (least-valuable-first,
+    as returned by _get_condensation_candidates()) so the
+    cumulative length of their 'memory' text never exceeds
+    max_chars, mirroring _maybe_update_relationship()'s identical
+    cumulative-char trim against _RELATIONSHIP_MAX_INPUT_CHARS.
+
+    Defense in depth: LLMChatter.Memory.Condensation.MaxCandidates
+    already bounds the batch size well under max_chars in practice,
+    but this keeps the prompt itself provably bounded regardless of
+    how that setting -- or the length of any individual memory --
+    is configured. Always keeps at least the first candidate even
+    if it alone exceeds max_chars, so a single oversized memory
+    can't stall condensation entirely.
+    """
+    kept = []
+    char_count = 0
+    for row in candidates:
+        row_chars = len(str(row.get('memory') or '')) + 3
+        if kept and char_count + row_chars > max_chars:
+            break
+        kept.append(row)
+        char_count += row_chars
+    return kept
+
+
+def _build_condensation_prompt(
+    candidates, max_digests,
+    player_name="", player_gender="",
+    bot_name="", bot_race="", bot_class="",
+    bot_gender="",
+):
+    """Build the LLM prompt for condensing a batch of
+    low-value memories into 1-max_digests higher-level
+    digest memories.
+
+    Follows the same prompt-building convention as
+    chatter_guild_player._maybe_summarize_session():
+    explicit fact-preservation instructions, a hard length
+    limit, and a "never invent/embellish" rule. Reuses
+    _IMPORTANCE_RUBRIC verbatim so a digest's suggested
+    importance stays on the same 1-10 scale as every other
+    memory-generation prompt in this file -- the caller
+    (_condense_low_value_memories()) then clamps that
+    suggestion to min(suggested, max(source_importances))
+    before storing it.
+    """
+    # max_chars=MEMORY_TEXT_MAX_CHARS, NOT the default:
+    # _condense_low_value_memories() DELETES every row shown
+    # here once the digest is written, so anything the prompt
+    # truncates away is destroyed without ever having been
+    # seen by the model. Show the full stored text.
+    memory_list = "\n".join(
+        f"{i + 1}. "
+        f"{sanitize_memory_for_prompt(row['memory'], max_chars=MEMORY_TEXT_MAX_CHARS)}"
+        for i, row in enumerate(candidates)
+    )
+    identity = ""
+    if bot_name:
+        identity = (
+            build_bot_identity(
+                bot_name, bot_race, bot_class, bot_gender,
+            )
+            + "\n"
+        )
+    prompt = (
+        f"{identity}"
+        f"Here are {len(candidates)} separate low-value "
+        "memories a bot has about a player in World of "
+        "Warcraft.\n"
+        f"Fold them into 1-{max_digests} higher-level "
+        "memories that preserve named entities, places, "
+        "bosses, and important facts. Discard redundant "
+        "or filler ones. Never invent, infer, or embellish "
+        "facts not present in the memories below.\n"
+        "Each resulting memory must be 1-2 sentences, "
+        "first person, hard limit "
+        f"{MEMORY_TEXT_MAX_CHARS} characters.\n\n"
+        f"Memories:\n{memory_list}\n\n"
+    )
+    prompt += _IMPORTANCE_RUBRIC
+    rules = (
+        "Rules:\n"
+        f"- Return 1 to {max_digests} objects in the "
+        "\"digests\" array, never more\n"
+        "- No quotes inside the memory text\n"
+    )
+    if player_name:
+        rules += (
+            f"- When a digest involves the player, refer"
+            f" to them by name ({player_name}) — never"
+            f" use generic terms like 'a traveler' or"
+            f" 'someone'\n"
+        )
+    if player_name and player_gender:
+        rules += (
+            f"- The player ({player_name}) is"
+            f" grammatically {player_gender} — use"
+            f" correct gender agreement for any"
+            f" pronouns and past-tense verbs"
+            f" referring to them\n"
+        )
+    if bot_name and bot_gender:
+        rules += (
+            f"- You are writing as {bot_name},"
+            f" grammatically {bot_gender} — keep"
+            f" your own first-person past-tense verbs"
+            f" and adjectives in that gender\n"
+        )
+    rules += "- Just the JSON, nothing else"
+    prompt += (
+        "Respond in JSON with a \"digests\" array of 1 "
+        f"to {max_digests} objects, each with keys "
+        "\"memory\" (string), \"importance\" (integer "
+        "1-10 using the rubric above), and optionally "
+        "\"mood\" (one word):\n"
+        '{"digests": [{"memory": "...", "importance": 5, '
+        '"mood": "contemplative"}]}\n\n'
+    )
+    prompt += rules
+
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
+    lang_rule = get_language_rule()
+    if lang_rule:
+        prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
+
+    return prompt
+
+
+def _maybe_trigger_condensation(
+    config, bot_guid, player_guid, active_count, max_per,
+):
+    """Proactively submit a background condensation pass
+    once a bot-player pair's active memory count crosses
+    LLMChatter.Memory.Condensation.TriggerPercent of the
+    row cap.
+
+    Called from _ensure_cap_and_insert() right after a
+    successful insert. Non-blocking: submit-and-return,
+    mirroring _maybe_queue_relationship_update()'s queuing
+    shape -- never awaited here, and never allowed to slow
+    down or fail the insert it's piggybacking on. The
+    submit() call itself IS wrapped in a try/except (unlike
+    the rest of this function): a submit() failure (e.g. the
+    executor is mid-shutdown) must never leave `pair` stuck
+    in _condensing_pairs forever (which would permanently
+    block all future condensation attempts for it), and must
+    never propagate out of here -- this runs inline inside
+    _ensure_cap_and_insert() right after that function's own
+    insert already committed, so an uncaught exception here
+    would surface to the caller as a failure for an insert
+    that actually succeeded.
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Condensation.Enable', 1,
+    )):
+        return
+    if max_per <= 0:
+        return
+    trigger_percent = int(config.get(
+        'LLMChatter.Memory.Condensation.TriggerPercent',
+        DEFAULT_CONDENSATION_TRIGGER_PERCENT,
+    ))
+    if active_count * 100 < max_per * trigger_percent:
+        return
+
+    pair = (bot_guid, player_guid)
+    with _condensing_lock:
+        if pair in _condensing_pairs:
+            logger.debug(
+                "Condensation already in flight for "
+                "bot=%s player=%s, skipping duplicate "
+                "trigger", bot_guid, player_guid,
+            )
+            return
+        _condensing_pairs.add(pair)
+
+    logger.info(
+        "Condensation triggered for bot=%s player=%s "
+        "(%d/%d active memories, >= %d%% trigger)",
+        bot_guid, player_guid, active_count, max_per,
+        trigger_percent,
+    )
+    try:
+        condensation_executor.submit(
+            _condense_low_value_memories,
+            config, bot_guid, player_guid,
+        )
+    except Exception:
+        with _condensing_lock:
+            _condensing_pairs.discard(pair)
+        logger.error(
+            "Failed to submit condensation job for "
+            "bot=%s player=%s", bot_guid, player_guid,
+            exc_info=True,
+        )
+
+
+def _rewind_relationship_watermark(
+    cursor, bot_guid, player_guid,
+    digest_created_at, source_max_created_at,
+):
+    """Roll a pair's relationship watermark back behind a
+    freshly written condensation digest, when condensation
+    would otherwise have hidden content from it forever.
+
+    _maybe_update_relationship() selects new material with
+    `created_at > updated_through_created_at`. A digest
+    inherits its OLDEST source's created_at (so its decay
+    clock is not reset), which means a digest can land BEHIND
+    a watermark that had already passed some of the sources it
+    absorbed. Those sources are then deleted. The content is
+    now reachable only through a row the relationship pass
+    will never select again -- and because each pass can fold
+    yet another already-summarized-past memory into an
+    older-stamped digest, the loss compounds instead of
+    resolving.
+
+    Setting the watermark to one second before the digest's
+    created_at makes the very next relationship pass pick the
+    digest up and re-fold it. Re-folding already-summarized
+    material is harmless (the prompt is "update this summary
+    with these memories"); losing it is not.
+
+    Only rewinds, never advances: the UPDATE requires the
+    current watermark to be strictly newer than the target, so
+    a pair whose watermark already sits behind the digest
+    keeps it and does not skip unrelated memories in between.
+    And only fires when a source really was newer than the
+    watermark -- an ordinary condensation of long-summarized
+    memories changes nothing.
+
+    Uses UPDATE (not upsert) so a pair with no relationship
+    row yet stays without one; the relationship pass creates
+    that row on its own terms.
+
+    Returns the datetime it rewound to, or None if it did not
+    rewind (no relationship row, watermark already behind the
+    digest, nothing newer than the watermark, or missing
+    timestamps).
+    """
+    if digest_created_at is None or source_max_created_at is None:
+        return None
+    if not isinstance(digest_created_at, datetime.datetime):
+        return None
+    target = digest_created_at - datetime.timedelta(seconds=1)
+    cursor.execute(
+        "UPDATE llm_bot_relationships"
+        " SET updated_through_created_at = %s"
+        " WHERE bot_guid = %s"
+        "   AND player_guid = %s"
+        "   AND updated_through_created_at < %s"
+        "   AND updated_through_created_at > %s",
+        (
+            target, bot_guid, player_guid,
+            source_max_created_at, target,
+        ),
+    )
+    return target if cursor.rowcount else None
+
+
+def _condense_low_value_memories(
+    config, bot_guid, player_guid,
+):
+    """Fold a bot-player pair's low-value memories into 1-2
+    higher-quality digest memories via a single LLM call.
+
+    Submitted by _maybe_trigger_condensation() once the pair's
+    active memory count crosses
+    LLMChatter.Memory.Condensation.TriggerPercent of the cap,
+    and runs on the dedicated condensation_executor so a slow
+    LLM call here cannot compete with primary
+    memory-generation throughput. Candidates are active rows
+    scored below LLMChatter.Memory.Condensation.ProtectFloor,
+    excluding the pair's single highest-effective_score row;
+    fewer than LLMChatter.Memory.Condensation.MinCandidates of
+    them and the pass skips silently.
+
+    Runs on TWO short-lived connections, never one held across
+    the LLM call: mysql-connector has autocommit off, so
+    holding the read connection open would pin that SELECT's
+    read view (and InnoDB's purge) for the whole round-trip.
+    The second opens only once a usable response is in hand,
+    and carries the entire insert-digests / delete-sources /
+    rewind-watermark transaction -- see
+    _rewind_relationship_watermark() for why the watermark has
+    to be repaired in the same transaction.
+
+    A digest inherits its OLDEST source's created_at (so its
+    decay clock is not reset), is inserted used=1, is bounded
+    by min(llm_suggested_score, max(source_importances)), and
+    carries max(source generations) + 1 to cap how many times
+    the same material can be re-folded
+    (LLMChatter.Memory.Condensation.MaxGenerations).
+
+    On failure (LLM call fails, response missing/unparseable,
+    or zero usable digests): logs and aborts. Deliberately no
+    fallback deletion of source rows: a malformed LLM response
+    must never cause data loss.
+
+    Returns True if at least one digest was inserted and its
+    sources removed, False otherwise (including "not enough
+    candidates" and "condensation attempted but failed").
+    """
+    conn = None
+    write_conn = None
+    try:
+        conn = get_db_connection(config)
+        cursor = conn.cursor(dictionary=True)
+
+        candidates = _get_condensation_candidates(
+            cursor, bot_guid, player_guid, config,
+        )
+        # Defense-in-depth char cap on top of the SQL-level
+        # MaxCandidates LIMIT (see _cap_candidates_by_chars()
+        # docstring) -- whatever survives this trim is exactly
+        # what gets folded into the prompt AND deleted below, so
+        # a memory that didn't fit the char budget is left
+        # untouched for a future condensation pass rather than
+        # silently deleted without being represented in a digest.
+        candidates = _cap_candidates_by_chars(
+            candidates, _CONDENSATION_MAX_INPUT_CHARS,
+        )
+        min_candidates = int(config.get(
+            'LLMChatter.Memory.Condensation.MinCandidates',
+            DEFAULT_CONDENSATION_MIN_CANDIDATES,
+        ))
+        # A pass must always be a net REDUCTION. Folding fewer
+        # than two rows is not condensation, and MinCandidates
+        # is what MaxDigests is clamped against below.
+        if min_candidates < 2:
+            min_candidates = DEFAULT_CONDENSATION_MIN_CANDIDATES
+        if len(candidates) < min_candidates:
+            logger.debug(
+                "Skipping condensation for bot=%s "
+                "player=%s: only %d eligible candidate(s) "
+                "(need at least %d)",
+                bot_guid, player_guid, len(candidates),
+                min_candidates,
+            )
+            return False
+
+        # Resolve bot identity so digests keep the bot's own
+        # race/class/gender consistent (same defensive pattern
+        # as the player lookup). Failure just omits the rules.
+        bot_name = ""
+        bot_race = ""
+        bot_class = ""
+        bot_gender = ""
+        try:
+            bc = conn.cursor(dictionary=True)
+            bc.execute(
+                "SELECT name, race, class, gender FROM"
+                " characters WHERE guid = %s",
+                (bot_guid,),
+            )
+            br = bc.fetchone()
+            if br:
+                bot_name = br['name']
+                if br.get('race') is not None:
+                    bot_race = get_race_name(br['race'])
+                if br.get('class') is not None:
+                    bot_class = get_class_name(br['class'])
+                if br.get('gender') is not None:
+                    bot_gender = get_gender_label(
+                        br['gender']
+                    )
+            bc.close()
+        except Exception:
+            logger.debug(
+                "Could not resolve bot identity for"
+                " guid=%s", bot_guid,
+            )
+
+        # Resolve player name/gender so digests keep correct
+        # grammatical gender (same lookup _execute_generate_memory
+        # uses for fresh memories). A failure just omits the rules.
+        player_name = ""
+        player_gender = ""
+        try:
+            pc = conn.cursor(dictionary=True)
+            pc.execute(
+                "SELECT name, gender FROM"
+                " characters WHERE guid = %s",
+                (player_guid,),
+            )
+            pr = pc.fetchone()
+            if pr:
+                player_name = pr['name']
+                if pr.get('gender') is not None:
+                    player_gender = get_gender_label(
+                        pr['gender']
+                    )
+            pc.close()
+        except Exception:
+            logger.debug(
+                "Could not resolve player_name/"
+                "player_gender for guid=%s",
+                player_guid,
+            )
+
+        max_digests = int(config.get(
+            'LLMChatter.Memory.Condensation.MaxDigests',
+            DEFAULT_CONDENSATION_MAX_DIGESTS,
+        ))
+        # Digest inserts go through _insert_memory_row() directly,
+        # NOT _ensure_cap_and_insert(), so they are not themselves
+        # cap-checked or eviction-guarded. That is safe only while a
+        # pass strictly shrinks the pool: with MaxDigests >=
+        # MinCandidates a pass could replace N rows with N (or more)
+        # digests and, repeated, grow the pool straight past
+        # MaxPerBotPlayer with nothing to trim it back. Clamp so at
+        # least one row is always retired per pass. MaxCandidates and
+        # MaxGenerations are clamped the same way in
+        # _get_condensation_candidates().
+        if max_digests < 1:
+            max_digests = DEFAULT_CONDENSATION_MAX_DIGESTS
+        ceiling = max(1, min_candidates - 1)
+        if max_digests > ceiling:
+            logger.debug(
+                "Clamping Condensation.MaxDigests %d -> %d so a "
+                "pass cannot grow the memory pool (MinCandidates=%d)",
+                max_digests, ceiling, min_candidates,
+            )
+            max_digests = ceiling
+        prompt = _build_condensation_prompt(
+            candidates, max_digests,
+            player_name=player_name,
+            player_gender=player_gender,
+            bot_name=bot_name,
+            bot_race=bot_race,
+            bot_class=bot_class,
+            bot_gender=bot_gender,
+        )
+        client = get_llm_client(config)
+
+        # Everything this pass needs from the database has been
+        # read. Close BEFORE the LLM call rather than after:
+        # holding this connection open would keep the candidate
+        # SELECT's transaction (and read view) alive for the
+        # whole round-trip. The write below opens a fresh one.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
+
+        response = None
+        try:
+            response = call_llm(
+                client, prompt, config,
+                max_tokens_override=int(config.get(
+                    'LLMChatter.Memory.Condensation'
+                    '.MaxTokens', 500,
+                )),
+                context=(
+                    f"memory-condense:{bot_guid}"
+                    f":{player_guid}"
+                ),
+                label='memory_condensation',
+                use_quick_model=_memory_uses_quick_model(
+                    config
+                ),
+                metadata={
+                    'bot_guid': bot_guid,
+                    'player_guid': player_guid,
+                    'candidate_count': len(candidates),
+                },
+            )
+        except Exception:
+            logger.error(
+                "Condensation LLM call failed for "
+                f"bot={bot_guid} player={player_guid}",
+                exc_info=True,
+            )
+
+        if not response:
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: no LLM response; %d source "
+                "memories left untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        data = extract_json_object(
+            response, required_key='digests',
+        )
+        digests_raw = (
+            data.get('digests') if data else None
+        )
+        if (
+            not isinstance(digests_raw, list)
+            or not digests_raw
+        ):
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: response missing/unparseable "
+                "'digests'; %d source memories left "
+                "untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        max_source_importance = max(
+            int(c['importance_score']) for c in candidates
+        )
+        # Inherit the oldest source's created_at (see docstring)
+        # -- guarded with a default so a caller/fake that didn't
+        # supply created_at still inserts a valid row.
+        source_created_ats = [
+            c['created_at'] for c in candidates
+            if c.get('created_at') is not None
+        ]
+        digest_created_at = (
+            min(source_created_ats)
+            if source_created_ats else None
+        )
+        # The newest source folded away, used below to decide
+        # whether the relationship watermark now sits past
+        # content that only survives inside the digest.
+        source_max_created_at = (
+            max(source_created_ats)
+            if source_created_ats else None
+        )
+        digest_generation = max(
+            int(c.get('condensation_generation') or 0)
+            for c in candidates
+        ) + 1
+        # group_id is informational metadata only (NOT NULL
+        # column) -- candidates may span different
+        # group_ids across rejoining sessions, the first
+        # candidate's is good enough.
+        group_id = candidates[0]['group_id']
+
+        validated = []
+        for item in digests_raw[:max_digests]:
+            if not isinstance(item, dict):
+                continue
+            memory_text = item.get('memory')
+            if not isinstance(memory_text, str):
+                continue
+            memory_text = memory_text.strip()
+            if (
+                not memory_text
+                or len(memory_text) > MEMORY_TEXT_MAX_CHARS
+            ):
+                continue
+            suggested = _coerce_importance(
+                item.get('importance')
+            )
+            # Hard bound: a digest can never look more
+            # important than the single most important
+            # memory it absorbed.
+            importance = min(
+                suggested, max_source_importance,
+            )
+            mood = item.get('mood')
+            if (
+                not isinstance(mood, str)
+                or not mood.strip()
+            ):
+                mood = 'contemplative'
+            else:
+                mood = mood.strip()[:32]
+            validated.append({
+                'memory': memory_text,
+                'importance': importance,
+                'mood': mood,
+            })
+
+        if not validated:
+            logger.error(
+                "Condensation aborted for bot=%s "
+                "player=%s: zero usable digests parsed "
+                "from response; %d source memories left "
+                "untouched",
+                bot_guid, player_guid, len(candidates),
+            )
+            return False
+
+        candidate_ids = [c['id'] for c in candidates]
+        placeholders = ','.join(
+            ['%s'] * len(candidate_ids)
+        )
+
+        # Fresh connection for the write phase (see docstring):
+        # the read connection was closed before the LLM call.
+        write_conn = get_db_connection(config)
+        wcursor = write_conn.cursor(dictionary=True)
+
+        # Insert digest(s), then delete sources, then repair the
+        # relationship watermark -- sharing ONE commit.
+        for digest in validated:
+            _insert_memory_row(
+                wcursor, bot_guid, player_guid, group_id,
+                'condensed', digest['memory'],
+                digest['mood'], None, active=1, used=1,
+                session_start=time.time(),
+                importance=digest['importance'],
+                zone_id=None,
+                created_at=digest_created_at,
+                condensation_generation=digest_generation,
+            )
+        wcursor.execute(
+            "DELETE FROM llm_bot_memories"
+            f" WHERE id IN ({placeholders})",
+            tuple(candidate_ids),
+        )
+        rolled_back_to = _rewind_relationship_watermark(
+            wcursor, bot_guid, player_guid,
+            digest_created_at, source_max_created_at,
+        )
+        write_conn.commit()
+
+        logger.info(
+            "Condensed %d memories into %d digest(s) for "
+            "bot=%s player=%s (generation=%d, "
+            "inherited created_at=%s)",
+            len(candidate_ids), len(validated),
+            bot_guid, player_guid, digest_generation,
+            digest_created_at,
+        )
+        if rolled_back_to is not None:
+            logger.info(
+                "Rolled relationship watermark back to %s for "
+                "bot=%s player=%s so the new digest is re-folded "
+                "into the relationship summary (a condensed source "
+                "was newer than the old watermark)",
+                rolled_back_to, bot_guid, player_guid,
+            )
+        return True
+
+    except Exception:
+        logger.error(
+            "Memory condensation failed for bot=%s "
+            "player=%s", bot_guid, player_guid,
+            exc_info=True,
+        )
+        return False
+    finally:
+        with _condensing_lock:
+            _condensing_pairs.discard(
+                (bot_guid, player_guid)
+            )
+        for _c in (conn, write_conn):
+            if _c is not None:
+                try:
+                    _c.close()
+                except Exception:
+                    pass
+
+
+def insert_first_meeting_memory(
+    db, config, bot_guid, player_guid, group_id,
+    memory_text, importance=5,
+):
+    """Insert a bot's first-meeting memory of a player.
+
+    Routes through _ensure_cap_and_insert() so this memory
+    type gets the same cap/eviction guarantees as every
+    other memory type instead of bypassing them with a raw
+    INSERT. Preserves the original hand-rolled behavior:
+    mood is always 'warm', there's no emote, the memory is
+    active immediately (active=1, not the pending-until-
+    farewell active=0 lifecycle other event types use), and
+    a duplicate is never created for a bot/player pair that
+    already has a first_meeting memory.
+
+    Returns True if inserted, False if a first_meeting
+    memory already existed or the cap was full with nothing
+    evictable.
+
+    NOTE: this commits the caller's connection as a side
+    effect -- _ensure_cap_and_insert() commits after its
+    insert (and _evict_one_used() may commit again), so any
+    uncommitted work the caller has pending on `db` is
+    committed too. Do not rely on an open transaction
+    spanning this call.
+    """
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT 1 FROM llm_bot_memories"
+        " WHERE bot_guid = %s AND player_guid = %s"
+        "   AND memory_type = 'first_meeting'"
+        " LIMIT 1",
+        (bot_guid, player_guid),
+    )
+    already_exists = cursor.fetchone() is not None
+    cursor.close()
+    if already_exists:
+        return False
+
+    max_per = int(config.get(
+        'LLMChatter.Memory.MaxPerBotPlayer', 30
+    ))
+    return _ensure_cap_and_insert(
+        db, config, bot_guid, player_guid, group_id,
+        'first_meeting', memory_text, 'warm', None,
+        time.time(), active=1, max_per=max_per,
+        importance=importance,
+    )
 
 
 def _execute_generate_memory(
@@ -437,8 +2000,9 @@ def _execute_generate_memory(
     memory_type, event_context,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     location="",
+    zone_id=None,
     session_start=0.0, insert_active=False,
 ):
     """Generate a memory via LLM and insert it.
@@ -469,24 +2033,38 @@ def _execute_generate_memory(
     try:
         conn = get_db_connection(config)
 
-        # Resolve player_name from DB if not
-        # provided but player_guid is known
-        if not player_name and player_guid:
+        # Resolve player_name/player_gender from DB
+        # if not provided but player_guid is known
+        if (
+            (not player_name or not player_gender)
+            and player_guid
+        ):
             try:
                 pc = conn.cursor(dictionary=True)
                 pc.execute(
-                    "SELECT name FROM characters"
-                    " WHERE guid = %s",
+                    "SELECT name, gender FROM"
+                    " characters WHERE guid = %s",
                     (player_guid,),
                 )
                 pr = pc.fetchone()
                 if pr:
-                    player_name = pr['name']
+                    if not player_name:
+                        player_name = pr['name']
+                    if (
+                        not player_gender
+                        and pr.get('gender') is not None
+                    ):
+                        player_gender = (
+                            get_gender_label(
+                                pr['gender']
+                            )
+                        )
                 pc.close()
             except Exception:
                 logger.debug(
-                    "Could not resolve player_name"
-                    " for guid=%s", player_guid,
+                    "Could not resolve player_name/"
+                    "player_gender for guid=%s",
+                    player_guid,
                 )
 
         # Pick mood and expression style
@@ -500,18 +2078,21 @@ def _execute_generate_memory(
         )
 
         # Generate via LLM
-        memory_text, emote = _call_llm_for_memory(
-            config,
-            bot_name=bot_name,
-            bot_class=bot_class,
-            bot_race=bot_race,
-            bot_gender=bot_gender,
-            player_name=player_name,
-            memory_type=memory_type,
-            event_context=event_context,
-            mood=mood,
-            style=style,
-            location=location,
+        memory_text, emote, importance = (
+            _call_llm_for_memory(
+                config,
+                bot_name=bot_name,
+                bot_class=bot_class,
+                bot_race=bot_race,
+                bot_gender=bot_gender,
+                player_name=player_name,
+                player_gender=player_gender,
+                memory_type=memory_type,
+                event_context=event_context,
+                mood=mood,
+                style=style,
+                location=location,
+            )
         )
 
         if not memory_text:
@@ -541,19 +2122,25 @@ def _execute_generate_memory(
                 ):
                     return
                 _ensure_cap_and_insert(
-                    conn, bot_guid, player_guid,
-                    group_id, memory_type,
+                    conn, config, bot_guid,
+                    player_guid, group_id,
+                    memory_type,
                     memory_text, mood, emote,
                     session_start, active=0,
                     max_per=max_per,
+                    importance=importance,
+                    zone_id=zone_id,
                 )
         else:
             _ensure_cap_and_insert(
-                conn, bot_guid, player_guid,
-                group_id, memory_type,
+                conn, config, bot_guid,
+                player_guid, group_id,
+                memory_type,
                 memory_text, mood, emote,
                 session_start, active=1,
                 max_per=max_per,
+                importance=importance,
+                zone_id=zone_id,
             )
 
     except Exception:
@@ -571,73 +2158,183 @@ def _execute_generate_memory(
                 pass
 
 
+def _execute_shared_event_memory(
+    config, group_id, bot_guids, player_guid,
+    memory_type, event_context, session_start=0.0,
+):
+    """Generate ONE shared memory via a single LLM call
+    and insert it for every bot in bot_guids.
+
+    Rows are inserted as active=0 (pending); they go
+    active at farewell (flush_session_memories()) or via
+    orphan recovery, like any other in-session memory.
+    """
+    # Fast bailout before expensive LLM call
+    lock = _get_group_lock(group_id, create=False)
+    if lock is None:
+        return
+    with lock:
+        session = _active_sessions.get(group_id)
+        if (
+            session is None
+            or session["start"] != session_start
+        ):
+            return
+        live_bots = set(bot_guids) & session["bots"]
+    if not live_bots:
+        return
+
+    conn = None
+    try:
+        conn = get_db_connection(config)
+
+        # Resolve current zone for zone-aware recall
+        # tie-breaking (see get_bot_memories()).
+        try:
+            zone_id, _a, _m = get_group_location(
+                conn, group_id
+            )
+            zone_id = zone_id or None
+        except Exception:
+            logger.debug(
+                "zone resolution failed for group=%s",
+                group_id, exc_info=True,
+            )
+            zone_id = None
+
+        moods = MEMORY_MOODS.get(
+            memory_type, ['contemplative'],
+        )
+        mood = random.choice(moods)
+
+        memory_texts, emote, importance = (
+            _generate_shared_event_memory(
+                config, memory_type, event_context,
+                mood_hint=mood,
+            )
+        )
+
+        if not memory_texts:
+            return
+
+        max_per = int(config.get(
+            'LLMChatter.Memory.MaxPerBotPlayer', 30
+        ))
+
+        # Re-check session under per-group lock; bots
+        # that left mid-LLM-call are dropped from the
+        # insert.
+        lock = _get_group_lock(
+            group_id, create=False
+        )
+        if lock is None:
+            return
+        with lock:
+            session = _active_sessions.get(group_id)
+            if (
+                session is None
+                or session["start"]
+                    != session_start
+            ):
+                return
+            live_bots = (
+                set(bot_guids) & session["bots"]
+            )
+            if not live_bots:
+                return
+            inserted_count = 0
+            # Cycle through the available phrasings so
+            # bots present for the same event don't all
+            # get byte-identical stored text -- the
+            # underlying facts/importance stay shared,
+            # only the wording varies.
+            for i, bot_guid in enumerate(live_bots):
+                bot_memory_text = memory_texts[
+                    i % len(memory_texts)
+                ]
+                if _ensure_cap_and_insert(
+                    conn, config, bot_guid,
+                    player_guid, group_id,
+                    memory_type, bot_memory_text,
+                    mood, emote, session_start,
+                    active=0, max_per=max_per,
+                    importance=importance,
+                    zone_id=zone_id,
+                ):
+                    inserted_count += 1
+
+            logger.info(
+                "Shared memory generated for group=%s "
+                "type=%s: %d altbot(s)",
+                group_id, memory_type, inserted_count,
+            )
+
+    except Exception:
+        logger.error(
+            "Shared memory generation failed for "
+            f"group={group_id} type={memory_type}",
+            exc_info=True,
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _coerce_importance(raw_importance, default=5):
+    """Coerce a parsed `importance` field to an int in
+    [1, 10].
+
+    Always returns a usable value: `default` when the
+    field is missing, non-numeric, or wildly out of
+    range (a garbled misparse), otherwise clamped into
+    [1, 10].
+    """
+    try:
+        importance = int(raw_importance)
+    except (TypeError, ValueError):
+        return default
+    if importance < -1000 or importance > 1000:
+        return default
+    return max(1, min(10, importance))
+
+
 def _call_llm_for_memory(
     config,
     bot_name="", bot_class="", bot_race="",
     bot_gender="",
-    player_name="",
+    player_name="", player_gender="",
     memory_type="ambient", event_context="",
     mood="contemplative", style="sincere",
     location="",
 ):
     """Call LLM to generate a memory entry.
 
-    Returns (memory_text, emote) or (None, None).
+    Returns (memory_text, emote, importance) or
+    (None, None, None) on failure. Only `memory` is
+    required; a missing/malformed `importance` or
+    `emote` falls back to a default instead of failing.
     """
     client = get_llm_client(config)
 
-    type_desc = {
-        'ambient': (
-            "a quiet moment during travel"
-        ),
-        'boss_kill': (
-            "defeating a powerful enemy together"
-        ),
-        'wipe': (
-            "a total party wipe"
-        ),
-        'rare_kill': (
-            "finding and slaying a rare creature"
-        ),
-        'dungeon': (
-            "entering a dungeon or raid"
-        ),
-        'party_member': (
-            "adventuring alongside a companion"
-        ),
-        'player_message': (
-            "something the player said in chat"
-        ),
-        'quest_complete': (
-            "completing a quest together"
-        ),
-        'achievement': (
-            "earning an achievement"
-        ),
-        'level_up': (
-            "reaching a new level"
-        ),
-        'bg_win': (
-            "winning a battleground"
-        ),
-        'bg_loss': (
-            "losing a battleground"
-        ),
-        'discovery': (
-            "discovering a new area"
-        ),
-        'pvp_kill': (
-            "defeating an enemy player in combat"
-        ),
-    }.get(memory_type, "a shared moment")
+    type_desc = _MEMORY_TYPE_DESCRIPTIONS.get(
+        memory_type, "a shared moment"
+    )
 
     prompt = (
-        f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender)} "
-        f"in World of Warcraft.\n"
+        f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender).rstrip('.')}"
+        f" in World of Warcraft.\n"
     )
     if player_name:
         prompt += (
-            f"Player companion: {player_name}\n"
+            f"Player companion: {player_name}"
+            + (
+                f" (gender: {player_gender})"
+                if player_gender else ""
+            )
+            + "\n"
         )
     if location:
         prompt += f"Location: {location}\n"
@@ -654,9 +2351,11 @@ def _call_llm_for_memory(
         f"This is a private journal entry, not "
         f"spoken aloud. Be specific about what "
         f"happened.\n\n"
+        + _IMPORTANCE_RUBRIC +
         f"Respond in JSON:\n"
         f'{{"memory": "your memory text", '
-        f'"emote": "one_word_emote"}}\n\n'
+        f'"emote": "one_word_emote", '
+        f'"importance": 5}}\n\n'
         f"Rules:\n"
         f"- Memory must be 1-2 sentences\n"
         f"- First person perspective\n"
@@ -664,6 +2363,8 @@ def _call_llm_for_memory(
         f"- Only reference the location given above"
         f" — never invent or guess a location\n"
         f"- Emote is optional (null if none)\n"
+        f"- Importance is an integer from 1 to 10"
+        f" using the rubric above\n"
     )
     if player_name:
         prompt += (
@@ -673,17 +2374,30 @@ def _call_llm_for_memory(
             f" terms like 'a traveler' or 'someone'"
             f" or 'a stranger'\n"
         )
+    if player_name and player_gender:
+        prompt += (
+            f"- The player ({player_name}) is"
+            f" grammatically {player_gender} — use"
+            f" correct gender agreement for any"
+            f" pronouns and past-tense verbs"
+            f" referring to them\n"
+        )
     prompt += (
         f"- Just the JSON, nothing else"
     )
 
     # Plain-string prompt path — not routed through
     # append_json_instruction, so inject the language
-    # rule directly.
-    from chatter_shared import get_language_rule
+    # rule and lore guardrail directly.
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
     lang_rule = get_language_rule()
     if lang_rule:
         prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
 
     try:
         response = call_llm(
@@ -691,31 +2405,30 @@ def _call_llm_for_memory(
             max_tokens_override=120,
             context=f"memory:{bot_name}:{memory_type}",
             label='memory_generation',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
         )
         if not response:
-            return None, None
+            return None, None, None
 
-        # Parse JSON response
-        response = response.strip()
-        # Try to find JSON object in response
-        start = response.find('{')
-        end = response.rfind('}')
-        if start >= 0 and end > start:
-            response = response[start:end + 1]
-
-        try:
-            data = json.loads(response)
-        except json.JSONDecodeError:
-            return None, None
+        # Robust JSON extraction (markdown-fence
+        # stripping + regex-matched embedded {...}
+        # fallback), keyed on 'memory'.
+        data = extract_json_object(
+            response, required_key='memory'
+        )
+        if data is None:
+            return None, None, None
 
         memory = data.get('memory', '')
         if isinstance(memory, str):
             memory = memory.strip()
         else:
-            return None, None
+            return None, None, None
 
-        if not memory or len(memory) > 500:
-            return None, None
+        if not memory or len(memory) > MEMORY_TEXT_MAX_CHARS:
+            return None, None, None
 
         emote = data.get('emote')
         if isinstance(emote, str):
@@ -723,7 +2436,11 @@ def _call_llm_for_memory(
         else:
             emote = None
 
-        return memory, emote
+        importance = _coerce_importance(
+            data.get('importance')
+        )
+
+        return memory, emote, importance
 
     except Exception:
         logger.error(
@@ -731,12 +2448,203 @@ def _call_llm_for_memory(
             f"{bot_name}:{memory_type}",
             exc_info=True,
         )
-        return None, None
+        return None, None, None
+
+
+def _generate_shared_event_memory(
+    config, memory_type, event_context,
+    mood_hint=None,
+):
+    """Call the LLM ONCE to generate a shared memory
+    for a party-wide event (boss/rare kill, wipe).
+
+    Bot-identity-agnostic on purpose: the prompt asks
+    for a first-person-plural ("we"/"our party") memory
+    with no per-bot substitution. To avoid storing
+    byte-identical text for every present altbot, the
+    same call also asks for a couple of alternate
+    phrasings of the same event; callers cycle through
+    the returned list per bot.
+
+    Returns (memory_texts, emote, importance) where
+    memory_texts is a non-empty list of equivalent
+    phrasings (always at least [primary_text]), or
+    (None, None, None) on failure.
+    """
+    client = get_llm_client(config)
+    type_desc = _MEMORY_TYPE_DESCRIPTIONS.get(
+        memory_type, "a shared moment"
+    )
+    mood = mood_hint or 'contemplative'
+
+    prompt = (
+        "A full party of adventurers in World of "
+        "Warcraft just shared a moment together.\n"
+        f"\nContext: {type_desc}\n"
+    )
+    if event_context:
+        prompt += f"What happened: {event_context}\n"
+    prompt += f"Mood: {mood}\n\n"
+    prompt += (
+        "Write a 1-2 sentence first-person-plural "
+        "memory (\"we\"/\"our party\") from the "
+        "group's shared perspective about this "
+        "moment, suitable to be stored as a "
+        "private journal entry for a party member. "
+        "This is a private journal entry, not "
+        "spoken aloud. Be specific about what "
+        "happened.\n\n"
+    )
+    prompt += _IMPORTANCE_RUBRIC
+    prompt += (
+        "Respond in JSON:\n"
+        '{"memory": "your memory text", '
+        '"variations": ["alternate phrasing 1", '
+        '"alternate phrasing 2"], '
+        '"emote": "one_word_emote", '
+        '"importance": 5}\n\n'
+        "Rules:\n"
+        "- Memory must be 1-2 sentences\n"
+        "- First person plural (\"we\"/\"our\") "
+        "perspective -- never use a single "
+        "character's name or \"I\"\n"
+        "- No quotes inside the memory text\n"
+        "- 'variations' holds 2 alternate ways to "
+        "phrase the SAME memory (same facts, "
+        "different wording/opening), since this "
+        "text will be stored as a separate journal "
+        "entry for each of several party members "
+        "and they should not all read identically\n"
+        "- Emote is optional (null if none)\n"
+        "- Importance is an integer from 1 to 10"
+        " using the rubric above\n"
+        "- Just the JSON, nothing else"
+    )
+
+    from chatter_shared import (
+        get_language_rule, get_lore_guardrail_rule,
+    )
+    lang_rule = get_language_rule()
+    if lang_rule:
+        prompt += lang_rule
+    lore_rule = get_lore_guardrail_rule()
+    if lore_rule:
+        prompt += lore_rule
+
+    try:
+        response = call_llm(
+            client, prompt, config,
+            max_tokens_override=260,
+            context=f"shared-memory:{memory_type}",
+            label='shared_memory_generation',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
+        )
+        if not response:
+            return None, None, None
+
+        data = extract_json_object(
+            response, required_key='memory'
+        )
+        if data is None:
+            return None, None, None
+
+        memory = data.get('memory', '')
+        if isinstance(memory, str):
+            memory = memory.strip()
+        else:
+            return None, None, None
+
+        if not memory or len(memory) > MEMORY_TEXT_MAX_CHARS:
+            return None, None, None
+
+        # Optional alternate phrasings of the same
+        # memory, so identical stored text isn't handed
+        # to every altbot present. Best-effort: any
+        # malformed/oversized/empty entry is dropped,
+        # and the primary `memory` text is always first
+        # so callers with no valid variations still get
+        # a working single-item list.
+        memory_texts = [memory]
+        raw_variations = data.get('variations')
+        if isinstance(raw_variations, list):
+            for variation in raw_variations:
+                if (
+                    isinstance(variation, str)
+                    and variation.strip()
+                    and len(variation)
+                        <= MEMORY_TEXT_MAX_CHARS
+                ):
+                    memory_texts.append(
+                        variation.strip()
+                    )
+
+        emote = data.get('emote')
+        if isinstance(emote, str):
+            emote = emote.strip()[:32] or None
+        else:
+            emote = None
+
+        importance = _coerce_importance(
+            data.get('importance')
+        )
+
+        return memory_texts, emote, importance
+
+    except Exception:
+        logger.error(
+            "Shared LLM memory call failed for "
+            f"type={memory_type}",
+            exc_info=True,
+        )
+        return None, None, None
 
 
 # ============================================================
 # FLUSH SESSION MEMORIES
 # ============================================================
+
+def _filter_altbot_guids(db, group_id, bot_guids):
+    """Filter a set of bot guids down to altbots only.
+
+    flush_session_memories() submits party_member jobs
+    straight to the executor, bypassing queue_memory()'s
+    per-bot altbot guard, so it needs its own filter.
+    DB errors fail open (keep the full set).
+    """
+    bot_guids = list(bot_guids)
+    if not bot_guids:
+        return set()
+    try:
+        cursor = db.cursor()
+        placeholders = ','.join(
+            ['%s'] * len(bot_guids)
+        )
+        cursor.execute(
+            "SELECT bot_guid FROM"
+            " llm_group_bot_traits"
+            " WHERE group_id = %s"
+            f"   AND bot_guid IN ({placeholders})"
+            "   AND is_altbot = 1",
+            [group_id] + bot_guids,
+        )
+        eligible = {
+            row[0] for row in cursor.fetchall()
+        }
+        logger.debug(
+            "Altbot filter: %d/%d bots eligible for "
+            "group=%s",
+            len(eligible), len(bot_guids), group_id,
+        )
+        return eligible
+    except Exception:
+        logger.error(
+            "altbot filter failed for group=%s",
+            group_id, exc_info=True,
+        )
+        return set(bot_guids)
+
 
 def flush_session_memories(
     db, group_id, player_guid, bot_guid, config,
@@ -760,7 +2668,7 @@ def flush_session_memories(
         return
 
     session_minutes = int(config.get(
-        'LLMChatter.Memory.SessionMinutes', 15
+        'LLMChatter.Memory.SessionMinutes', 3
     ))
     max_per = int(config.get(
         'LLMChatter.Memory.MaxPerBotPlayer', 30
@@ -829,10 +2737,17 @@ def flush_session_memories(
                 '.PartyMemberGenerationChance',
                 50
             ))
-            flush_loc = _resolve_location(
-                db, config, group_id
+            flush_loc, flush_zone_id = (
+                _resolve_location(
+                    db, config, group_id
+                )
             )
-            for target_guid in all_bots_snapshot:
+            # Only player-owned (alt) bots get
+            # party_member memories.
+            altbot_snapshot = _filter_altbot_guids(
+                db, group_id, all_bots_snapshot
+            )
+            for target_guid in altbot_snapshot:
                 if (random.random() * 100
                         >= party_chance):
                     continue
@@ -858,6 +2773,7 @@ def flush_session_memories(
                         'gender', ''
                     ),
                     location=flush_loc,
+                    zone_id=flush_zone_id,
                     session_start=session_start,
                     insert_active=True,
                 )
@@ -883,6 +2799,10 @@ def flush_session_memories(
                     rows_activated, bot_guid,
                     player_guid,
                 )
+                _maybe_queue_relationship_update(
+                    cursor, config, bot_guid,
+                    player_guid,
+                )
 
             # Prune to cap
             cnt = _count_active_memories(
@@ -891,7 +2811,7 @@ def flush_session_memories(
             while cnt > max_per:
                 if not _evict_one_used(
                     cursor, db,
-                    bot_guid, player_guid,
+                    bot_guid, player_guid, config,
                 ):
                     break  # no used left
                 cnt -= 1
@@ -930,11 +2850,583 @@ def flush_session_memories(
 
 
 # ============================================================
+# RELATIONSHIP TRACKING
+# ============================================================
+#
+# A running, LLM-maintained per-(bot_guid, player_guid)
+# description of how a bot generally FEELS about a specific
+# player -- a standing disposition, distinct from the
+# individual llm_bot_memories journal entries it is
+# periodically condensed from. Updated in the background
+# (relationship_executor) after a farewell activates enough
+# new memories, mirroring the guild session summarizer's
+# _maybe_summarize_session() pattern in
+# chatter_guild_player.py.
+# ============================================================
+
+def _row_column(row, key, index):
+    """Read one column from a cursor row, working with both
+    plain (tuple) and dictionary=True cursors.
+
+    The relationship helpers below are called from both kinds of
+    cursor: flush_session_memories() hands
+    _maybe_queue_relationship_update() its own plain cursor,
+    while _maybe_update_relationship() opens a dictionary one.
+    """
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[index]
+
+
+def _sanitized_relationship_watermark(
+    cursor, bot_guid, player_guid, watermark,
+):
+    """Validate a stored relationship watermark, falling back to
+    the epoch (re-fold everything) with a loud warning if it is
+    impossible.
+
+    A watermark ahead of the database clock can never be passed
+    by `created_at > watermark`, so relationship updates for the
+    pair would stall silently and indefinitely -- the same class
+    of failure the previous id-based watermark had if a restore
+    or TRUNCATE reset llm_bot_memories' auto-increment below the
+    stored id, except that one was undetectable. Recovering
+    (epoch) re-folds this pair's memories once, which is cheap
+    and self-correcting; staying stuck is not.
+
+    A watermark merely newer than the pair's newest memory is
+    NOT treated as an error: it is the normal state right after
+    condensation, whose digests inherit their oldest source's
+    (older) created_at while the summarized rows they replaced
+    are deleted -- there is simply nothing new to fold in yet,
+    and the next memory the pair makes clears it.
+
+    Note this is only benign for material the summary had
+    ALREADY absorbed. Condensing a source that was newer than
+    the watermark used to strand that content behind the digest
+    permanently; _condense_low_value_memories() now rewinds the
+    watermark in its own write transaction (see
+    _rewind_relationship_watermark()) so that case never reaches
+    here. Do not widen this branch into a fixup for it.
+    """
+    if not watermark:
+        return RELATIONSHIP_WATERMARK_EPOCH
+    cursor.execute(
+        "SELECT NOW() AS now_ts,"
+        " (SELECT MAX(created_at) FROM llm_bot_memories"
+        "   WHERE bot_guid = %s"
+        "     AND player_guid = %s"
+        "     AND active = 1) AS newest_memory_at",
+        (bot_guid, player_guid),
+    )
+    row = cursor.fetchone()
+    now_ts = _row_column(row, 'now_ts', 0)
+    newest_at = _row_column(row, 'newest_memory_at', 1)
+
+    if now_ts is not None and watermark > now_ts:
+        logger.warning(
+            "Relationship watermark %s for bot=%s player=%s is "
+            "ahead of the database clock (%s) -- no memory can "
+            "ever pass it. Resetting to epoch and re-folding "
+            "this pair's memories once rather than stalling "
+            "relationship updates forever.",
+            watermark, bot_guid, player_guid, now_ts,
+        )
+        return RELATIONSHIP_WATERMARK_EPOCH
+
+    if newest_at is not None and watermark > newest_at:
+        logger.debug(
+            "Relationship watermark %s for bot=%s player=%s is "
+            "newer than the pair's newest memory (%s); expected "
+            "after condensation of already-summarized rows -- "
+            "nothing new to fold in until this pair's next "
+            "memory.",
+            watermark, bot_guid, player_guid, newest_at,
+        )
+    return watermark
+
+
+def _extend_candidates_to_timestamp_boundary(candidates, rows):
+    """Extend a char-budget-trimmed candidate list to cover every
+    remaining row sharing the last kept row's created_at.
+
+    The watermark advances to the last kept row's timestamp and
+    new material is selected with a strict `created_at > `
+    comparison, so a trim that cut through the middle of a group
+    of same-second memories would drop the leftovers from every
+    future pass. Rows arrive ordered by (created_at, id), so the
+    same-second leftovers are contiguous and this over-runs the
+    char budget by at most one such group.
+    """
+    if not candidates or len(candidates) >= len(rows):
+        return candidates
+    boundary = candidates[-1].get('created_at')
+    if boundary is None:
+        return candidates
+    extended = list(candidates)
+    for row in rows[len(candidates):]:
+        if row.get('created_at') != boundary:
+            break
+        extended.append(row)
+    return extended
+
+
+def _maybe_queue_relationship_update(
+    cursor, config, bot_guid, player_guid,
+):
+    """Decide whether enough new active memories have
+    accumulated since the last relationship update to
+    warrant submitting a background condensation job.
+
+    Called from flush_session_memories() right after that
+    bot's session rows are activated, reusing its already-
+    open cursor. Only decides WHETHER to submit; the actual
+    job (_maybe_update_relationship()) opens its own DB
+    connection and runs independently on
+    relationship_executor, so this check can never block or
+    slow down the farewell flow. Any failure here is caught
+    and logged -- it must never disrupt the farewell it's
+    piggybacking on.
+    """
+    if not int(config.get(
+        'LLMChatter.Memory.Relationship.Enable', 1
+    )):
+        return
+    try:
+        # The watermark is a timestamp, not an id, because
+        # condensation deletes source rows and re-inserts their
+        # content as digests with fresh, higher ids -- an id
+        # watermark would make already-summarized material look
+        # new again. Digests inherit their oldest source's
+        # created_at, so a timestamp watermark does not have that
+        # problem.
+        cursor.execute(
+            "SELECT updated_through_created_at FROM"
+            " llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        row = cursor.fetchone()
+        watermark = _sanitized_relationship_watermark(
+            cursor, bot_guid, player_guid,
+            _row_column(row, 'updated_through_created_at', 0),
+        )
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM llm_bot_memories"
+            " WHERE bot_guid = %s"
+            "   AND player_guid = %s"
+            "   AND active = 1"
+            "   AND created_at > %s",
+            (bot_guid, player_guid, watermark),
+        )
+        count_row = cursor.fetchone()
+        new_count = count_row[0] if count_row else 0
+
+        threshold = int(config.get(
+            'LLMChatter.Memory.Relationship'
+            '.UpdateThreshold', 5,
+        ))
+        if new_count < threshold:
+            return
+
+        relationship_executor.submit(
+            _maybe_update_relationship,
+            config, bot_guid, player_guid,
+        )
+    except Exception:
+        logger.error(
+            "Relationship update trigger check failed "
+            f"for bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+
+
+def _maybe_update_relationship(
+    config, bot_guid, player_guid,
+):
+    """Condense new memories into the running relationship
+    summary for a bot-player pair.
+
+    Runs in relationship_executor (background thread) and opens
+    its own DB connections: a single mysql-connector connection
+    is not safe to share across threads.
+
+    Fetches the current summary + watermark (absent row =
+    first-time pair, watermark = epoch), pulls active memories
+    created after it (capped by
+    _RELATIONSHIP_MAX_INPUT_CHARS), asks the LLM to fold them
+    into an updated summary, hard-truncates to
+    LLMChatter.Memory.Relationship.MaxChars, and writes it back
+    with the new watermark. Two short-lived connections, same
+    reasoning as _condense_low_value_memories(): the read
+    connection closes before the LLM call, not after.
+
+    The watermark write is optimistically concurrent -- it only
+    lands if the column is still exactly where this pass read
+    it, because _rewind_relationship_watermark() legitimately
+    moves it BACKWARD from another executor while the LLM call
+    is in flight (see the write block). `watermark_at_read` and
+    `row_existed_at_read` are plain values captured before the
+    read connection closed, so that guard is unaffected by the
+    connection swap. A pair with no relationship row yet takes
+    a plain upsert.
+
+    On any failure (no new memories, LLM call failure, empty/
+    unparseable response) does nothing and leaves the watermark
+    untouched, so the next qualifying farewell retries: never a
+    partial or corrupt overwrite.
+    """
+    conn = None
+    write_conn = None
+    try:
+        conn = get_db_connection(config)
+        cursor = conn.cursor(dictionary=True)
+
+        # See _maybe_queue_relationship_update() for why the
+        # watermark is a timestamp rather than an id.
+        cursor.execute(
+            "SELECT summary, updated_through_created_at"
+            " FROM llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        existing = cursor.fetchone()
+        previous_summary = (
+            str(existing.get('summary') or '').strip()
+            if existing else ''
+        )
+        # Raw stored value (NOT the sanitized one) and whether a
+        # row existed at all: both are the state this pass's
+        # write is conditioned on further down. Captured now,
+        # as plain values, so they survive the read connection
+        # closing below.
+        row_existed_at_read = existing is not None
+        watermark_at_read = (
+            existing.get('updated_through_created_at')
+            if existing else None
+        )
+        watermark = _sanitized_relationship_watermark(
+            cursor, bot_guid, player_guid,
+            existing.get('updated_through_created_at')
+            if existing else None,
+        )
+
+        cursor.execute(
+            "SELECT id, memory, created_at"
+            " FROM llm_bot_memories"
+            " WHERE bot_guid = %s"
+            "   AND player_guid = %s"
+            "   AND active = 1"
+            "   AND created_at > %s"
+            " ORDER BY created_at ASC, id ASC",
+            (bot_guid, player_guid, watermark),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return  # nothing new to fold in
+
+        candidates = []
+        char_count = 0
+        for row in rows:
+            text = str(row.get('memory') or '')
+            row_chars = len(text) + 3
+            if (
+                candidates
+                and char_count + row_chars
+                    > _RELATIONSHIP_MAX_INPUT_CHARS
+            ):
+                break
+            candidates.append(row)
+            char_count += row_chars
+        candidates = _extend_candidates_to_timestamp_boundary(
+            candidates, rows,
+        )
+        if not candidates:
+            return
+
+        # Resolve display names for the prompt
+        cursor.execute(
+            "SELECT guid, name FROM characters"
+            " WHERE guid IN (%s, %s)",
+            (bot_guid, player_guid),
+        )
+        bot_name = ''
+        player_name = ''
+        for name_row in cursor.fetchall():
+            guid = int(name_row.get('guid') or 0)
+            if guid == bot_guid:
+                bot_name = name_row.get('name') or ''
+            elif guid == player_guid:
+                player_name = (
+                    name_row.get('name') or ''
+                )
+        if not bot_name or not player_name:
+            logger.error(
+                "Relationship update aborted: could "
+                f"not resolve names for bot={bot_guid}"
+                f" player={player_guid}",
+            )
+            return
+
+        # Everything this pass needs from the database has been
+        # read. Close BEFORE the LLM call rather than after, same
+        # reasoning as _condense_low_value_memories(): holding
+        # this connection open would pin the reads' transaction
+        # (and read view) for the whole round-trip. The write
+        # below opens a fresh one.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
+
+        # max_chars=MEMORY_TEXT_MAX_CHARS for the same reason
+        # condensation uses it: the watermark advances past
+        # every row folded in here, so each one gets exactly
+        # this one chance to reach the summary. The source
+        # rows survive (so this is fidelity, not data loss),
+        # but a truncated tail is still never summarized.
+        memory_list = '\n'.join(
+            f"  - {sanitize_memory_for_prompt(row['memory'], max_chars=MEMORY_TEXT_MAX_CHARS)}"
+            for row in candidates
+        )
+
+        max_chars = int(config.get(
+            'LLMChatter.Memory.Relationship.MaxChars',
+            400,
+        ))
+
+        prompt = (
+            f"Update a compact description of how "
+            f"{bot_name} feels about {player_name}, "
+            f"based on shared memories.\n"
+            f"Preserve established sentiment, inside "
+            f"jokes, notable moments, and any tension "
+            f"or warmth. Discard one-off trivia. Never "
+            f"invent feelings not supported by the "
+            f"memories.\n"
+            f"Hard limit: {max_chars} characters.\n\n"
+            f"Previous relationship:\n"
+            f"{previous_summary or '(just met)'}\n\n"
+            f"New memories to fold in:\n"
+            f"{memory_list}\n\n"
+            f"Return the updated relationship "
+            f"description."
+        )
+        # message_only=True routes through
+        # append_json_instruction's own language-rule +
+        # lore-guardrail injection (see chatter_shared.py),
+        # matching _maybe_summarize_session()'s call in
+        # chatter_guild_player.py exactly -- do not also
+        # inject get_lore_guardrail_rule()/
+        # get_language_rule() here, that would duplicate
+        # both rules in the final prompt.
+        prompt = append_json_instruction(
+            prompt, allow_action=False,
+            message_only=True,
+        )
+
+        client = get_llm_client(config)
+        response = call_llm(
+            client, prompt, config,
+            max_tokens_override=int(config.get(
+                'LLMChatter.Memory.Relationship'
+                '.MaxTokens', 300,
+            )),
+            context=(
+                f"relationship:{bot_guid}:"
+                f"{player_guid}"
+            ),
+            label='relationship_update',
+            use_quick_model=_memory_uses_quick_model(
+                config
+            ),
+            metadata={
+                'bot_guid': bot_guid,
+                'player_guid': player_guid,
+                'relationship_input_lines':
+                    len(candidates),
+                'relationship_input_chars': char_count,
+            },
+        )
+        parsed = parse_single_response(response or '')
+
+        # Reuse the exact same truncation helper as the
+        # guild session summarizer rather than inventing a
+        # third near-identical one (now shared via
+        # chatter_text.py rather than a cross-domain import).
+        summary = _trim_summary(
+            parsed.get('message', ''), max_chars,
+        )
+        if not summary:
+            logger.error(
+                "Relationship update produced an empty/"
+                f"unparseable summary for bot={bot_guid}"
+                f" player={player_guid}; watermark left"
+                " untouched for retry",
+            )
+            return
+
+        # Rows are ordered by created_at, so the last one
+        # carries the newest timestamp folded in.
+        new_watermark = candidates[-1]['created_at']
+
+        # Fresh connection for the write phase (see docstring):
+        # the read connection was closed before the LLM call.
+        write_conn = get_db_connection(config)
+        write_cursor = write_conn.cursor()
+        if row_existed_at_read:
+            # Optimistic concurrency on the watermark, NOT a
+            # blind upsert and NOT GREATEST().
+            #
+            # _condense_low_value_memories() runs on its own
+            # executor (condensation_executor), unaware of this
+            # one (relationship_executor) -- _condensing_pairs
+            # only excludes a second CONDENSATION pass for the
+            # pair, not a relationship pass. It can therefore
+            # commit _rewind_relationship_watermark() for this
+            # exact pair while the multi-second LLM call above
+            # is in flight, deliberately moving this column
+            # BACKWARD so a freshly written digest gets re-folded
+            # here next time.
+            #
+            # Writing our own (now stale, higher) watermark
+            # unconditionally would silently undo that rewind and
+            # strand the digest's content permanently, since its
+            # source rows are already deleted. GREATEST() would
+            # do exactly the same thing, for the same reason: it
+            # also refuses to go backward. So the advance only
+            # lands while the column is still where we read it
+            # -- on the ORIGINAL read connection, before it
+            # closed; watermark_at_read is a plain value captured
+            # from that read and does not depend on the read
+            # connection/cursor still being open.
+            write_cursor.execute(
+                "UPDATE llm_bot_relationships"
+                " SET summary = %s,"
+                "     updated_through_created_at = %s,"
+                "     updated_at = NOW()"
+                " WHERE bot_guid = %s"
+                "   AND player_guid = %s"
+                "   AND updated_through_created_at <=> %s",
+                (
+                    summary, new_watermark,
+                    bot_guid, player_guid, watermark_at_read,
+                ),
+            )
+            if write_cursor.rowcount:
+                watermark_written = new_watermark
+            else:
+                # Someone moved the watermark underneath us (a
+                # condensation rewind, or another pass for this
+                # pair). Keep the summary -- it is real LLM work,
+                # and re-folding already-summarized material is
+                # harmless by design -- but leave the watermark
+                # wherever they put it, so the next pass resumes
+                # from the real position instead of skipping
+                # whatever the rewind was trying to recover.
+                write_cursor.execute(
+                    "UPDATE llm_bot_relationships"
+                    " SET summary = %s, updated_at = NOW()"
+                    " WHERE bot_guid = %s AND player_guid = %s",
+                    (summary, bot_guid, player_guid),
+                )
+                watermark_written = None
+                logger.debug(
+                    "Relationship watermark for bot=%s "
+                    "player=%s moved from %s while this pass's "
+                    "LLM call was in flight (condensation "
+                    "rewind or a concurrent pass); kept the new "
+                    "summary but left the watermark alone "
+                    "instead of clobbering it with %s.",
+                    bot_guid, player_guid, watermark_at_read,
+                    new_watermark,
+                )
+        else:
+            # First-ever summary for this pair: no row existed at
+            # read time, so there is no watermark to race
+            # against, and the rewind helper never creates a row.
+            # A plain upsert is correct (ON DUPLICATE covers the
+            # rare case of another pass having created the row in
+            # the meantime).
+            write_cursor.execute(
+                "INSERT INTO llm_bot_relationships"
+                " (bot_guid, player_guid, summary,"
+                "  updated_through_created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, NOW())"
+                " ON DUPLICATE KEY UPDATE"
+                "   summary = VALUES(summary),"
+                "   updated_through_created_at ="
+                "     VALUES(updated_through_created_at),"
+                "   updated_at = NOW()",
+                (
+                    bot_guid, player_guid, summary,
+                    new_watermark,
+                ),
+            )
+            watermark_written = new_watermark
+        write_conn.commit()
+        logger.info(
+            "Relationship summary updated bot=%s "
+            "player=%s lines=%s chars=%s out=%s "
+            "watermark=%s",
+            bot_guid, player_guid, len(candidates),
+            char_count, len(summary),
+            new_watermark if watermark_written is not None
+            else 'unchanged (moved concurrently)',
+        )
+    except Exception:
+        logger.error(
+            "Relationship update failed for "
+            f"bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+    finally:
+        for _c in (conn, write_conn):
+            if _c is not None:
+                try:
+                    _c.close()
+                except Exception:
+                    pass
+
+
+def get_relationship_summary(db, bot_guid, player_guid):
+    """Fetch the current relationship summary for a
+    bot-player pair.
+
+    Returns the summary string, or None if no row exists
+    yet (first-time pair / never reached the update
+    threshold) or on any DB error. Callers must treat None
+    as "no standing relationship text to inject" rather
+    than an error condition.
+    """
+    try:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT summary FROM llm_bot_relationships"
+            " WHERE bot_guid = %s AND player_guid = %s",
+            (bot_guid, player_guid),
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        logger.error(
+            "Relationship summary lookup failed for "
+            f"bot={bot_guid} player={player_guid}",
+            exc_info=True,
+        )
+        return None
+
+
+# ============================================================
 # STARTUP RECOVERY
 # ============================================================
 
 def activate_orphaned_memories(
-    db, session_minutes,
+    db, session_minutes, max_per=30, config=None,
 ):
     """Promote orphaned inactive memories from
     sessions that ended without a clean farewell
@@ -947,6 +3439,11 @@ def activate_orphaned_memories(
 
     Uses UNIX_TIMESTAMP arithmetic since
     session_start is DOUBLE (not TIMESTAMP).
+
+    `config` is optional and only feeds the decay tunables
+    behind _effective_score_sql() for the post-promotion cap
+    trim below; omitting it just uses the documented decay
+    defaults rather than the server's overrides.
     """
     session_seconds = int(session_minutes) * 60
     try:
@@ -976,6 +3473,7 @@ def activate_orphaned_memories(
         rows = cursor.fetchall()
         promoted = 0
         discarded = 0
+        promoted_pairs = set()
         for row in rows:
             g_id = int(row['group_id'])
             # Skip live sessions — rehydration
@@ -1002,6 +3500,7 @@ def activate_orphaned_memories(
                     (g_id, b_guid, p_guid),
                 )
                 promoted += cursor.rowcount
+                promoted_pairs.add((b_guid, p_guid))
             else:
                 cursor.execute(
                     "DELETE FROM llm_bot_memories"
@@ -1012,6 +3511,62 @@ def activate_orphaned_memories(
                     (g_id, b_guid, p_guid),
                 )
                 discarded += cursor.rowcount
+
+        # Enforce the per-pair cap after a bulk promotion:
+        # crash recovery can otherwise leave a pair above
+        # LLMChatter.Memory.MaxPerBotPlayer until the next
+        # normal insert trims it. Drop the least valuable
+        # excess so the cap is a real invariant, not just
+        # self-correcting.
+        #
+        # max_per <= 0 is a misconfiguration, NOT an
+        # instruction to forget everything -- see
+        # _maybe_trigger_condensation(), which bails the
+        # same way.
+        #
+        # Ordering and the top-row exclusion match
+        # _evict_one_used() and _get_condensation_candidates():
+        # trim by decay-aware effective score
+        # (_effective_score_sql()) rather than raw
+        # importance_score, and never drop the pair's single
+        # most valuable memory (_top_row_exclusion_sql()).
+        # Deleting by a different rule than every other
+        # deletion path is how a row that eviction would have
+        # protected gets dropped here instead.
+        if max_per > 0:
+            score_sql = _effective_score_sql(config)
+            top_row_subquery = _top_row_exclusion_sql(score_sql)
+            for (b_guid, p_guid) in promoted_pairs:
+                cursor.execute(
+                    "SELECT id FROM llm_bot_memories"
+                    " WHERE bot_guid = %s AND player_guid = %s"
+                    "   AND active = 1"
+                    + top_row_subquery +
+                    " ORDER BY " + score_sql + " ASC,"
+                    " created_at ASC, id ASC",
+                    (b_guid, p_guid, b_guid, p_guid),
+                )
+                ids = [r['id'] for r in cursor.fetchall()]
+                # ids excludes the protected top row, so
+                # the pair's real active count is
+                # len(ids) + 1.
+                excess_count = (len(ids) + 1) - max_per
+                if excess_count > 0:
+                    excess = ids[:excess_count]
+                    placeholders = ','.join(['%s'] * len(excess))
+                    cursor.execute(
+                        "DELETE FROM llm_bot_memories"
+                        " WHERE id IN (" + placeholders + ")",
+                        tuple(excess),
+                    )
+        elif promoted_pairs:
+            logger.warning(
+                "LLMChatter.Memory.MaxPerBotPlayer=%s is not positive; "
+                "skipping the startup cap trim for %d promoted pair(s) "
+                "rather than deleting every memory they have.",
+                max_per, len(promoted_pairs),
+            )
+
         db.commit()
         if promoted or discarded:
             logger.info(
@@ -1076,78 +3631,316 @@ def rehydrate_active_sessions(db):
 
 
 # ============================================================
+# GARBAGE COLLECTION (GM-triggered)
+# ============================================================
+
+def purge_orphaned_memories(db):
+    """Delete llm_bot_memories and llm_bot_relationships
+    rows whose bot_guid or player_guid no longer exists
+    in characters (e.g. deleted characters).
+
+    Runs on the bridge's 24-hour periodic maintenance
+    pass; the '.llmc memoryclean' GM command issues the
+    same two DELETEs from C++. Returns the number of
+    llm_bot_memories rows deleted (unchanged return
+    contract for existing callers/logging).
+    """
+    cursor = db.cursor()
+    cursor.execute("""
+        DELETE m FROM llm_bot_memories m
+        LEFT JOIN characters c1
+            ON m.bot_guid = c1.guid
+        LEFT JOIN characters c2
+            ON m.player_guid = c2.guid
+        WHERE c1.guid IS NULL
+           OR c2.guid IS NULL
+    """)
+    deleted = cursor.rowcount
+    db.commit()
+
+    cursor.execute("""
+        DELETE m FROM llm_bot_relationships m
+        LEFT JOIN characters c1
+            ON m.bot_guid = c1.guid
+        LEFT JOIN characters c2
+            ON m.player_guid = c2.guid
+        WHERE c1.guid IS NULL
+           OR c2.guid IS NULL
+    """)
+    deleted_relationships = cursor.rowcount
+    db.commit()
+    cursor.close()
+
+    if deleted:
+        logger.info(
+            "[MEMORY] purged %d orphaned "
+            "llm_bot_memories row(s)",
+            deleted,
+        )
+    if deleted_relationships:
+        logger.info(
+            "[MEMORY] purged %d orphaned "
+            "llm_bot_relationships row(s)",
+            deleted_relationships,
+        )
+    return deleted
+
+
+# ============================================================
 # MEMORY RETRIEVAL
 # ============================================================
 
-def get_bot_memories(
-    db, bot_guid, player_guid, count=3,
-    exclude_first_meeting=False,
+def _select_within_token_budget(
+    candidates, count, max_tokens,
 ):
-    """Retrieve random active memories for a
-    bot-player pair.
+    """Trim effective_score-ordered candidates down to
+    `count` rows and the injection token budget.
 
-    Returns list of memory strings (may be empty).
+    The first pick is always kept even if it alone would
+    exceed budget, so a single oversized memory can't
+    starve the result down to empty.
+
+    Shared by get_bot_memories() and
+    get_bot_memories_batch() so the batched path cannot
+    drift from the per-bot one.
     """
+    selected = []
+    token_sum = 0
+    for row in candidates:
+        if len(selected) >= count:
+            break
+        cost = estimate_tokens(row['memory'])
+        if selected and token_sum + cost > max_tokens:
+            break
+        selected.append(row)
+        token_sum += cost
+    return selected
+
+
+def get_bot_memories_batch(
+    db, bot_guids, player_guid, config=None, count=3,
+    exclude_first_meeting=False, current_zone_id=None,
+    mark_used=True,
+):
+    """Batched get_bot_memories() for a whole party.
+
+    One SELECT for every bot, partitioned per bot in
+    Python, then ONE UPDATE + ONE commit for all the rows
+    actually returned -- instead of the 2 queries and 1
+    commit per bot the naive loop cost (8 queries and 4
+    commits for a 4-bot party, every idle conversation).
+
+    Per-bot semantics are identical to get_bot_memories():
+    same decay-aware ordering, same optional same-zone
+    tie-break, same candidate over-fetch, same per-bot
+    `count` limit and MaxInjectTokens budget, same
+    mark_used behaviour.
+
+    The candidate over-fetch is applied per bot in Python
+    rather than as a SQL LIMIT (a single LIMIT can't be
+    per-partition, and one greedy bot must not eat another
+    bot's share). That is safe because active rows per
+    bot-player pair are already hard-capped by
+    LLMChatter.Memory.MaxPerBotPlayer.
+
+    Returns {bot_guid: [memory strings]}. Bots with no
+    memories are simply absent from the dict.
+    """
+    guids = []
+    for guid in bot_guids or []:
+        try:
+            guid = int(guid)
+        except (TypeError, ValueError):
+            continue
+        if guid not in guids:
+            guids.append(guid)
+    if not guids:
+        return {}
+
     try:
         extra = (
             " AND memory_type != 'first_meeting'"
             if exclude_first_meeting else ""
         )
+        candidate_limit = max(count * 3, 15)
+        placeholders = ','.join(['%s'] * len(guids))
         cursor = db.cursor(dictionary=True)
-        cursor.execute(
-            "SELECT id, memory"
-            " FROM llm_bot_memories"
-            " WHERE bot_guid = %s"
-            "   AND player_guid = %s"
-            "   AND active = 1"
-            + extra +
-            " ORDER BY RAND()"
-            " LIMIT %s",
-            (bot_guid, player_guid, count),
-        )
+        if current_zone_id is not None:
+            cursor.execute(
+                "SELECT id, bot_guid, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid IN (" + placeholders + ")"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY bot_guid,"
+                "   effective_score DESC,"
+                "   (zone_id = %s) DESC,"
+                "   created_at DESC",
+                tuple(guids)
+                + (player_guid, current_zone_id),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, bot_guid, memory, "
+                + _effective_score_sql(config) +
+                " AS effective_score"
+                " FROM llm_bot_memories"
+                " WHERE bot_guid IN (" + placeholders + ")"
+                "   AND player_guid = %s"
+                "   AND active = 1"
+                + extra +
+                " ORDER BY bot_guid,"
+                "   effective_score DESC,"
+                "   created_at DESC",
+                tuple(guids) + (player_guid,),
+            )
         rows = cursor.fetchall()
-        if rows:
-            ids = [row['id'] for row in rows]
-            placeholders = ','.join(
-                ['%s'] * len(ids)
+        if not rows:
+            return {}
+
+        by_bot = {}
+        for row in rows:
+            by_bot.setdefault(
+                int(row['bot_guid']), []
+            ).append(row)
+
+        max_tokens = int((config or {}).get(
+            'LLMChatter.Memory.MaxInjectTokens', 400
+        ))
+
+        result = {}
+        used_ids = []
+        for guid in guids:
+            candidates = by_bot.get(guid)
+            if not candidates:
+                continue
+            selected = _select_within_token_budget(
+                candidates[:candidate_limit],
+                count, max_tokens,
+            )
+            if not selected:
+                continue
+            result[guid] = [
+                row['memory'] for row in selected
+            ]
+            used_ids.extend(
+                row['id'] for row in selected
+            )
+
+        if mark_used and used_ids:
+            id_placeholders = ','.join(
+                ['%s'] * len(used_ids)
             )
             cursor.execute(
                 "UPDATE llm_bot_memories"
                 " SET used = 1,"
                 " last_used_at = NOW()"
                 " WHERE id IN (%s)"
-                % placeholders,
-                tuple(ids),
+                % id_placeholders,
+                tuple(used_ids),
             )
             db.commit()
-        return [row['memory'] for row in rows]
+        return result
     except Exception:
         logger.error(
-            f"Memory retrieval failed for "
-            f"bot={bot_guid} player={player_guid}",
+            f"Batched memory retrieval failed for "
+            f"bots={bot_guids} player={player_guid}",
             exc_info=True,
         )
+        return {}
+
+
+def get_bot_memories(
+    db, bot_guid, player_guid, config=None, count=3,
+    exclude_first_meeting=False, current_zone_id=None,
+    mark_used=True,
+):
+    """Retrieve decay-ranked active memories for a
+    bot-player pair.
+
+    Over-fetches candidates ordered by the decay-aware
+    effective_score (see _effective_score_sql()), then
+    accumulates them in that order until either `count`
+    rows or the LLMChatter.Memory.MaxInjectTokens budget
+    is reached. Only the rows actually returned are
+    marked used=1 (unless mark_used=False, e.g. when a
+    memory is being fetched for secondhand reference by
+    a DIFFERENT bot than the one it belongs to -- that
+    should not count toward this memory's own eviction
+    priority).
+
+    When current_zone_id is given, it is used as a
+    TIE-BREAKER ONLY (after effective_score) so a
+    same-zone memory can win among comparably-important
+    candidates without ever outranking a genuinely more
+    important memory from elsewhere. When omitted
+    (default), ordering is byte-identical to before this
+    parameter existed.
+
+    Thin wrapper over get_bot_memories_batch() with a
+    single bot, so the one-bot and party paths can never
+    disagree about ordering, limits or used-marking.
+
+    Returns list of memory strings (may be empty).
+    """
+    try:
+        bot_guid_int = int(bot_guid)
+    except (TypeError, ValueError):
         return []
+    return get_bot_memories_batch(
+        db, [bot_guid_int], player_guid, config=config,
+        count=count,
+        exclude_first_meeting=exclude_first_meeting,
+        current_zone_id=current_zone_id,
+        mark_used=mark_used,
+    ).get(bot_guid_int, [])
 
 
 # ============================================================
 # SANITIZATION
 # ============================================================
 
-def sanitize_memory_for_prompt(memory: str) -> str:
+def sanitize_memory_for_prompt(
+    memory: str,
+    max_chars: int = DEFAULT_PROMPT_MEMORY_CHARS,
+) -> str:
     """Sanitize a memory string for safe inclusion
     in an LLM prompt.
 
     Strips control characters, normalizes whitespace,
-    caps at 200 characters.
+    caps at `max_chars` characters (default
+    DEFAULT_PROMPT_MEMORY_CHARS).
+
+    The default is deliberately well below the stored
+    ceiling (MEMORY_TEXT_MAX_CHARS): most callers only quote
+    a memory as background context and their source rows
+    survive untouched, so trimming a long one costs nothing
+    permanent and keeps routine prompts cheap.
+
+    Callers whose prompt output REPLACES the rows it reads
+    -- condensation (which deletes its sources) and the
+    relationship summary (which advances a watermark past
+    them) -- must pass max_chars=MEMORY_TEXT_MAX_CHARS so
+    the LLM sees the full stored text. Truncating there
+    would silently discard the tail of any memory longer
+    than the default before destroying the original.
     """
     if not memory or not isinstance(memory, str):
         return ""
+    try:
+        limit = int(max_chars)
+    except (TypeError, ValueError):
+        limit = DEFAULT_PROMPT_MEMORY_CHARS
+    if limit < 4:
+        limit = 4
     # Strip control characters
     text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', memory)
     # Normalize whitespace
     text = ' '.join(text.split())
     # Cap length
-    if len(text) > 200:
-        text = text[:197] + "..."
+    if len(text) > limit:
+        text = text[:limit - 3] + "..."
     return text
