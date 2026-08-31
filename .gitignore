@@ -8,8 +8,11 @@ dev-only
 Gemini.md
 logs/
 tools/venv/
-# Runtime artifacts of a manually launched bridge: bridge.pid is the
-# single-instance lock written by tools/llm_chatter_bridge.py; bridge.out
+# Stray artifact of an older manually launched bridge. The
+# single-instance lock is NOT written here any more -- it lives in
+# LLMChatter.RuntimeDir, because the documented Docker setup mounts
+# the tools directory read-only. Kept ignored so an old file left
+# over from a previous version never gets committed; bridge.out
 # is the conventional stdout redirect target when running it with nohup.
 tools/bridge.out
 tools/bridge.pid

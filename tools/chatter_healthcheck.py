@@ -61,9 +61,23 @@ _REQUIRED_TABLES = [
     'llm_chatter_messages',
     'llm_group_bot_traits',
     'llm_bot_memories',
+    'llm_bot_relationships',
+    'llm_group_vibe',
     'llm_guild_chat_sessions',
     'llm_guild_session_history',
 ]
+
+# Columns added after a table's original release. A table can exist while
+# still predating a later migration, which is invisible to a table-only
+# check and shows up at runtime as a fail-open no-op instead.
+_REQUIRED_COLUMNS = {
+    'llm_bot_memories': [
+        'importance_score',
+        'condensation_generation',
+        'last_used_at',
+        'zone_id',
+    ],
+}
 
 _VALID_PROVIDERS = (
     'anthropic', 'openai', 'google', 'openrouter', 'ollama'
@@ -405,6 +419,35 @@ def _check_tables(config, db_ok):
                 f"Load {_TABLES_SQL_PATH} into the characters "
                 "DB (the module SQL did not run).",
             )
+
+        # Table present but predating a later migration: check columns.
+        missing_columns = []
+        for table, columns in _REQUIRED_COLUMNS.items():
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT column_name FROM "
+                "information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s",
+                (name, table),
+            )
+            have = {
+                (row[0] or '').lower() for row in cur.fetchall()
+            }
+            cur.close()
+            missing_columns += [
+                f"{table}.{c}" for c in columns
+                if c.lower() not in have
+            ]
+        if missing_columns:
+            return _result(
+                'tables', 'Required tables', 'fail',
+                "Missing columns: "
+                + ", ".join(missing_columns) + ".",
+                "A later migration has not been applied; load the "
+                "update SQL under data/sql/characters/ into the "
+                "characters DB.",
+            )
+
         return _result(
             'tables', 'Required tables', 'pass',
             f"All {len(_REQUIRED_TABLES)} required tables "
