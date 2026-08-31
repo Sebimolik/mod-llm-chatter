@@ -7,6 +7,7 @@ Run directly from the module root:
 
 import importlib
 import logging
+import re
 import sys
 import types
 from pathlib import Path
@@ -265,35 +266,62 @@ def test_message_only_repair_schema():
     assert '"message"' in repair_prompt
 
 
-def test_race_speech_profiles_are_read_through_the_accessor():
-    """Prompt builders must not read RACE_SPEECH_PROFILES directly.
+# Localized constants that must only ever be reached through their
+# accessor. Each accessor resolves the configured LLMChatter.Language and
+# falls back to English; reading the raw dict silently skips that, which is
+# invisible on an English server and therefore never noticed by hand.
+LOCALIZED_CONSTANTS = {
+    "RACE_SPEECH_PROFILES": "get_race_speech_profile",
+    "ZONE_FLAVOR": "get_zone_flavor",
+    "DUNGEON_FLAVOR": "get_dungeon_flavor",
+    "BG_LORE": "get_bg_lore",
+    "ZONE_NAMES": "get_zone_name",
+}
 
-    A direct dict read silently bypasses get_race_speech_profile(),
-    which is the only thing that resolves the localized profile for
-    the configured LLMChatter.Language. Bypassing it produces prompts
-    that are localized everywhere except the race flavor words, which
-    is exactly the bug this guards against -- and it is invisible in
-    English, so only a source-level check catches it.
+# Defines the tables, or implements the accessors: allowed to read directly.
+_ACCESSOR_OWNERS = ("chatter_constants.py", "chatter_shared.py")
+
+
+def test_localized_constants_are_read_through_their_accessors():
+    """No prompt builder may read a localized constant directly.
+
+    This is a ratchet rather than a fix: at the time of writing there are
+    no bypasses left. It exists so that the next one is caught by the suite
+    instead of by a maintainer reading the diff.
     """
     tools_dir = Path(__file__).resolve().parent.parent
     offenders = []
     for module in sorted(tools_dir.glob("chatter_*.py")):
-        # The constants module defines the tables; the shared module
-        # implements the accessor. Everything else must go through it.
-        if module.name in ("chatter_constants.py", "chatter_shared.py"):
+        if module.name in _ACCESSOR_OWNERS:
             continue
         for lineno, line in enumerate(
             module.read_text(encoding="utf-8").splitlines(), 1
         ):
             code = line.split("#", 1)[0]
-            if "RACE_SPEECH_PROFILES" in code:
-                offenders.append(f"{module.name}:{lineno}: {line.strip()}")
+            for const, accessor in LOCALIZED_CONSTANTS.items():
+                # Word-boundary match so ZONE_NAMES does not also flag
+                # ZONE_NAMES_RU, which is a locale table, not a bypass.
+                if re.search(r"\b%s\b" % const, code):
+                    offenders.append(
+                        "%s:%d reads %s directly (use %s): %s"
+                        % (module.name, lineno, const, accessor,
+                           line.strip())
+                    )
 
     assert not offenders, (
-        "these read RACE_SPEECH_PROFILES directly instead of calling "
-        "get_race_speech_profile(); localized flavor words will be "
-        "dropped:\n  " + "\n  ".join(offenders)
+        "these bypass the localized accessor, so non-English servers get "
+        "English text:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_every_localized_constant_actually_has_its_accessor():
+    """Guard the table above against drifting out of date."""
+    missing = [
+        accessor
+        for accessor in LOCALIZED_CONSTANTS.values()
+        if not hasattr(chatter_shared, accessor)
+    ]
+    assert not missing, "accessors named in the table do not exist: %s" % missing
 
 
 def test_localized_race_profile_is_returned_for_configured_language():
@@ -328,7 +356,8 @@ def main() -> int:
         test_message_only_conversation_schema,
         test_conversation_message_count_bounds,
         test_message_only_repair_schema,
-        test_race_speech_profiles_are_read_through_the_accessor,
+        test_localized_constants_are_read_through_their_accessors,
+        test_every_localized_constant_actually_has_its_accessor,
         test_localized_race_profile_is_returned_for_configured_language,
     ]
     for test in tests:
