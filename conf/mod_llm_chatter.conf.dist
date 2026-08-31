@@ -171,6 +171,20 @@ LLMChatter.HealthCheck.LogPath =
 LLMChatter.RuntimeDir =
 
 #
+#   LLMChatter.RequestTimeoutSeconds
+#       Per-request timeout, in seconds, for every provider call.
+#       The SDKs default to roughly 600s with retries, which is far
+#       too long here: memory condensation and relationship updates
+#       run on single-worker queues, so one wedged call blocks every
+#       job behind it for the whole window. A bounded timeout turns
+#       that stall into a logged failure the next pass retries.
+#       Set to 0 to disable the timeout entirely (not recommended).
+#       Default: 120
+#       [BRIDGE]
+#
+LLMChatter.RequestTimeoutSeconds = 120
+
+#
 #   LLMChatter.RequestLog.Enable
 #       Log every LLM API call (prompt, response,
 #       timing) to a JSONL file for offline analysis.
@@ -966,6 +980,7 @@ LLMChatter.GroupChatter.ConversationBias = 50
 #       that vibe instead of a fully random roll. Range 1-10
 #       (matches importance_score).
 #       Default: 5
+#       [BRIDGE]
 #
 LLMChatter.GroupChatter.VibeImportanceThreshold = 5
 
@@ -976,6 +991,7 @@ LLMChatter.GroupChatter.VibeImportanceThreshold = 5
 #       chatter tone selection reverts to a fully random
 #       roll. Lazily checked on read, not a timer.
 #       Default: 600
+#       [BRIDGE]
 #
 LLMChatter.GroupChatter.VibeDurationSeconds = 600
 
@@ -1042,7 +1058,7 @@ LLMChatter.GroupChatter.CorpseRunCooldown = 120
 #       Percent chance (0-100) that a bot notices and
 #       comments on the real player equipping a new
 #       (uncommon+) item. First equip observed per player
-#       per bridge process lifetime never reacts -- it is
+#       per worldserver process lifetime (this state is C++-side: restarting the bridge does not reset it) never reacts -- it is
 #       treated as the login re-equip-from-DB baseline,
 #       not a real change.
 #       Default: 25

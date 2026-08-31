@@ -10,6 +10,7 @@ from chatter_constants import (
     DEFAULT_GOOGLE_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     GOOGLE_OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
 )
@@ -279,6 +280,40 @@ _main_client_provider = None
 _main_client_lock = threading.Lock()
 
 
+def _client_timeout(config):
+    """Request timeout, in seconds, for every provider client.
+
+    Both SDKs default to ~600s with retries. Internal work runs on
+    single-worker executors, so an unbounded call does not just delay
+    itself -- it blocks every queued condensation or relationship
+    update behind it. Bounding this trades a rare slow success for a
+    predictable failure the next pass picks up again.
+    """
+    raw = str(
+        config.get('LLMChatter.RequestTimeoutSeconds', '') or ''
+    ).strip()
+    if not raw:
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "LLMChatter.RequestTimeoutSeconds=%r is not a number;"
+            " using %ss", raw, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_REQUEST_TIMEOUT_SECONDS
+    if value <= 0:
+        # 0/negative means "no timeout"; honour it, but say so, since
+        # it reinstates the stall this default exists to prevent.
+        logger.warning(
+            "LLMChatter.RequestTimeoutSeconds=%s disables the request"
+            " timeout; a wedged provider call will block internal"
+            " work indefinitely.", value,
+        )
+        return None
+    return value
+
+
 def get_llm_client(config):
     """Get or create the main LLM client.
 
@@ -310,6 +345,7 @@ def get_llm_client(config):
                     f"{base_url.rstrip('/')}/v1"
                 ),
                 api_key="ollama",
+                timeout=_client_timeout(config),
             )
         elif provider == 'openai':
             import openai
@@ -317,6 +353,7 @@ def get_llm_client(config):
                 api_key=config.get(
                     'LLMChatter.OpenAI.ApiKey', ''
                 ),
+                timeout=_client_timeout(config),
             )
         elif provider == 'google':
             import openai
@@ -328,6 +365,7 @@ def get_llm_client(config):
                     'LLMChatter.Google.BaseUrl',
                     GOOGLE_OPENAI_BASE_URL,
                 ),
+                timeout=_client_timeout(config),
             )
         elif provider == 'openrouter':
             import openai
@@ -340,6 +378,7 @@ def get_llm_client(config):
                     OPENROUTER_BASE_URL,
                 ),
             }
+            kwargs['timeout'] = _client_timeout(config)
             headers = _openrouter_headers(config)
             if headers:
                 kwargs['default_headers'] = headers
@@ -351,6 +390,7 @@ def get_llm_client(config):
                     'LLMChatter.Anthropic.ApiKey',
                     '',
                 ),
+                timeout=_client_timeout(config),
             )
 
         _main_client_provider = provider
@@ -557,7 +597,8 @@ def _get_quick_analyze_client(config):
             )
             _quick_analyze_client = openai.OpenAI(
                 base_url=ollama_api_url,
-                api_key="ollama"
+                api_key="ollama",
+                timeout=_client_timeout(config),
             )
         elif qa_provider == 'openai':
             import openai
@@ -567,7 +608,8 @@ def _get_quick_analyze_client(config):
             if not api_key:
                 return None, main_provider
             _quick_analyze_client = openai.OpenAI(
-                api_key=api_key
+                api_key=api_key,
+                timeout=_client_timeout(config),
             )
         elif qa_provider == 'google':
             import openai
@@ -582,6 +624,7 @@ def _get_quick_analyze_client(config):
                     'LLMChatter.Google.BaseUrl',
                     GOOGLE_OPENAI_BASE_URL,
                 ),
+                timeout=_client_timeout(config),
             )
         elif qa_provider == 'openrouter':
             import openai
@@ -600,6 +643,7 @@ def _get_quick_analyze_client(config):
             headers = _openrouter_headers(config)
             if headers:
                 kwargs['default_headers'] = headers
+            kwargs['timeout'] = _client_timeout(config)
             _quick_analyze_client = openai.OpenAI(**kwargs)
         elif qa_provider == 'anthropic':
             import anthropic
@@ -609,7 +653,8 @@ def _get_quick_analyze_client(config):
             if not api_key:
                 return None, main_provider
             _quick_analyze_client = anthropic.Anthropic(
-                api_key=api_key
+                api_key=api_key,
+                timeout=_client_timeout(config),
             )
         else:
             return None, main_provider

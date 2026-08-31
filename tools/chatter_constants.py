@@ -9392,6 +9392,10 @@ RP_LENGTH_HINTS = [
 # Default model for each provider when none is
 # configured. Used by quick_llm_analyze() auto-
 # selection and as config fallbacks.
+# Request timeout for provider calls. Bounded so that one wedged
+# call cannot block the single-worker internal executors.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
+
 DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
 DEFAULT_OPENAI_MODEL = 'gpt-4o-mini'
 DEFAULT_GOOGLE_MODEL = 'gemini-3.1-flash-lite'
