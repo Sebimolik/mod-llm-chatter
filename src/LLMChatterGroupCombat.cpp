@@ -1352,8 +1352,6 @@ void HandleGroupPlayerEquipImpl(
         || !sLLMChatterConfig->_groupGearChangeChance)
         return;
 
-    PruneGroupGearMountCooldowns();
-
     if (!player || !it || IsPlayerBot(player))
         return;
 
@@ -1362,6 +1360,12 @@ void HandleGroupPlayerEquipImpl(
     // change" worth commenting on.
     if (slot >= EQUIPMENT_SLOT_END)
         return;
+
+    // Prune only once we know this is a real equipment
+    // change; this hook fires for every bag and bank
+    // shuffle, and there is no reason to walk the
+    // cooldown maps for those.
+    PruneGroupGearMountCooldowns();
 
     ItemTemplate const* tmpl = it->GetTemplate();
     if (!tmpl)
@@ -1652,6 +1656,19 @@ static void PruneGroupGearMountCooldowns()
         else
             ++it;
     }
+}
+
+// Drop a player's gear/mount baselines when they log out.
+//
+// These are "what were they wearing last time we looked", used purely to
+// avoid reacting to the login re-equip pass. They mean nothing once the
+// player is gone, and without this they accumulate for the worldserver's
+// entire lifetime. On next login the first equip per slot re-establishes
+// the baseline silently, which is exactly the intended behaviour.
+void ForgetGroupGearMountBaselines(ObjectGuid::LowType playerGuid)
+{
+    _lastReactedGearEntry.erase(playerGuid);
+    _lastReactedMountId.erase(playerGuid);
 }
 
 void HandleGroupPlayerMountChangeImpl(

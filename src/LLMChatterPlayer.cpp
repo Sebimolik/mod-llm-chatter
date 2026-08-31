@@ -771,7 +771,43 @@ public:
                PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
                PLAYERHOOK_ON_UPDATE_ZONE,
                PLAYERHOOK_ON_UPDATE_AREA,
-               PLAYERHOOK_ON_PVP_KILL}) {}
+               PLAYERHOOK_ON_PVP_KILL,
+               PLAYERHOOK_ON_DELETE}) {}
+
+    // Character deleted: drop everything keyed to its guid now.
+    //
+    // llm_bot_memories and llm_bot_relationships reference character
+    // guids directly, with no foreign key. AzerothCore hands freed
+    // guids back out, so waiting for the periodic orphan sweep leaves
+    // a window in which a brand new character can inherit a stranger's
+    // memories and the bot's stored feelings about them. Deleting on
+    // the hook closes that window deterministically; the orphan sweep
+    // stays as the backstop for rows orphaned some other way.
+    void OnPlayerDelete(ObjectGuid guid, uint32 /*accountId*/) override
+    {
+        if (!sLLMChatterConfig
+            || !sLLMChatterConfig->IsEnabled())
+            return;
+
+        uint32 const lowGuid = guid.GetCounter();
+
+        // The character may be either side of the pair: a deleted
+        // player bot is a bot_guid, a deleted human is a player_guid.
+        CharacterDatabase.Execute(
+            "DELETE FROM llm_bot_memories "
+            "WHERE bot_guid = {} OR player_guid = {}",
+            lowGuid, lowGuid);
+
+        CharacterDatabase.Execute(
+            "DELETE FROM llm_bot_relationships "
+            "WHERE bot_guid = {} OR player_guid = {}",
+            lowGuid, lowGuid);
+
+        CharacterDatabase.Execute(
+            "DELETE FROM llm_group_bot_traits "
+            "WHERE bot_guid = {}",
+            lowGuid);
+    }
 
     void OnPlayerLogin(Player* player) override
     {

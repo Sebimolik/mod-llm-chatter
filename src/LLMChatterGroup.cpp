@@ -1186,6 +1186,8 @@ void HandleGroupPlayerUpdateZoneImpl(
     Player* player, uint32 newZone,
     uint32 newArea);
 void CheckGroupCombatStateImpl();
+void ForgetGroupGearMountBaselines(
+    ObjectGuid::LowType playerGuid);
 
 // ============================================================================
 // LLMChatterGroupPlayerScript (PlayerScript shell)
@@ -1198,6 +1200,7 @@ public:
         : PlayerScript(
               "LLMChatterGroupPlayerScript",
               {PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT,
+               PLAYERHOOK_ON_LOGOUT,
                PLAYERHOOK_ON_CREATURE_KILL,
                PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
                PLAYERHOOK_ON_LOOT_ITEM,
@@ -1215,6 +1218,19 @@ public:
                PLAYERHOOK_ON_EQUIP,
 
                PLAYERHOOK_ON_TEXT_EMOTE}) {}
+
+    // Gear/mount baselines exist only to suppress a reaction to the
+    // login re-equip pass. They are meaningless once the player is
+    // gone, and nothing else prunes them, so drop them here rather
+    // than carrying them for the worldserver's whole lifetime.
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!player)
+            return;
+
+        ForgetGroupGearMountBaselines(
+            player->GetGUID().GetCounter());
+    }
 
     bool OnPlayerCanUseChat(
         Player* player, uint32 type, uint32 lang,
