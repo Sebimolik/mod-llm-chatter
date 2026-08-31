@@ -45,6 +45,47 @@ def _strip_markdown_fence(response: str) -> str:
     return cleaned
 
 
+def _find_balanced_objects(text: str, required_key: str):
+    """Return every brace-balanced {...} span in `text` that mentions
+    `required_key`, outermost-first, in order of appearance.
+
+    A regex cannot do this: matching nested objects needs a counter.
+    The scan tracks string literals and backslash escapes so a brace
+    inside a JSON string does not throw the depth off.
+    """
+    needle = '"%s"' % required_key
+    spans = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    span = text[start:i + 1]
+                    if needle in span:
+                        spans.append(span)
+                    start = -1
+    return spans
+
+
 def extract_json_object(
     response: str, required_key: str = 'message'
 ) -> Optional[dict]:
@@ -68,14 +109,9 @@ def extract_json_object(
     # Try direct parse first, then extract embedded
     # JSON if the LLM leaked reasoning around it.
     candidates = [cleaned]
-    # Look for { ... } blocks containing required_key.
     # Use the last match — if the LLM revised its
     # answer, the final JSON is the intended one.
-    matches = re.findall(
-        r'\{[^{}]*"' + re.escape(required_key)
-        + r'"[^{}]*\}',
-        cleaned,
-    )
+    matches = _find_balanced_objects(cleaned, required_key)
     if matches:
         candidates.append(matches[-1])
 
