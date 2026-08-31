@@ -2412,7 +2412,10 @@ LLMChatter.Memory.MaxPerBotPlayer = 30
 #       cheap model is normally the right call. Set to 0 to
 #       force this work back onto the main model if stored
 #       memories read noticeably worse.
-#       No effect when LLMChatter.QuickAnalyze.Model is empty.
+#       No effect when LLMChatter.QuickAnalyze.Model is empty:
+#       with no quick model named, this work stays on
+#       LLMChatter.Model on every provider, so leaving this at 1
+#       costs nothing until you opt in by naming a model.
 #       Default: 1
 #
 LLMChatter.Memory.UseQuickModel = 1

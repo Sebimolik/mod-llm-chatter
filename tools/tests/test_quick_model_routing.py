@@ -115,19 +115,74 @@ def test_quick_model_used_when_configured():
     )
 
 
-def test_falls_back_to_main_model_when_unconfigured():
+# One entry per supported provider. The transparency contract has to hold
+# on all of them: it previously held only on openrouter/google/ollama, and
+# because this table used to be a single openrouter config, the test below
+# passed while anthropic and openai silently substituted a cheaper model.
+_PROVIDER_MODELS = [
+    ('anthropic', 'claude-opus-4-1-20250805'),
+    ('openai', 'gpt-4o'),
+    ('openrouter', 'deepseek-chat'),
+    ('google', 'gemini-2.5-pro'),
+    ('ollama', 'llama3.1:70b'),
+]
+
+
+# One entry per supported provider. The transparency contract has to hold
+# on all of them. This table used to be a single openrouter config, which
+# is why the test stayed green while anthropic and openai -- anthropic
+# being the shipped default -- silently substituted a cheaper model.
+_PROVIDER_MODELS = [
+    ('anthropic', 'claude-opus-4-1-20250805'),
+    ('openai', 'gpt-4o'),
+    ('openrouter', 'deepseek-chat'),
+    ('google', 'gemini-2.5-pro'),
+    ('ollama', 'llama3.1:70b'),
+]
+
+
+def _resolve(provider, configured, quick_model=None, quick_provider=None):
     cfg = dict(_BASE_CONFIG)
-    client = _FakeClient()
-    chatter_llm.call_llm(
-        client, 'hi', cfg, label='memory_generation',
-        use_quick_model=True,
-    )
-    # No QuickAnalyze config at all -> identical to a
-    # normal call, same client, same model.
-    assert (
-        client.completions.kwargs['model']
-        == 'deepseek-chat'
-    )
+    cfg['LLMChatter.Provider'] = provider
+    cfg['LLMChatter.Model'] = configured
+    if quick_model is not None:
+        cfg['LLMChatter.QuickAnalyze.Model'] = quick_model
+    if quick_provider is not None:
+        cfg['LLMChatter.QuickAnalyze.Provider'] = quick_provider
+    _, _, model = chatter_llm._resolve_quick_target(_FakeClient(), cfg)
+    return model
+
+
+def test_falls_back_to_main_model_when_unconfigured():
+    """With no QuickAnalyze config, quick work must stay on the admin's
+    own model -- on every provider, not just the convenient one."""
+    for provider, configured in _PROVIDER_MODELS:
+        used = _resolve(provider, configured)
+        assert used == configured, (
+            "provider %s downgraded the model with QuickAnalyze unset: "
+            "configured %s, resolved %s" % (provider, configured, used)
+        )
+
+
+def test_configured_quick_model_wins_on_every_provider():
+    """An explicit QuickAnalyze.Model must be honoured everywhere."""
+    for provider, configured in _PROVIDER_MODELS:
+        used = _resolve(provider, configured, quick_model='cheap-model')
+        assert used == 'cheap-model', (
+            "provider %s ignored an explicit QuickAnalyze.Model, got %s"
+            % (provider, used)
+        )
+
+
+def test_empty_quick_model_is_treated_as_unset():
+    """Whitespace/empty must mean 'unset', not 'use a hardcoded default'."""
+    for provider, configured in _PROVIDER_MODELS:
+        for blank in ('', '   '):
+            used = _resolve(provider, configured, quick_model=blank)
+            assert used == configured, (
+                "provider %s treated a blank QuickAnalyze.Model as a "
+                "downgrade signal, got %s" % (provider, used)
+            )
 
 
 def test_main_path_ignores_quick_model():

@@ -99,7 +99,8 @@ would.
   word-for-word — it's stored and reworded by your main model before it reaches
   chat. So if you point `LLMChatter.QuickAnalyze.Model` at the cheapest model
   your provider offers, all the memory bookkeeping moves there and costs you
-  almost nothing. Off by default; see [Tuning Bot Memory](#tuning-bot-memory).
+  almost nothing. Nothing moves until you name that model — until then every
+  call stays on your main model. See [Tuning Bot Memory](#tuning-bot-memory).
 
 ### 2026-08-22 - Localization, Battleground, and Prompt Fixes
 

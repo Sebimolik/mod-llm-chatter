@@ -618,18 +618,38 @@ def _get_quick_analyze_client(config):
         return _quick_analyze_client, qa_provider
 
 
+# Per-provider default model, used only when a separate
+# QuickAnalyze provider is configured without naming a model.
+_PROVIDER_DEFAULT_MODELS = {
+    'anthropic': DEFAULT_ANTHROPIC_MODEL,
+    'openai': DEFAULT_OPENAI_MODEL,
+    'google': DEFAULT_GOOGLE_MODEL,
+    'openrouter': DEFAULT_OPENROUTER_MODEL,
+}
+
+
 def _resolve_quick_target(client, config):
     """Resolve the client/provider/model for cheap
     "internal" LLM work (QuickAnalyze).
 
     Returns (client, provider, model). When QuickAnalyze is
     not configured on this server the fallback is fully
-    transparent: the caller's own client, the main
-    provider, and -- for providers where the configured
-    model IS the only sensible choice (Google, OpenRouter/
-    OpenAI-compatible, Ollama) -- LLMChatter.Model itself.
-    So an unconfigured server behaves exactly as if the
-    call had gone through the main path.
+    transparent on EVERY provider: the caller's own client,
+    the main provider, and LLMChatter.Model itself. An
+    unconfigured server behaves exactly as if the call had
+    gone through the main path, which is what the config
+    documentation promises.
+
+    A provider default is used only when the admin has
+    deliberately pointed QuickAnalyze at a separate provider
+    and left its model unset -- there is no "main model" for
+    that provider to inherit.
+
+    Previously Anthropic and OpenAI substituted a hardcoded
+    cheaper model here regardless of LLMChatter.Model, which
+    silently moved every internal call (and, since the memory
+    subsystem routes through this, all memory bookkeeping)
+    off the admin's chosen model.
 
     Shared by quick_llm_analyze() and by
     call_llm(use_quick_model=True) so there is exactly one
@@ -649,33 +669,23 @@ def _resolve_quick_target(client, config):
         'LLMChatter.QuickAnalyze.Model', ''
     ).strip()
 
+    provider_default = _PROVIDER_DEFAULT_MODELS.get(
+        provider, DEFAULT_ANTHROPIC_MODEL
+    )
+
     if qa_model:
+        # Explicitly configured: always wins.
         model = qa_model
-    elif provider == 'anthropic':
-        model = DEFAULT_ANTHROPIC_MODEL
-    elif provider == 'openai':
-        model = DEFAULT_OPENAI_MODEL
-    elif provider == 'google':
-        if using_quick_provider:
-            model = DEFAULT_GOOGLE_MODEL
-        else:
-            model = config.get(
-                'LLMChatter.Model',
-                DEFAULT_GOOGLE_MODEL
-            )
-    elif provider == 'openrouter':
-        if using_quick_provider:
-            model = DEFAULT_OPENROUTER_MODEL
-        else:
-            model = config.get(
-                'LLMChatter.Model',
-                DEFAULT_OPENROUTER_MODEL
-            )
+    elif using_quick_provider:
+        # A separate quick provider was configured but given no
+        # model, so there is no main model to inherit -- fall back
+        # to that provider's own default.
+        model = provider_default
     else:
-        # Ollama: use configured model
+        # No QuickAnalyze configuration at all. Stay on the admin's
+        # model so this is a genuine no-op, on every provider.
         model = config.get(
-            'LLMChatter.Model',
-            DEFAULT_ANTHROPIC_MODEL
+            'LLMChatter.Model', provider_default
         )
     return active_client, provider, resolve_model(model)
 
