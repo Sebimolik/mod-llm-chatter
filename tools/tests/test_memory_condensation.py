@@ -672,8 +672,16 @@ def test_digest_inserted_used_so_it_participates_in_eviction():
         _row(1, 'a', 2), _row(2, 'b', 2), _row(3, 'c', 2),
     ]
     db, _ = _condense(rows, _ONE_DIGEST)
-    # used=0 would make digests the last rows _evict_one_used()
-    # is ever willing to delete.
+    # A digest is inserted used=1 because it is a real recalled-quality
+    # memory, not because of anything to do with eviction ordering.
+    #
+    # An earlier version of this comment claimed used=0 would make digests
+    # "the last rows _evict_one_used() is ever willing to delete". That had
+    # it backwards, and hid a real bug: eviction used to filter on used=1,
+    # and since recall only marks the HIGHEST-scoring rows as used, that
+    # filter made digests first in line for deletion rather than last.
+    # Eviction now orders over the whole pool, so the used flag no longer
+    # decides who gets evicted -- see tools/tests/test_memory_eviction.py.
     assert _digest_inserts(db)[0]['used'] == 1
 
 

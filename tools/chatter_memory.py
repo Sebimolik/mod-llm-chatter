@@ -968,16 +968,21 @@ def _evict_one_used(
 ):
     """Evict the least valuable memory to make room.
 
-    Prefers the lowest decay-aware effective_score
-    used=1 row (created_at ASC breaks ties), falling
-    back to the lowest-scoring row regardless of used
-    status so a pool full of unread memories can't
-    deadlock the cap. Both queries exclude the pair's
-    single highest-scoring row (see
-    _top_row_exclusion_sql()), so a bot never forgets
-    its most valuable memory about a player.
+    Deletes the lowest decay-aware effective_score row in the pair's
+    pool. The pair's single highest-scoring row is always excluded
+    (see _top_row_exclusion_sql()), so a bot never forgets the most
+    valuable thing it knows about a player.
 
-    Returns True if a row was deleted.
+    Ties break toward rows that have already been recalled
+    (`used DESC`): a memory that has surfaced in conversation has had
+    its moment, whereas one that has never been read has not yet had
+    the chance to prove itself. `created_at ASC` breaks the remainder,
+    so the oldest of equals goes first.
+
+    NOTE: do not reintroduce a `used = 1` filter here. `used` is set
+    only by the recall path, which selects ORDER BY effective_score
+    DESC -- so `used = 1` is the pool's *most* valuable subset, not
+    its most disposable one. Filtering on it inverts this function.
     """
     score_sql = _effective_score_sql(config)
     top_row_subquery = _top_row_exclusion_sql(score_sql)
@@ -986,11 +991,10 @@ def _evict_one_used(
         " WHERE bot_guid = %s"
         "   AND player_guid = %s"
         "   AND active = 1"
-        "   AND used = 1"
         + top_row_subquery +
         " ORDER BY "
         + score_sql +
-        " ASC, created_at ASC"
+        " ASC, used DESC, created_at ASC"
         " LIMIT 1",
         (
             bot_guid, player_guid,
@@ -998,41 +1002,7 @@ def _evict_one_used(
         ),
     )
     conn.commit()
-    if cursor.rowcount > 0:
-        return True
-
-    # Fallback: no used=1 row was eligible. Pool is
-    # under generation pressure (filling up with
-    # memories that haven't been recalled yet) --
-    # evict the lowest-value row regardless of used
-    # status so the cap never gets permanently stuck.
-    cursor.execute(
-        "DELETE FROM llm_bot_memories"
-        " WHERE bot_guid = %s"
-        "   AND player_guid = %s"
-        "   AND active = 1"
-        + top_row_subquery +
-        " ORDER BY "
-        + score_sql +
-        " ASC, created_at ASC"
-        " LIMIT 1",
-        (
-            bot_guid, player_guid,
-            bot_guid, player_guid,
-        ),
-    )
-    conn.commit()
-    if cursor.rowcount > 0:
-        logger.info(
-            "Memory pool for bot=%s player=%s had no"
-            " used=1 rows to evict (generation"
-            " pressure: pool filled with unread"
-            " memories); evicted lowest-value unused"
-            " row instead",
-            bot_guid, player_guid,
-        )
-        return True
-    return False
+    return cursor.rowcount > 0
 
 
 def _ensure_cap_and_insert(
@@ -2804,17 +2774,27 @@ def flush_session_memories(
                     player_guid,
                 )
 
-            # Prune to cap
-            cnt = _count_active_memories(
-                cursor, bot_guid, player_guid
-            )
-            while cnt > max_per:
-                if not _evict_one_used(
-                    cursor, db,
-                    bot_guid, player_guid, config,
-                ):
-                    break  # no used left
-                cnt -= 1
+            # Prune to cap. A non-positive cap is a misconfiguration,
+            # NOT an instruction to forget everything: skip the trim
+            # rather than draining the pair down to one row.
+            if max_per > 0:
+                cnt = _count_active_memories(
+                    cursor, bot_guid, player_guid
+                )
+                while cnt > max_per:
+                    if not _evict_one_used(
+                        cursor, db,
+                        bot_guid, player_guid, config,
+                    ):
+                        break  # nothing left that may be evicted
+                    cnt -= 1
+            elif max_per is not None:
+                logger.warning(
+                    "LLMChatter.Memory.MaxPerBotPlayer=%s is not"
+                    " positive; skipping the cap trim for bot=%s"
+                    " player=%s rather than deleting its memories.",
+                    max_per, bot_guid, player_guid,
+                )
         except Exception:
             logger.error(
                 "Memory activation failed for "
