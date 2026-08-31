@@ -393,6 +393,12 @@ def test_delete_reuses_a_caller_owned_connection():
 
 def _clear_sessions():
     chatter_memory._active_sessions.pop(GROUP, None)
+    # The negative-result cache is module-level (keyed by group_id) rather
+    # than hung off the session, so that groups with no in-memory session
+    # get it too. That means it survives between test cases and has to be
+    # reset here, or a miss recorded by one test suppresses the DB check
+    # the next test is asserting on.
+    chatter_memory._vibe_miss_until.clear()
 
 
 def test_live_in_memory_vibe_skips_the_database():
@@ -1431,6 +1437,42 @@ def test_reaction_suffix_is_localized_end_to_end():
         assert len(out.strip().splitlines()) == 2, code
 
 
+def test_miss_cache_engages_without_an_in_memory_session():
+    """Groups with no session must still get the negative-result cache.
+
+    Sessions only exist for altbots with memory enabled, so a
+    session-scoped cache did nothing for groups of random playerbots --
+    and build_mood_and_vibe_suffix() runs on every reaction prompt, so
+    each one opened and closed a fresh MySQL connection.
+    """
+    table, connector = _fresh()
+    _clear_sessions()
+    assert GROUP not in chatter_memory._active_sessions
+
+    calls = []
+
+    def counting_connector(config):
+        calls.append(1)
+        return connector(config)
+
+    with patch.object(
+        chatter_memory, 'get_db_connection', counting_connector
+    ), patch.object(
+        chatter_memory.time, 'time', lambda: 5000.0
+    ):
+        assert chatter_memory.get_session_vibe(GROUP, CONFIG) is None
+        first = len(calls)
+        # Second and third calls must be served by the cache.
+        assert chatter_memory.get_session_vibe(GROUP, CONFIG) is None
+        assert chatter_memory.get_session_vibe(GROUP, CONFIG) is None
+
+    assert first == 1, 'expected exactly one DB check, got %d' % first
+    assert len(calls) == first, (
+        'the miss cache did not engage without a session: %d database '
+        'connections for 3 lookups' % len(calls)
+    )
+
+
 def main() -> int:
     tests = [
         test_upsert_then_read_round_trip,
@@ -1447,6 +1489,7 @@ def main() -> int:
         test_db_fallback_works_without_any_session,
         test_expired_row_returns_none_and_self_cleans,
         test_expiry_is_anchored_to_the_original_set_at,
+        test_miss_cache_engages_without_an_in_memory_session,
         test_missing_row_clears_a_stale_session_vibe,
         test_repeat_no_vibe_reads_do_not_reopen_the_database,
         test_no_vibe_cache_expires_and_rechecks,

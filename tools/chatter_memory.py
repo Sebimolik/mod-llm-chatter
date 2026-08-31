@@ -175,6 +175,42 @@ DEFAULT_VIBE_DURATION_SECONDS = 600.0
 # ABSENCE, never a live vibe.
 _VIBE_MISS_CACHE_SECONDS = 45.0
 
+# group_id -> unix time until which a DB check is known to be pointless.
+# Deliberately NOT hung off the per-group session dict: sessions only exist
+# for altbots with memory enabled, so a session-scoped cache silently does
+# nothing for groups of random playerbots -- which is most of them, and the
+# case where the wasted connection-per-prompt hurts most.
+_vibe_miss_until = {}
+_vibe_miss_lock = threading.Lock()
+
+
+def _vibe_miss_active(group_id, now):
+    """True when a recent check already found no usable vibe."""
+    with _vibe_miss_lock:
+        return now < float(_vibe_miss_until.get(group_id) or 0)
+
+
+def _mark_vibe_miss(group_id, now, session=None):
+    """Suppress DB checks for this group for a short while."""
+    with _vibe_miss_lock:
+        _vibe_miss_until[group_id] = now + _VIBE_MISS_CACHE_SECONDS
+        # Bound the dict: groups come and go, and nothing else prunes it.
+        if len(_vibe_miss_until) > 512:
+            for stale in [
+                g for g, until in _vibe_miss_until.items() if until < now
+            ]:
+                _vibe_miss_until.pop(stale, None)
+    if session is not None:
+        session['vibe_miss_until'] = now + _VIBE_MISS_CACHE_SECONDS
+
+
+def _clear_vibe_miss(group_id, session=None):
+    """Called the moment a vibe is set, so a live vibe is never hidden."""
+    with _vibe_miss_lock:
+        _vibe_miss_until.pop(group_id, None)
+    if session is not None:
+        session.pop('vibe_miss_until', None)
+
 # Hard ceiling on a single stored memory's text, enforced when a
 # generated memory or condensation digest is validated before
 # insert. Prompt-facing helpers that must show a memory in FULL
@@ -507,8 +543,8 @@ def get_session_vibe_details(group_id, config=None):
     # in-memory fast path above found nothing, and cleared
     # by _ensure_cap_and_insert() the moment a vibe is set,
     # so a live vibe is never hidden by it.
-    if session is not None and not (vibe and vibe_set_at):
-        if now < float(session.get('vibe_miss_until') or 0):
+    if not (vibe and vibe_set_at):
+        if _vibe_miss_active(group_id, now):
             return None, None
     if vibe and vibe_set_at:
         if now - vibe_set_at < duration:
@@ -534,9 +570,7 @@ def get_session_vibe_details(group_id, config=None):
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
                 session.pop('vibe_source', None)
-                session['vibe_miss_until'] = (
-                    now + _VIBE_MISS_CACHE_SECONDS
-                )
+            _mark_vibe_miss(group_id, now, session)
             return None, None
         persisted_vibe, set_at, persisted_source = row
         if now - set_at >= duration:
@@ -556,15 +590,13 @@ def get_session_vibe_details(group_id, config=None):
                 session.pop('vibe', None)
                 session.pop('vibe_set_at', None)
                 session.pop('vibe_source', None)
-                session['vibe_miss_until'] = (
-                    now + _VIBE_MISS_CACHE_SECONDS
-                )
+            _mark_vibe_miss(group_id, now, session)
             return None, None
         if session is not None:
             session["vibe"] = persisted_vibe
             session["vibe_set_at"] = set_at
             session["vibe_source"] = persisted_source
-            session.pop('vibe_miss_until', None)
+        _clear_vibe_miss(group_id, session)
         return persisted_vibe.replace('_', ' '), persisted_source
     except Exception:
         logger.warning(
@@ -1089,7 +1121,7 @@ def _ensure_cap_and_insert(
             # Drop any cached "no vibe here" marker so the
             # read side sees this one immediately (see
             # _VIBE_MISS_CACHE_SECONDS).
-            session.pop('vibe_miss_until', None)
+            _clear_vibe_miss(group_id, session)
         # Persist so the vibe survives a bridge restart /
         # session CLEANUP wipe. Reuses this function's
         # connection rather than opening a second one on
