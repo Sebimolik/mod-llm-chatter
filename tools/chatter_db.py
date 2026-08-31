@@ -391,7 +391,10 @@ def query_zone_loot(
         return loot
 
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Zone loot lookup failed for zone %s",
+            zone_id, exc_info=True,
+        )
         return []
 
 
@@ -653,7 +656,10 @@ def query_zone_npcs(
         return results
 
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Zone NPC lookup failed for zone %s",
+            zone_id, exc_info=True,
+        )
         return []
 
 
@@ -1446,7 +1452,10 @@ def cleanup_stale_groups(db) -> int:
                 )
                 teardown_group_session(gid)
             except Exception:
-                logger.warning("operation failed", exc_info=True)
+                logger.warning(
+                    "Failed to tear down the in-memory session for"
+                    " group %s", gid, exc_info=True,
+                )
                 pass
             cleaned += 1
 

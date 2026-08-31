@@ -267,7 +267,10 @@ def check_or_create_bot_identity(
             traits[0], traits[1], traits[2],
         )
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Failed to create or refresh the stored identity"
+            " for %s", bot_name, exc_info=True,
+        )
         pass
 
     return {
@@ -345,7 +348,10 @@ def _generate_bot_tone(
             db.commit()
             return tone
     except Exception:
-        logger.warning("_sync_group_rows failed", exc_info=True)
+        logger.warning(
+            "Failed to reuse the stored tone for %s",
+            bot_name, exc_info=True,
+        )
         pass
 
     # Build LLM prompt
@@ -443,7 +449,10 @@ def _generate_bot_tone(
                 )
             )
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Could not build an LLM client for tone"
+            " generation (%s)", bot_name, exc_info=True,
+        )
         pass
 
     try:
@@ -482,7 +491,10 @@ def _generate_bot_tone(
         return tone
 
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Tone generation failed for %s",
+            bot_name, exc_info=True,
+        )
         # Store fallback so we don't retry LLM on
         # every subsequent call for this bot+group
         try:
@@ -571,7 +583,10 @@ def _generate_bot_backstory(
             db.commit()
             return bs
     except Exception:
-        logger.warning("_sync_group_rows failed", exc_info=True)
+        logger.warning(
+            "Failed to reuse the stored backstory for %s",
+            bot_name, exc_info=True,
+        )
         pass
 
     # Build LLM prompt
@@ -679,7 +694,10 @@ def _generate_bot_backstory(
                 )
             )
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Could not build an LLM client for backstory"
+            " generation (%s)", bot_name, exc_info=True,
+        )
         pass
 
     try:
@@ -727,7 +745,10 @@ def _generate_bot_backstory(
         return backstory
 
     except Exception:
-        logger.warning("operation failed", exc_info=True)
+        logger.warning(
+            "Backstory generation failed for %s",
+            bot_name, exc_info=True,
+        )
         return None
 
 
@@ -1154,7 +1175,11 @@ def assign_bot_traits(
             )
             db.commit()
         except Exception:
-            logger.warning("operation failed", exc_info=True)
+            logger.warning(
+                "Failed to clear the stale tone/backstory for"
+                " bot %s in group %s",
+                bot_guid, group_id, exc_info=True,
+            )
             pass
 
     # Generate LLM-derived tone if not already set
@@ -1167,7 +1192,10 @@ def assign_bot_traits(
                 traits,
             )
         except Exception:
-            logger.warning("operation failed", exc_info=True)
+            logger.warning(
+                "Tone generation failed for bot %s in group %s",
+                bot_guid, group_id, exc_info=True,
+            )
             pass
 
     # Generate LLM-derived backstory if not already set
@@ -1181,7 +1209,10 @@ def assign_bot_traits(
                 bot_gender=bot_gender,
             )
         except Exception:
-            logger.warning("operation failed", exc_info=True)
+            logger.warning(
+                "Backstory generation failed for bot %s in"
+                " group %s", bot_guid, group_id, exc_info=True,
+            )
             pass
 
     return {
@@ -1426,7 +1457,10 @@ def _generate_farewell(
                 )
                 db.commit()
             except Exception:
-                logger.warning("operation failed", exc_info=True)
+                logger.warning(
+                    "Failed to store the generated farewell for"
+                    " bot %s", bot_guid, exc_info=True,
+                )
                 pass
 
     except Exception:
