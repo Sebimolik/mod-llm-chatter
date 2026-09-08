@@ -8,12 +8,10 @@ from chatter_shared import (
     get_race_speech_profile,
     get_bg_lore,
     get_language_rule,
+    get_zone_name,
     get_subzone_lore,
     get_dungeon_flavor,
     get_dungeon_bosses,
-    build_bot_identity,
-    build_bot_identity_from_dict,
-    build_bot_identity_with_level,
     build_race_class_context,
     build_race_class_context_parts,
     build_bot_state_context,
@@ -36,6 +34,11 @@ from chatter_constants import (
     RP_LENGTH_HINTS,
     BG_MAP_NAMES,
     CLASS_ROLE_MAP,
+)
+from chatter_mode import (
+    build_player_chat_guidance,
+    build_player_prompt_header,
+    build_player_prompt_header_from_dict,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,10 @@ def _append_bots_with_rp(parts, bots, traits_map, is_rp):
     are kept together per bot to preserve association.
     """
     shared_race_cache = {}
+    if not is_rp:
+        parts.append(
+            build_player_chat_guidance('normal', 'party')
+        )
     if is_rp:
         race_counts = {}
         for bot in bots:
@@ -118,8 +125,12 @@ def _append_bots_with_rp(parts, bots, traits_map, is_rp):
             f"(personality: {trait_str})"
         )
         if bot.get('travel_context'):
+            travel_label = (
+                "travel state"
+                if is_rp else "character gameplay travel state"
+            )
             parts.append(
-                f"  {bot['name']} travel state: "
+                f"  {bot['name']} {travel_label}: "
                 f"{bot['travel_context']}"
             )
         if is_rp:
@@ -244,9 +255,8 @@ def build_bot_greeting_prompt(
             f'{bg_team.lower()}_faction',
             bg_team,
         ) if bg_team else ''
-        location_context = (
-            f"\nYou are entering {bg_name}"
-        )
+        subject = "You are" if is_rp else "Your character is"
+        location_context = f"\n{subject} entering {bg_name}"
         if faction:
             location_context += (
                 f" as part of the {faction}"
@@ -254,30 +264,39 @@ def build_bot_greeting_prompt(
             )
         location_context += "."
         bg_tone = lore.get('tone')
-        if bg_tone:
+        if is_rp and bg_tone:
             location_context += (
                 f"\nBattleground feel: {bg_tone}"
             )
     else:
         dungeon_flav = get_dungeon_flavor(map_id)
-        if dungeon_flav:
+        if is_rp and dungeon_flav:
             location_context = (
                 f"\nLocation: {dungeon_flav}"
             )
-        else:
+        elif dungeon_flav:
+            location_context = (
+                "\nYour character is currently in a dungeon."
+            )
+        elif not dungeon_flav:
             zone_flav = get_zone_flavor(zone_id)
-            if zone_flav:
+            if is_rp and zone_flav:
                 location_context = (
                     f"\nLocation: {zone_flav}"
                 )
+            elif not is_rp:
+                zone_name = get_zone_name(zone_id)
+                if zone_name:
+                    location_context = f"\nZone: {zone_name}"
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}"
         f"{rp_context}"
         f"{location_context}\n"
         + "\n".join(
             build_environmental_context_lines()
+            if is_rp else []
         )
         + "\n"
     )
@@ -511,7 +530,7 @@ def build_bot_welcome_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}"
         f"{rp_context}\n"
     )
@@ -649,7 +668,7 @@ def build_batch_welcome_prompt(
     count = len(new_bot_names)
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}"
         f"{rp_context}\n"
     )
@@ -754,7 +773,7 @@ def build_kill_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -776,7 +795,7 @@ def build_kill_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -834,7 +853,7 @@ def build_kill_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -899,7 +918,7 @@ def build_loot_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -921,7 +940,7 @@ def build_loot_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -983,7 +1002,7 @@ def build_loot_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1231,7 +1250,7 @@ def build_combat_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -1283,7 +1302,7 @@ def build_combat_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1338,7 +1357,7 @@ def build_death_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -1360,7 +1379,7 @@ def build_death_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -1400,7 +1419,7 @@ def build_death_reaction_prompt(
             )
 
     prompt = (
-        f"{build_bot_identity_from_dict(reactor)}\n"
+        f"{build_player_prompt_header_from_dict(reactor, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1489,7 +1508,7 @@ def build_levelup_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1598,7 +1617,7 @@ def build_quest_complete_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1705,7 +1724,7 @@ def build_quest_objectives_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1770,7 +1789,7 @@ def build_achievement_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -1833,7 +1852,7 @@ def build_achievement_reaction_prompt(
             )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1901,7 +1920,7 @@ def build_group_achievement_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -1932,7 +1951,7 @@ def build_group_achievement_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -2001,7 +2020,7 @@ def build_spell_cast_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -2248,7 +2267,7 @@ def build_spell_cast_reaction_prompt(
                 anti_rep_block += f'- "{pl}"\n'
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -2356,13 +2375,13 @@ def build_player_response_prompt(
 
     # Location context — dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
     else:
         zone_flav = get_zone_flavor(zone_id)
-        if zone_flav:
+        if is_rp and zone_flav:
             rp_context += (
                 f"\nZone context: {zone_flav}"
             )
@@ -2386,7 +2405,7 @@ def build_player_response_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -2638,7 +2657,7 @@ def build_resurrect_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -2781,7 +2800,7 @@ def build_zone_transition_prompt(
     )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -2923,7 +2942,7 @@ def build_quest_accept_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -3027,7 +3046,7 @@ def build_quest_accept_batch_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -3145,7 +3164,7 @@ def build_dungeon_entry_prompt(
             )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -3198,7 +3217,7 @@ def build_wipe_reaction_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -3220,7 +3239,7 @@ def build_wipe_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -3250,7 +3269,7 @@ def build_wipe_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -3318,7 +3337,7 @@ def build_corpse_run_reaction_prompt(
 
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -3385,7 +3404,7 @@ def build_corpse_run_reaction_prompt(
             )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -3430,7 +3449,7 @@ def build_low_health_callout_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -3457,8 +3476,9 @@ def build_low_health_callout_prompt(
         )
 
     situation = (
-        f"You are critically wounded "
-        f"({hp}% health)."
+        f"You are critically wounded ({hp}% health)."
+        if is_rp else
+        f"Your character is critically low on health ({hp}%)."
     )
     if target_name:
         situation += (
@@ -3466,7 +3486,7 @@ def build_low_health_callout_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
         f"Your tone: "
         f"{stored_tone or pick_random_tone(mode)}\n"
@@ -3478,8 +3498,8 @@ def build_low_health_callout_prompt(
     prompt += (
         f"{rp_context}\n\n"
         f"{situation}\n\n"
-        f"React with urgency — call for help, "
-        f"express pain, or show desperation.\n"
+        f"React with urgency — call for help, warn "
+        f"the group, or show frustration.\n"
         f"Say ONE short sentence in party chat.\n"
         f"Rules:\n"
         f"- Extremely brief, 3-10 words\n"
@@ -3511,7 +3531,7 @@ def build_oom_callout_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -3542,7 +3562,7 @@ def build_oom_callout_prompt(
     )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
         f"Your tone: "
         f"{stored_tone or pick_random_tone(mode)}\n"
@@ -3583,7 +3603,7 @@ def build_aggro_loss_callout_prompt(
     actual_role = None
     if extra_data:
         state_ctx = build_bot_state_context(
-            extra_data
+            extra_data, mode
         )
         actual_role = (
             extra_data.get('bot_state', {})
@@ -3608,7 +3628,7 @@ def build_aggro_loss_callout_prompt(
     )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
         f"Your tone: "
         f"{stored_tone or pick_random_tone(mode)}\n"
@@ -3640,7 +3660,7 @@ def build_precache_combat_pull_prompt(
     bot_name, race, class_name, level,
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
-    allow_action=False,
+    allow_action=False, mode='normal',
 ):
     """Build prompt for a cached combat pull cry.
 
@@ -3648,9 +3668,11 @@ def build_precache_combat_pull_prompt(
     enemy name goes. C++ resolves it at delivery.
     """
     trait_str = ', '.join(traits) if traits else ''
-    rp_ctx = build_race_class_context(
-        race, class_name, actual_role=role
-    )
+    rp_ctx = ''
+    if mode == 'roleplay':
+        rp_ctx = build_race_class_context(
+            race, class_name, actual_role=role
+        )
 
     anti_rep = ''
     if recent_cached:
@@ -3659,8 +3681,9 @@ def build_precache_combat_pull_prompt(
         )
 
     prompt = (
-        build_bot_identity_with_level(
+        build_player_prompt_header(
             bot_name, race, class_name, level,
+            mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -3695,7 +3718,7 @@ def build_precache_state_prompt(
     state_type, bot_name, race, class_name, level,
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
-    allow_action=False,
+    allow_action=False, mode='normal',
 ):
     """Build prompt for a cached state callout.
 
@@ -3704,9 +3727,11 @@ def build_precache_state_prompt(
     aggro_loss uses {target} only.
     """
     trait_str = ', '.join(traits) if traits else ''
-    rp_ctx = build_race_class_context(
-        race, class_name, actual_role=role
-    )
+    rp_ctx = ''
+    if mode == 'roleplay':
+        rp_ctx = build_race_class_context(
+            race, class_name, actual_role=role
+        )
 
     anti_rep = ''
     if recent_cached:
@@ -3715,8 +3740,9 @@ def build_precache_state_prompt(
         )
 
     prompt = (
-        build_bot_identity_with_level(
+        build_player_prompt_header(
             bot_name, race, class_name, level,
+            mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -3727,11 +3753,16 @@ def build_precache_state_prompt(
         prompt += f"\n{rp_ctx}"
 
     if state_type == 'low_health':
+        health_state = (
+            "You are critically wounded"
+            if mode == 'roleplay'
+            else "Your character is critically low on health"
+        )
         prompt += (
-            "\n\nYou are critically wounded. "
+            f"\n\n{health_state}. "
             "Write a very short callout "
-            "(1 sentence, 3-10 words) asking for "
-            "help or expressing pain.\n"
+            "(1 sentence, 3-10 words) asking for help "
+            "or warning the group.\n"
             "Rules:\n"
             "- First person only (\"I need "
             "healing!\", \"I'm going down!\")\n"
@@ -3792,7 +3823,7 @@ def build_precache_spell_support_prompt(
     bot_name, race, class_name, level,
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
-    allow_action=False,
+    allow_action=False, mode='normal',
 ):
     """Build prompt for a cached spell support
     reaction. Uses {target} and {spell} placeholders.
@@ -3803,9 +3834,11 @@ def build_precache_spell_support_prompt(
     cached message delivers instantly.
     """
     trait_str = ', '.join(traits) if traits else ''
-    rp_ctx = build_race_class_context(
-        race, class_name, actual_role=role
-    )
+    rp_ctx = ''
+    if mode == 'roleplay':
+        rp_ctx = build_race_class_context(
+            race, class_name, actual_role=role
+        )
 
     anti_rep = ''
     if recent_cached:
@@ -3814,8 +3847,9 @@ def build_precache_spell_support_prompt(
         )
 
     prompt = (
-        build_bot_identity_with_level(
+        build_player_prompt_header(
             bot_name, race, class_name, level,
+            mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -3861,6 +3895,7 @@ def build_precache_spell_offensive_prompt(
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
     allow_action=False, combat_style='hybrid',
+    mode='normal',
 ):
     """Build prompt for a cached offensive ability
     reaction. Uses {target} and {spell} placeholders.
@@ -3874,9 +3909,11 @@ def build_precache_spell_offensive_prompt(
     a cast, or either.
     """
     trait_str = ', '.join(traits) if traits else ''
-    rp_ctx = build_race_class_context(
-        race, class_name, actual_role=role
-    )
+    rp_ctx = ''
+    if mode == 'roleplay':
+        rp_ctx = build_race_class_context(
+            race, class_name, actual_role=role
+        )
 
     anti_rep = ''
     if recent_cached:
@@ -3885,8 +3922,9 @@ def build_precache_spell_offensive_prompt(
         )
 
     prompt = (
-        build_bot_identity_with_level(
+        build_player_prompt_header(
             bot_name, race, class_name, level,
+            mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -4061,10 +4099,12 @@ def build_nearby_object_reaction_prompt(
 
     is_rp = (mode == 'roleplay')
 
-    prompt = (
-        build_bot_identity(
-            bot_name, race_name, class_name,
-        )
+    prompt = build_player_prompt_header(
+        bot_name,
+        race_name,
+        class_name,
+        mode=mode,
+        channel='party',
     )
     if trait_str:
         prompt += f" Personality: {trait_str}."
@@ -4072,13 +4112,19 @@ def build_nearby_object_reaction_prompt(
         " Your tone: "
         f"{stored_tone or pick_random_tone(mode)}."
     )
-    prompt += (
-        f"\n\nYou are walking through {location} "
-        f"({setting}) with your group."
-    )
+    if is_rp:
+        prompt += (
+            f"\n\nYou are walking through {location} "
+            f"({setting}) with your group."
+        )
+    else:
+        prompt += (
+            f"\n\nYour character is in {location} "
+            f"({setting}) with the group."
+        )
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         prompt += (
             f"\nDungeon context: {dungeon_flav}"
         )
@@ -4096,10 +4142,8 @@ def build_nearby_object_reaction_prompt(
         )
     else:
         style = (
-            "Make a brief comment about what you see "
-            "as a regular WoW player — could be any "
-            "age, mature and grounded. Natural "
-            "reaction, as a player not a character."
+            "Make a brief, natural comment as a player "
+            "reacting to what is visible in the game."
         )
     prompt += (
         f"\nYou notice the following nearby:\n"
@@ -4191,7 +4235,7 @@ def build_nearby_object_conversation_prompt(
     )
     # Location context -- dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         parts.append(
             f"Dungeon context: {dungeon_flav}"
         )
@@ -4357,20 +4401,20 @@ def build_player_msg_conversation_prompt(
 
     # Location context — dungeon takes priority
     dungeon_flav = get_dungeon_flavor(map_id)
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         parts.append(
             f"Dungeon context: {dungeon_flav}"
         )
     else:
         zone_flav = get_zone_flavor(zone_id)
-        if zone_flav:
+        if is_rp and zone_flav:
             parts.append(
                 f"Zone context: {zone_flav}"
             )
         subzone = get_subzone_lore(
             zone_id, area_id
         )
-        if subzone:
+        if is_rp and subzone:
             parts.append(
                 f"Current subzone: {subzone}"
             )
@@ -4471,8 +4515,11 @@ def build_player_msg_conversation_prompt(
         "- Other speakers react to the "
         "conversation, building on each other\n"
         "- Each bot speaks EXACTLY once\n"
-        "- Stay in character\n"
-        "- Don't repeat what the player said\n"
+        + (
+            "- Stay in character\n"
+            if is_rp else "- Stay in normal player voice\n"
+        )
+        + "- Don't repeat what the player said\n"
         "- Don't repeat jokes or themes "
         "already said in chat"
     )
@@ -4593,6 +4640,88 @@ BOT_QUESTION_TOPICS = [
     'what they would do if they were not an adventurer',
 ]
 
+BOT_QUESTION_TOPICS_NORMAL = [
+    # Class and role
+    'how they like playing their class or role',
+    'their favorite spell, ability, or talent choice',
+    'which class ability took them longest to appreciate',
+    'whether they prefer solo, dungeon, or PvP talents',
+    'how they arrange the abilities they use most often',
+    'what part of their role they find most satisfying',
+    'which class they would choose for their next alt',
+    'whether their class feels stronger in a group or alone',
+    'what class utility they wish more groups noticed',
+    'which resource system they enjoy playing most',
+    'how they learned to handle difficult pulls in their role',
+    'whether they prefer a simple rotation or more buttons',
+
+    # Current goals and progression
+    'what content they are working on today',
+    'what their next character milestone is',
+    'whether they are leveling quickly or taking their time',
+    'which item or reputation reward they want next',
+    'whether they are saving gold for anything important',
+    'what keeps them interested during a long leveling session',
+    'which alt they have been meaning to play again',
+    'whether they tend to finish zones or move on early',
+    'what achievement or collection goal sounds worth doing',
+    'which part of gearing a character they enjoy most',
+
+    # Places and content
+    'whether they have played this zone before',
+    'which leveling zone they would happily replay',
+    'which zone they always seem to get lost in',
+    'whether they read quest text or follow objectives quickly',
+    'what dungeon they know well enough to lead',
+    'which dungeon they avoid unless friends ask',
+    'whether they prefer open-world quests or instances',
+    'what area has their favorite music or visual design',
+    'which flight path or shortcut they often forget',
+    'what old quest or dungeon they still remember clearly',
+
+    # Group preferences and social play
+    'their opinion of the current group composition',
+    'a dungeon, battleground, or quest they enjoy',
+    'whether they prefer small groups or full raids',
+    'what makes a random group pleasant to play with',
+    'whether they like leading groups or following someone else',
+    'how they handle a group learning an encounter',
+    'whether they prefer quick runs or complete clears',
+    'what kind of guild activity they join most often',
+    'whether they usually group with friends or whoever is nearby',
+    'what makes them stay for one more run',
+    'how much planning they like before a difficult fight',
+    'whether they enjoy helping lower-level players',
+
+    # Professions, gear, and habits
+    'what upgrade or profession goal they are chasing',
+    'a useful route, keybind, addon, or gameplay habit',
+    'which profession they find most useful while leveling',
+    'whether they gather everything or ignore most nodes',
+    'how they decide whether an item is worth keeping',
+    'what always seems to fill their bags first',
+    'whether they enjoy the auction house or avoid it',
+    'which consumable they most often forget to bring',
+    'whether they organize their bank or let it become a mess',
+    'what small interface setting made the game easier for them',
+    'whether they use many addons or keep the interface simple',
+    'what harmless mistake they make more often than they admit',
+
+    # Personal preferences and memories
+    'whether they prefer relaxed or fast group runs',
+    'a memorable gameplay moment from an earlier session',
+    'what first made them interested in World of Warcraft',
+    'whether they play more on weekdays or weekends',
+    'what they normally do during a quiet session',
+    'which character name they are happiest with',
+    'whether they listen to game music or something else',
+    'what unexpectedly funny moment happened in a past group',
+    'whether they are naturally patient or competitive in games',
+    'what part of the game they find most relaxing',
+    'which type of player taught them something useful',
+    'what makes a long play session feel worthwhile',
+]
+
 # Questions focused on the dungeon/raid context
 DUNGEON_QUESTION_TOPICS = [
     'whether they have run this dungeon before',
@@ -4605,6 +4734,31 @@ DUNGEON_QUESTION_TOPICS = [
     'how they feel about the difficulty so far',
     'the part of this dungeon they find most challenging',
     'whether they prefer this dungeon over others',
+    'whether they know a safe route through this dungeon',
+    'which boss in this dungeon they enjoy most',
+    'which pull in this dungeon deserves extra care',
+    'whether they have quests to finish inside this dungeon',
+    'whether they prefer a full clear or a quicker route',
+    'what class ability is especially useful in this dungeon',
+    'whether this dungeon feels easier with a particular group setup',
+    'what mistake groups most often make in this dungeon',
+    'whether they remember their first run through this dungeon',
+    'which enemy ability they watch for most carefully here',
+    'whether they think the group should pause before the next section',
+    'what pace feels comfortable for the current group',
+    'whether they know where an optional boss or objective is',
+    'which item from this dungeon they have seen drop most often',
+    'whether the dungeon layout is clear or confusing',
+    'what makes this dungeon fun or tedious to repeat',
+    'whether they would run this dungeon again afterward',
+    'which past group handled this dungeon especially well',
+    'whether anyone explained this dungeon to them originally',
+    'what advice they would give someone running it for the first time',
+    'whether the current party has enough crowd control or interrupts',
+    'how they recover when a dungeon pull goes wrong',
+    'whether they prefer marking targets or reacting as the fight unfolds',
+    'what part of the dungeon looks best from a player perspective',
+    'whether they expect repair costs to be reasonable by the end',
 ]
 
 # Questions focused on the battleground context
@@ -4617,6 +4771,30 @@ BG_QUESTION_TOPICS = [
     'what frustrates them most about losing a battleground',
     'their opinion on the current team composition',
     'whether they prefer this battleground over others',
+    'whether they prefer defending or attacking objectives',
+    'which class they find hardest to fight in PvP',
+    'what usually turns a close battleground around',
+    'whether the team should group up or split pressure',
+    'how they decide when to leave a losing fight',
+    'which route they normally take at the start of this battleground',
+    'whether they enjoy healing, peeling, or chasing targets in PvP',
+    'what makes a battleground team communicate well',
+    'whether gear or coordination matters more in an ordinary match',
+    'which objective new players most often overlook here',
+    'how they stay useful while waiting to respawn',
+    'whether they prefer close matches or decisive wins',
+    'what class utility they value most from teammates in PvP',
+    'whether they focus enemy healers or protect their own first',
+    'what harmless battleground mistake they make most often',
+    'which past battleground comeback they remember best',
+    'whether they like leading callouts or following them',
+    'what they do when the team ignores an objective',
+    'whether they are playing for honor, marks, or simply for fun',
+    'which battleground has the clearest layout',
+    'how much friendly banter improves a difficult match',
+    'whether they prefer fighting in a group or roaming alone',
+    'what makes defending an objective interesting rather than boring',
+    'which opponent deserves credit for a clever play',
 ]
 
 
@@ -4696,7 +4874,7 @@ def build_bot_question_prompt(
                 ]
                 solo_bot = (len(other_bots) == 0)
             prompt = (
-                f"{build_bot_identity_from_dict(bot, suffix='.')}\n"
+                f"{build_player_prompt_header_from_dict(bot, mode)}\n"
                 f"Your personality: {trait_str}\n"
                 f"Your tone: {tone}\n"
             )
@@ -4725,13 +4903,17 @@ def build_bot_question_prompt(
                 )
             prompt += (
                 f"\n<past_memories>\n"
-                f"Your memories from past "
-                f"adventures with "
+                f"Past shared context with "
                 f"{player_name}:\n"
                 f"{mem_lines}\n"
-                f"Ask {player_name} a question "
-                f"about one of these memories — "
-                f"\"remember when we...?\" style. "
+                + (
+                    "In normal mode, treat these as past gameplay "
+                    "events and paraphrase them as a player; never copy "
+                    "in-character journal wording.\n"
+                    if not is_rp else ""
+                )
+                + f"Ask {player_name} a question "
+                f"about one of these memories. "
                 f"Mention the place, creature, or "
                 f"moment by name so {player_name} "
                 f"would recognise it.\n"
@@ -4803,7 +4985,10 @@ def build_bot_question_prompt(
     elif map_id in BG_MAP_NAMES:
         topic = random.choice(BG_QUESTION_TOPICS)
     else:
-        topic = random.choice(BOT_QUESTION_TOPICS)
+        topic = random.choice(
+            BOT_QUESTION_TOPICS
+            if is_rp else BOT_QUESTION_TOPICS_NORMAL
+        )
 
     rp_context = ""
     if is_rp:
@@ -4832,15 +5017,15 @@ def build_bot_question_prompt(
     dungeon_flav = get_dungeon_flavor(map_id)
     zone_flav = get_zone_flavor(zone_id)
     in_dungeon = dungeon_flav is not None
-    if dungeon_flav:
+    if is_rp and dungeon_flav:
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
-    elif zone_flav:
+    elif is_rp and zone_flav:
         rp_context += (
             f"\nZone context: {zone_flav}"
         )
-    if not in_dungeon:
+    if is_rp and not in_dungeon:
         subzone = get_subzone_lore(
             zone_id, area_id
         )
@@ -4853,10 +5038,11 @@ def build_bot_question_prompt(
     weather_arg = (
         None if in_dungeon else current_weather
     )
-    for line in build_environmental_context_lines(
-        weather_arg
-    ):
-        rp_context += f"\n{line}"
+    if is_rp:
+        for line in build_environmental_context_lines(
+            weather_arg
+        ):
+            rp_context += f"\n{line}"
 
     # Party context
     if members:
@@ -4893,7 +5079,7 @@ def build_bot_question_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -5043,7 +5229,7 @@ def build_quest_complete_conversation_prompt(
 
     # Zone context
     zone_flav = get_zone_flavor(zone_id)
-    if zone_flav:
+    if is_rp and zone_flav:
         parts.append(
             f"Zone context: {zone_flav}"
         )
@@ -5195,7 +5381,7 @@ def build_quest_objectives_conversation_prompt(
 
     # Zone context
     zone_flav = get_zone_flavor(zone_id)
-    if zone_flav:
+    if is_rp and zone_flav:
         parts.append(
             f"Zone context: {zone_flav}"
         )
@@ -5350,7 +5536,7 @@ def build_quest_accept_conversation_prompt(
     parts.append(quest_context)
 
     zone_flav = get_zone_flavor(zone_id)
-    if zone_flav:
+    if is_rp and zone_flav:
         parts.append(
             f"Zone context: {zone_flav}"
         )

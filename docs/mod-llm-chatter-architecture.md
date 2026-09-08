@@ -1,6 +1,6 @@
 # mod-llm-chatter Architecture
 
-Last updated: 2026-07-25 (probabilistic Guild continuity context)
+Last updated: 2026-09-07 (OpenRouter reasoning controls)
 
 ## Purpose
 
@@ -214,6 +214,26 @@ that playerbots are ready synchronously:
 9. Native Guild delivery records successful greetings as `reply`
    history, making them visible to later player-session continuity.
 
+## Chatter Mode Ownership
+
+`tools/chatter_mode.py` owns the canonical playerbot identity boundary
+and voice contract. In `normal` mode, playerbots speak as people playing
+World of Warcraft; in `roleplay` mode, they speak as their characters in
+Azeroth. General, Party, Guild, Battleground, Raid, screenshot, emote,
+and playerbot `/say` prompt paths must use that shared contract rather
+than defining independent versions of normal-mode behavior.
+
+Actual NPCs do not follow `LLMChatter.ChatterMode`. Proximity payloads
+already identify them with `is_npc`; `chatter_proximity.py` therefore
+keeps NPC speakers in-world while routing nearby playerbots through the
+configured player voice. A mixed scene applies the rule per speaker.
+
+Persistent character backstories and race/class worldview context are
+RP-only prompt inputs. Normal-mode memory callbacks are presented as
+past gameplay events. Pre-cached group replies have no mode column, so
+the bridge deletes only `ready` cache rows at startup before refilling
+them under the current mode.
+
 ## System Prompt Architecture
 
 All prompt builders return a `PromptParts` object (defined in
@@ -235,6 +255,10 @@ It carries two extra attributes:
      SDK v1 compatibility
    - **OpenAI / Google / OpenRouter / Ollama**: system role message +
      user role message
+   - **OpenRouter reasoning**: `_apply_openrouter_options()` adds the
+     opt-in `reasoning` object to normal and quick-analysis requests;
+     `_effective_max_tokens()` applies its multiplier only while an
+     effort other than `none` is enabled
 4. If a plain string is passed instead of `PromptParts`, the entire
    string is sent as a single user message (backward compatibility).
 
@@ -524,14 +548,15 @@ This asymmetry is known and acceptable in the shipped source state.
 | File | Primary ownership |
 |---|---|
 | `tools/chatter_shared.py` | Shared prompt, parse, count, and delay helpers |
+| `tools/chatter_mode.py` | Canonical normal/RP playerbot identity and channel voice rules, plus mode-invariant NPC guidance |
 | `tools/chatter_text.py` | Parsing, sanitization, anti-repetition |
-| `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; `label=` param logs every call via `chatter_request_logger` |
+| `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; `label=` param logs every call via `chatter_request_logger` |
 | `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup. Also owns `llm_group_vibe` persistence (`upsert_group_vibe()`, `get_group_vibe()`, `delete_group_vibe()` — all accept a caller-owned connection so the hot memory-write path never opens a second one; the delete is conditional on the observed `set_at` so a concurrent newer vibe survives) and drops the vibe row in `cleanup_stale_groups()` / `cleanup_all_session_data()` |
 | `tools/chatter_links.py` | WoW link parsing and prompt-side link enrichment for player messages |
 | `tools/chatter_prompts.py` | Ambient/event prompt builders; session-vibe rendering (`build_session_vibe_line()` — fully localized, names the cause from `llm_group_vibe.source_type` — plus `get_vibe_mood_word()`, `get_vibe_source_phrase()`, `get_vibe_mood_pool()`) |
 | `tools/chatter_general.py` | `player_general_msg` Python path |
 | `tools/chatter_memory.py` | Persistent memory system: session tracking, background memory generation via `queue_memory()`/`queue_shared_event_memory()`, flush/activate on farewell, orphan recovery plus the startup cap trim (`activate_orphaned_memories()`, guarded against `MaxPerBotPlayer <= 0`), per-bot-per-player cap/eviction and importance scoring (`_ensure_cap_and_insert()`, `_count_active_memories()`, `_evict_one_used()`), decay-aware recall scoring (`_effective_score_sql()`) and the shared top-row protection (`_top_row_exclusion_sql()`) that eviction, condensation and the startup trim all reuse. Owns three independent single-purpose executors and their subsystems: **relationship summaries** (`relationship_executor`, `_maybe_queue_relationship_update()`, `_maybe_update_relationship()`, `_sanitized_relationship_watermark()`, `get_relationship_summary()`) keyed by the `updated_through_created_at` timestamp watermark and written under optimistic concurrency; **low-value-memory condensation** (`condensation_executor`, `_maybe_trigger_condensation()`, `_condense_low_value_memories()`, `_get_condensation_candidates()`, `_rewind_relationship_watermark()`) that gradually folds a bounded, least-valuable-first batch of a pair's below-`ProtectFloor` memories into digest rows (`memory_type='condensed'`, inheriting the oldest source's `created_at`, bounded by `condensation_generation`) instead of either evicting them outright or condensing an entire backlog away in one pass; and **session vibe** (`get_session_vibe_details()`/`get_session_vibe()`, lazy expiry, negative-result cache) that biases idle-chatter tone and the per-message conversation mood sequence off a recent high-importance memory. Key helper: `_resolve_location()`. Memory prompts thread `player_name` so the LLM references the player by name (DB fallback from `player_guid` when caller doesn't supply it) |
-| `tools/chatter_cache.py` | Pre-cache refill |
+| `tools/chatter_cache.py` | Mode-aware pre-cache refill and startup removal of ready rows generated under a previous mode |
 | `tools/chatter_events.py` | Event context building and cleanup |
 | `tools/chatter_constants.py` | Static constants and lore data: zone names/levels/flavor, race/class speech profiles, personality traits (16 categories, 264 traits), BG lore, item/weapon/armor classification maps, item quality names/colors, raid map IDs, dungeon flavor, emote keywords, session vibe -> conversation mood mapping (`VIBE_MOOD_FAMILIES`, `VIBE_FAMILY_MOODS`) |
 | `tools/talent_catalog.py` | Talent description catalog used by prompt-side talent injection |
@@ -562,7 +587,7 @@ This asymmetry is known and acceptable in the shipped source state.
 
 | File | Primary ownership |
 |---|---|
-| `tools/chatter_proximity.py` | Handlers and prompt builders for `proximity_say`, `proximity_conversation`, and `proximity_reply` events. Builds prompts with zone context, nearby entity names, and topic pool. Supports single NPC/bot statements and multi-speaker conversations |
+| `tools/chatter_proximity.py` | Handlers and prompt builders for `proximity_say`, `proximity_conversation`, and `proximity_reply` events. Applies NPC in-world voice and configured playerbot voice independently in single or mixed-speaker scenes |
 
 ### Raid/BG domain
 
@@ -869,9 +894,14 @@ Known playerbot control commands do not enter this path in current
 source:
 
 - C++ `IsLikelyPlayerbotControlCommand()` in `LLMChatterGroup.cpp`
-  blocks them before `bot_group_player_msg` is queued
+  blocks them before `bot_group_player_msg` is queued, including known
+  commands following a valid Playerbot `@target` selector and
+  `@command` shorthand
 - Python `_is_playerbot_command()` in `chatter_group.py` remains as a
   fallback skip layer
+- ordinary `@BotName` conversation and non-command text after a simple
+  selector remain eligible for Chatter; valid aura and aggro selectors
+  are always treated as unconditional Playerbot control traffic
 
 1. `find_addressed_bot()` in `chatter_shared.py` always fires an LLM
    call to assess `multi_addressed` (boolean). When true and >=2 bots
