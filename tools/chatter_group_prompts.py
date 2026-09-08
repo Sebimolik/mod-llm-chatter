@@ -1115,7 +1115,7 @@ def build_gear_change_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
@@ -1199,7 +1199,7 @@ def build_mount_change_reaction_prompt(
         )
 
     prompt = (
-        f"{build_bot_identity_from_dict(bot)}\n"
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
         f"Your personality: {trait_str}\n"
     )
     if speaker_talent_context:
