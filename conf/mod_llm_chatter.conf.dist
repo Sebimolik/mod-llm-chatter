@@ -845,11 +845,43 @@ LLMChatter.Events.MinorEventChance = 20
 LLMChatter.ProximityChatter.Enable = 1
 
 #
+#   LLMChatter.ProximityChatter.EnableInDungeons
+#       Allow the existing proximity system to run inside
+#       dungeon maps. The master proximity toggle still wins.
+#       Default: 1
+#
+LLMChatter.ProximityChatter.EnableInDungeons = 1
+
+#
+#   LLMChatter.ProximityChatter.EnableInRaids
+#       Allow the existing proximity system to run inside
+#       raid maps. Battlegrounds and arenas stay excluded.
+#       The master proximity toggle still wins.
+#       Default: 1
+#
+LLMChatter.ProximityChatter.EnableInRaids = 1
+
+#
 #   LLMChatter.ProximityChatter.ScanIntervalSeconds
-#       How often the server scans around each real player.
+#       Compatibility fallback for scoped scan intervals when an older
+#       config does not define the outdoor or instance setting below.
 #       Default: 30
 #
 LLMChatter.ProximityChatter.ScanIntervalSeconds = 30
+
+#
+#   LLMChatter.ProximityChatter.OutdoorScanIntervalSeconds
+#       Seconds between ordinary proximity scans in outdoor maps.
+#       Default: 30
+#
+LLMChatter.ProximityChatter.OutdoorScanIntervalSeconds = 30
+
+#
+#   LLMChatter.ProximityChatter.InstanceScanIntervalSeconds
+#       Seconds between ordinary proximity scans in dungeons and raids.
+#       Default: 30
+#
+LLMChatter.ProximityChatter.InstanceScanIntervalSeconds = 30
 
 #
 #   LLMChatter.ProximityChatter.ScanRadius
@@ -862,11 +894,28 @@ LLMChatter.ProximityChatter.ScanRadius = 40
 
 #
 #   LLMChatter.ProximityChatter.Chance
-#       Base chance (0-100) per scan that a proximity
-#       scene is queued.
+#       Compatibility fallback for scoped chances when an older config
+#       does not define the outdoor or instance setting below.
 #       Default: 30
 #
 LLMChatter.ProximityChatter.Chance = 30
+
+#
+#   LLMChatter.ProximityChatter.OutdoorChance
+#       Base chance (0-100) per eligible outdoor scan that an ordinary
+#       proximity scene is queued.
+#       Default: 30
+#
+LLMChatter.ProximityChatter.OutdoorChance = 30
+
+#
+#   LLMChatter.ProximityChatter.InstanceChance
+#       Base chance (0-100) per eligible dungeon or raid scan that an
+#       ordinary proximity scene is queued. Instances use a higher
+#       default because combat and movement remove many opportunities.
+#       Default: 100
+#
+LLMChatter.ProximityChatter.InstanceChance = 100
 
 #
 #   LLMChatter.ProximityChatter.EntityCooldown
@@ -971,6 +1020,170 @@ LLMChatter.ProximityChatter.FacingResetDelay = 8
 #       Default: 40
 #
 LLMChatter.ProximityChatter.PlayerSayScanRadius = 40
+
+#
+#   LLMChatter.ProximityChatter.SpeakerAllowEntries
+#       Comma-separated creature template entry IDs for ordinary
+#       non-humanoid speakers deliberately approved by the server owner.
+#       This does not override universal safety checks, the speaker
+#       denylist, or boss exclusion. Interactive quest, vendor, trainer,
+#       innkeeper, flight-master, and guard NPCs do not need to be listed.
+#       Invalid values are logged and ignored.
+#       Default: (empty)
+#
+LLMChatter.ProximityChatter.SpeakerAllowEntries =
+
+#
+#   LLMChatter.ProximityChatter.SpeakerDenyEntries
+#       Comma-separated creature template entry IDs that must never join
+#       ordinary proximity chatter. This wins over the allowlist and also
+#       applies to humanoids and interactive NPCs.
+#       Invalid values are logged and ignored.
+#       Default: (empty)
+#
+LLMChatter.ProximityChatter.SpeakerDenyEntries =
+
+#
+#   LLMChatter.ProximityChatter.EnableBossDialogue
+#       Allow hostile dungeon and raid bosses to deliver paced
+#       pre-aggro lines when a real player safely approaches or
+#       directly addresses them in /say. Bosses are deliberately
+#       separate from ordinary ambient proximity conversations.
+#       Keep disabled until the boss in-game matrix has been checked.
+#       Default: 0
+#
+LLMChatter.ProximityChatter.EnableBossDialogue = 0
+
+#
+#   LLMChatter.ProximityChatter.BossApproachCheckIntervalSeconds
+#       Interval between safe pre-aggro boss scan passes. Each pass
+#       checks one eligible real player in round-robin order, which
+#       caps creature-grid work in populated instances.
+#       Default: 2
+#
+LLMChatter.ProximityChatter.BossApproachCheckIntervalSeconds = 2
+
+#
+#   LLMChatter.ProximityChatter.BossApproachMaxRadius
+#       Maximum detection and yell-delivery radius in yards.
+#       This is intentionally larger than ordinary /say range so
+#       hostile bosses can speak before the player pulls them.
+#       Default: 80
+#
+LLMChatter.ProximityChatter.BossApproachMaxRadius = 80
+
+#
+#   LLMChatter.ProximityChatter.BossAggroSafetyMargin
+#       Additional yards required beyond the boss's calculated
+#       aggro distance before a generated line can be queued or
+#       delivered. Higher values reduce accidental pull overlap.
+#       Default: 0
+#
+LLMChatter.ProximityChatter.BossAggroSafetyMargin = 0
+
+#
+#   LLMChatter.ProximityChatter.BossInitialDelayMinSeconds
+#   LLMChatter.ProximityChatter.BossInitialDelayMaxSeconds
+#       Random delay before the guaranteed first automatic boss line
+#       during a new nearby presence.
+#       Defaults: 2, 6
+#
+LLMChatter.ProximityChatter.BossInitialDelayMinSeconds = 2
+LLMChatter.ProximityChatter.BossInitialDelayMaxSeconds = 6
+
+#
+#   LLMChatter.ProximityChatter.BossRepeatDelayMinSeconds
+#   LLMChatter.ProximityChatter.BossRepeatDelayMaxSeconds
+#       Random delay between later automatic speaking opportunities.
+#       A failed chance roll consumes the opportunity and schedules a
+#       new delay instead of rerolling every scan.
+#       Defaults: 20, 60
+#
+LLMChatter.ProximityChatter.BossRepeatDelayMinSeconds = 20
+LLMChatter.ProximityChatter.BossRepeatDelayMaxSeconds = 60
+
+#
+#   LLMChatter.ProximityChatter.BossRepeatChance
+#       Chance (0-100) that the second automatic opportunity produces
+#       a line. The first line is guaranteed.
+#       Default: 80
+#
+LLMChatter.ProximityChatter.BossRepeatChance = 80
+
+#
+#   LLMChatter.ProximityChatter.BossRepeatChanceDecayPercent
+#       Percentage of the previous repeat chance used for each later
+#       successful line. At the defaults, lines two through five use
+#       80%, 40%, 20%, and 10% chances.
+#       Default: 50
+#
+LLMChatter.ProximityChatter.BossRepeatChanceDecayPercent = 50
+
+#
+#   LLMChatter.ProximityChatter.BossRepeatChanceFloor
+#       Minimum chance (0-100) retained for later automatic speaking
+#       opportunities after decay. This keeps a boss capable of another
+#       occasional line throughout one long presence. BossRepeatChance = 0
+#       still disables all repeat lines.
+#       Default: 10
+#
+LLMChatter.ProximityChatter.BossRepeatChanceFloor = 10
+
+#
+#   LLMChatter.ProximityChatter.BossUnlimitedAutomaticLines
+#       Keep scheduling randomized automatic opportunities throughout one
+#       continuous nearby presence. Disable this only when the legacy hard
+#       cap below is desired.
+#       Default: 1
+#
+LLMChatter.ProximityChatter.BossUnlimitedAutomaticLines = 1
+
+#
+#   LLMChatter.ProximityChatter.BossMaxAutomaticLines
+#       Hard limit used only when BossUnlimitedAutomaticLines = 0.
+#       Set to 0 to disable automatic lines while retaining directly
+#       addressed boss replies.
+#       Default: 3
+#
+LLMChatter.ProximityChatter.BossMaxAutomaticLines = 3
+
+#
+#   LLMChatter.ProximityChatter.BossPresenceResetSeconds
+#       Seconds without an eligible nearby player before the boss-room
+#       presence resets. Automatic state is shared by boss spawn and
+#       instance, so additional real players do not multiply yells.
+#       Default: 90
+#
+LLMChatter.ProximityChatter.BossPresenceResetSeconds = 90
+
+#
+#   LLMChatter.ProximityChatter.BossDirectedReplyCooldownSeconds
+#       Minimum seconds between generated replies when the player
+#       explicitly names or targets a boss and speaks in /say.
+#       This is separate from the longer automatic approach cooldown.
+#       Default: 15
+#
+LLMChatter.ProximityChatter.BossDirectedReplyCooldownSeconds = 15
+
+#
+#   LLMChatter.ProximityChatter.BossDirectedScanCooldownSeconds
+#       Minimum seconds between extended boss searches caused by
+#       /say for the same player, map, and instance. This bounds chat
+#       spam before a matching boss and reply cooldown can be known.
+#       During the throttle window, merely targeting a boss does not
+#       suppress unrelated ordinary proximity replies.
+#       Default: 1
+#
+LLMChatter.ProximityChatter.BossDirectedScanCooldownSeconds = 1
+
+#
+#   LLMChatter.ProximityChatter.BossSpeakerDenyEntries
+#       Comma-separated creature entry IDs which must never use
+#       generated boss dialogue. Use this for encounters whose
+#       scripted presentation would conflict with extra speech.
+#       Default: (empty)
+#
+LLMChatter.ProximityChatter.BossSpeakerDenyEntries =
 
 ###############################################################################
 # GROUP CHATTER TUNING [SERVER]
@@ -1574,9 +1787,10 @@ LLMChatter.GeneralChat.ReactDelay = 5
 #       Minimum seconds between ambient General channel
 #       messages in the same zone. Prevents flurries of
 #       messages appearing in quick succession after a
-#       lucky RNG streak. Conversations are paced
-#       internally; only the first message of a
-#       conversation checks this gap.
+#       lucky RNG streak. Automated ambient and world-
+#       event conversations reserve their full delivery
+#       window, so another sequence waits until this gap
+#       has elapsed after the final scheduled line.
 #       Default: 15
 #       [BRIDGE]
 #
