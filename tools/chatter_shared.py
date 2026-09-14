@@ -56,6 +56,8 @@ from chatter_text import (
     parse_single_response,
     _sanitize_action,
     cleanup_message,
+    shorten_chat_message,
+    shorten_chat_question,
     extract_conversation_msg_count,
     repair_json_string,
     _extract_ngrams,
@@ -2871,8 +2873,7 @@ def run_single_reaction(
                 'error_reason': 'transform_error',
             }
 
-    if len(message) > 255:
-        message = message[:252] + "..."
+    message = shorten_chat_message(message)
 
     resolved_delay = delay_seconds
     if callable(delay_resolver):
