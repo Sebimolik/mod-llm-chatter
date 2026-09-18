@@ -516,6 +516,27 @@ def _has_recent_join_greeting(
 # ============================================================
 # PROMPT BUILDERS
 # ============================================================
+def _prepare_group_farewell(
+    db, client, config, bot_name, bot_race,
+    bot_class, bot_gender, traits, mode,
+    group_id, bot_guid,
+):
+    """Ensure a leaving message exists for this group session."""
+    try:
+        _generate_farewell(
+            db, client, config,
+            bot_name, bot_race, bot_class,
+            bot_gender, traits, mode,
+            group_id, bot_guid,
+        )
+    except Exception:
+        logger.error(
+            "Farewell generation failed bot=%s",
+            bot_name,
+            exc_info=True,
+        )
+
+
 def process_group_event(db, client, config, event):
     """Handle a bot_group_join event.
 
@@ -626,6 +647,7 @@ def process_group_event(db, client, config, event):
         )
         traits = trait_result['traits']
         stored_tone = trait_result.get('tone')
+        mode = get_chatter_mode(config)
 
         # 1b. Memory: start session + fetch memories
         # (altbots only — random-pool bots that merely
@@ -777,14 +799,19 @@ def process_group_event(db, client, config, event):
                         exc_info=True,
                     )
 
-        # On rejoin, traits and memory are set up
-        # but no greeting messages are generated.
+        # On rejoin, restore or generate the hidden
+        # farewell before skipping visible greetings.
         if is_rejoin:
+            _prepare_group_farewell(
+                db, client, config,
+                bot_name, bot_race, bot_class,
+                bot.get('gender', ''), traits, mode,
+                group_id, bot_guid,
+            )
             _mark_event(db, event_id, 'completed')
             return True
 
         # 2. Build prompt with chat history
-        mode = get_chatter_mode(config)
         history = _get_recent_chat(db, group_id)
         chat_hist = format_chat_history(history)
         members = get_group_members(db, group_id)
@@ -884,18 +911,12 @@ def process_group_event(db, client, config, event):
             )
 
         # 8. Pre-generate farewell message
-        try:
-            _generate_farewell(
-                db, client, config,
-                bot_name, bot_race, bot_class,
-                bot.get('gender', ''),
-                traits, mode, group_id, bot_guid,
-            )
-        except Exception as e:
-            logger.error(
-                "Farewell generation failed "
-                "bot=%s", bot_name, exc_info=True,
-            )
+        _prepare_group_farewell(
+            db, client, config,
+            bot_name, bot_race, bot_class,
+            bot.get('gender', ''), traits, mode,
+            group_id, bot_guid,
+        )
 
         # 9. Mark event completed
         _mark_event(db, event_id, 'completed')
@@ -1151,8 +1172,15 @@ def process_group_join_batch_event(
                         )
                         bot_player_known = True
 
-            # On rejoin, skip greeting but track bot
+            # On rejoin, prepare the hidden farewell,
+            # then skip the visible greeting.
             if is_rejoin:
+                _prepare_group_farewell(
+                    db, client, config,
+                    bot_name, bot_race, bot_class,
+                    bot.get('gender', ''),
+                    traits, mode, group_id, bot_guid,
+                )
                 greeted_bots.append(bot)
                 continue
 
@@ -1274,20 +1302,12 @@ def process_group_join_batch_event(
             }
 
             # 5. Pre-generate farewell
-            try:
-                _generate_farewell(
-                    db, client, config,
-                    bot_name, bot_race, bot_class,
-                    bot.get('gender', ''),
-                    traits, mode,
-                    group_id, bot_guid,
-                )
-            except Exception as e:
-                logger.error(
-                    "Farewell generation failed "
-                    "bot=%s", bot_name,
-                    exc_info=True,
-                )
+            _prepare_group_farewell(
+                db, client, config,
+                bot_name, bot_race, bot_class,
+                bot.get('gender', ''),
+                traits, mode, group_id, bot_guid,
+            )
 
         if not greeted_bots:
             _mark_event(db, event_id, 'skipped')

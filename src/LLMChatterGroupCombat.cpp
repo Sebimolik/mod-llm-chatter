@@ -2503,6 +2503,7 @@ void HandleGroupPlayerTextEmoteImpl(
     uint32 npcType = 0;
     Player* cachedTargetPlayer = nullptr;
     Creature* cachedTargetCreature = nullptr;
+    bool creatureEmoteScripted = false;
 
     if (!guid.IsEmpty())
     {
@@ -2514,7 +2515,7 @@ void HandleGroupPlayerTextEmoteImpl(
             {
                 cachedTargetPlayer = tgt;
                 targetName = tgt->GetName();
-                if (tgt->GetGroup() == group)
+                if (group && tgt->GetGroup() == group)
                     tgtType = IsPlayerBot(tgt)
                         ? EMOTE_TGT_GROUP_BOT
                         : EMOTE_TGT_GROUP_PLAYER;
@@ -2539,6 +2540,9 @@ void HandleGroupPlayerTextEmoteImpl(
                 npcType =
                     npc->GetCreatureTemplate()
                         ->type;
+                creatureEmoteScripted =
+                    IsCreatureEmoteScripted(
+                        npc, textEmote);
             }
         }
     }
@@ -2558,10 +2562,16 @@ void HandleGroupPlayerTextEmoteImpl(
     // NOT GroupChatter.Enable — because no party/raid
     // output is involved.
     if (tgtType == EMOTE_TGT_CREATURE
-        && cachedTargetCreature)
-        HandleEmoteAtCreature(
+        && cachedTargetCreature
+        && !creatureEmoteScripted)
+    {
+        uint32 mirrorEmote = HandleEmoteAtCreature(
             player, cachedTargetCreature,
             textEmote);
+        HandleProximityPlayerEmote(
+            player, cachedTargetCreature,
+            textEmote, mirrorEmote);
+    }
 
     if (!group || !GroupHasRealPlayer(group))
         return;
