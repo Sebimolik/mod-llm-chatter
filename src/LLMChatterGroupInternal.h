@@ -220,6 +220,10 @@ void EnsureGroupJoinQueued(
 void HandleEmoteAtGroupBot(
     Player* player, Player* targetBot,
     uint32 textEmote, Group* group);
+bool HasPlayerbotMirrorEmote(uint32 textEmote);
+uint32 HandleEmoteAtUngroupedBot(
+    Player* player, Player* targetBot,
+    uint32 textEmote);
 uint32 HandleEmoteAtCreature(
     Player* player, Creature* creature,
     uint32 textEmote);
@@ -248,6 +252,7 @@ enum EmoteTargetType
     EMOTE_TGT_GROUP_PLAYER,
     EMOTE_TGT_EXT_PLAYER,
     EMOTE_TGT_CREATURE,
+    EMOTE_TGT_UNGROUPED_BOT,
 };
 
 #endif

@@ -36,6 +36,7 @@ public:
     bool IsProximityBossSpeakerDenied(uint32 creatureEntry) const;
     bool IsDirectedNameStopword(std::string const& word) const;
     bool IsCxxScriptedEmoteEntry(uint32 creatureEntry) const;
+    bool IsPlayerChatPrefixIgnored(std::string const& message) const;
 
     // General settings
     bool _enabled;
@@ -43,10 +44,15 @@ public:
     uint32 _triggerIntervalSeconds;
     uint32 _conversationChance;
     uint32 _triggerChance;
+    uint32 _ambientNpcGossipChance;
+    uint32 _ambientBotGossipChance;
+    uint32 _ambientTradeQualityWeightBonus;
     uint32 _cityChatterMultiplier;
     uint32 _maxPendingRequests;
     uint32 _maxBotsPerZone;
     uint32 _maxMessageLength;
+    std::shared_ptr<std::unordered_set<std::string> const>
+        _playerChatIgnoredPrefixes;
 
     // Delivery settings
     uint32 _deliveryPollMs;
@@ -239,6 +245,12 @@ public:
     uint32 _generalChatConversationChance;
     uint32 _generalChatHistoryLimit;
 
+    // Real bot loot announcements in General
+    bool _generalLootEnable;
+    uint32 _generalLootAggregationDelayMs;
+    uint32 _generalLootZoneCooldownSeconds;
+    uint32 _generalLootMinQuality;
+
     // RP enrichment
     uint32 _raceLoreChance;
 
@@ -310,7 +322,9 @@ public:
     uint32 _proxChatterMaxTokensPerLine;
     uint32 _proxChatterFacingResetDelay;
     uint32 _proxDirectedMaxExtraReactors;
+    uint32 _proxDirectedBotMaxParticipants;
     std::array<uint32, 4> _proxDirectedExtraReactorWeights;
+    std::array<uint32, 2> _proxDirectedWitnessReactorWeights;
     uint32 _proxDirectedNPCAsideChance;
     uint32 _proxDirectedMaxLines;
     uint32 _proxDirectedExpirySeconds;
@@ -344,6 +358,9 @@ public:
     uint32 _emoteMirrorChance;
     uint32 _emoteMirrorCooldown;
     uint32 _emoteReactionChance;
+    uint32 _emoteUngroupedBotMirrorChance;
+    uint32 _emoteUngroupedBotVerbalReactionChance;
+    uint32 _emoteUngroupedBotWitnessReactionChance;
     uint32 _emoteObserverChance;
     uint32 _emoteObserverCooldown;
     uint32 _emoteMoodSpreadChance;

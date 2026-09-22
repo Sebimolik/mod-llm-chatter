@@ -990,6 +990,9 @@ public:
         // (e.g. \xFF\xFF...) down to empty — drop it.
         if (safeMsg.empty())
             return true;
+        if (sLLMChatterConfig
+                ->IsPlayerChatPrefixIgnored(safeMsg))
+            return true;
 
         uint32 zoneId = player->GetZoneId();
         std::string playerName = player->GetName();

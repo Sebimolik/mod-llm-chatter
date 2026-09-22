@@ -406,12 +406,13 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
     'bot_group_emote_reaction': EventSpec(
         handler_module='chatter_emote_reaction',
         handler_func='handle_emote_reaction',
-        producer='LLMChatterGroup.cpp',
+        producer='LLMChatterGroupEmote.cpp',
         description=(
             'Bot reacts to directed emote'
         ),
         payload_fields={
             'emote_name': (str, True),
+            'mirror_emote': (str, False),
             'player_name': (str, True),
             'directed': (int, True),
         },
@@ -672,7 +673,8 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
         producer='LLMChatterProximity.cpp',
         priority='high',
         description=(
-            'Multi-speaker response to player /say'
+            'Directed NPC or ungrouped playerbot response chain '
+            'to player /say'
         ),
         payload_fields={
             'player_guid': (int, True),
@@ -696,7 +698,8 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
         producer='LLMChatterProximity.cpp',
         priority='high',
         description=(
-            'Directed NPC response to a player emote'
+            'Directed NPC/playerbot response or nearby witness chain '
+            'to a player emote'
         ),
         payload_fields={
             'player_guid': (int, True),
@@ -705,6 +708,8 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
             'player_emote_id': (int, True),
             'mirror_emote': (str, False),
             'addressed_name': (str, True),
+            'addressed_participant': (dict, False),
+            'addressed_speaks': (bool, False),
             'interaction': (str, True),
             'interaction_mode': (str, True),
             'zone_name': (str, True),
@@ -1062,6 +1067,28 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
         },
     ),
 
+    # -- Real General loot (chatter_loot) ---------
+
+    'bot_loot_item': EventSpec(
+        handler_module='chatter_loot',
+        handler_func='process_general_loot_event',
+        producer='LLMChatterLoot.cpp',
+        description=(
+            'Bot announces an item it actually looted'
+        ),
+        payload_fields={
+            'item_id': (int, True),
+            'item_name': (str, True),
+            'item_quality': (int, True),
+            'item_count': (int, True),
+            'allowable_class': (int, True),
+            'required_level': (int, True),
+            'loot_source_guid': (str, False),
+            'zone_id': (int, False),
+            'area_id': (int, False),
+        },
+    ),
+
     # -- World events (chatter_world_events) ------
 
     'transport_arrives': EventSpec(
@@ -1212,7 +1239,7 @@ EVENT_REGISTRY: Dict[str, EventSpec] = {
 
 
 # --------------------------------------------------
-# Dead (removed) event types — 13 entries
+# Dead (removed) event types — 12 entries
 # --------------------------------------------------
 
 DEAD_EVENTS: frozenset = frozenset({
@@ -1226,7 +1253,6 @@ DEAD_EVENTS: frozenset = frozenset({
     'world_boss_spawn',
     'rare_spawn',
     'enemy_player_near',
-    'bot_loot_item',
     'bot_group_discovery',
     'bg_player_arrival',
 })

@@ -6,6 +6,7 @@
 #include <ctime>
 #include <map>
 #include <string>
+#include <vector>
 
 struct AchievementEntry;
 struct CharTitlesEntry;
@@ -30,6 +31,12 @@ enum class LLMChatterPriorityBand : uint8
 };
 
 bool IsPlayerBot(Player* player);
+bool IsInOverworld(Player* player);
+bool IsGroupedWithRealPlayer(Player* player);
+void RefreshGeneralAudienceSnapshot();
+bool HasCachedGeneralAudience(
+    uint32 mapId, uint32 zoneId, TeamId teamId);
+std::vector<uint32> GetCachedGeneralAudienceZones();
 std::string const& GetCreatureEntryColumn();
 Creature* FindCreatureBySpawnId(Map* map, uint32 spawnId);
 void LoadNamedBossCache();

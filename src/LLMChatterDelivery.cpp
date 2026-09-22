@@ -156,6 +156,30 @@ uint32 ExtractJsonUInt(
     return foundDigit ? static_cast<uint32>(value) : 0;
 }
 
+bool HasNonEmptyJsonString(
+    std::string const& json, char const* key)
+{
+    if (!key || !*key)
+        return false;
+
+    std::string marker = std::string("\"")
+        + key + "\":";
+    size_t pos = json.find(marker);
+    if (pos == std::string::npos)
+        return false;
+    pos += marker.size();
+    while (pos < json.size()
+        && std::isspace(
+            static_cast<unsigned char>(json[pos])))
+    {
+        ++pos;
+    }
+    if (pos >= json.size() || json[pos] != '"')
+        return false;
+    ++pos;
+    return pos < json.size() && json[pos] != '"';
+}
+
 bool IsDirectedProximityEvent(
     std::string const& eventType)
 {
@@ -492,6 +516,16 @@ void DeliverPendingMessagesImpl()
     bool proximityLocal =
         ownerSubsystem == "proximity"
         && (channel == "say" || channel == "msay");
+    bool addressedPlayerSay =
+        (eventType == "proximity_player_say"
+            || eventType
+                == "proximity_player_conversation")
+        && HasNonEmptyJsonString(
+            eventExtraData, "addressed_name");
+    bool allowMountedProximityBot =
+        addressedPlayerSay
+        || eventType == "proximity_player_emote"
+        || eventType == "proximity_reply";
     float proximityRadius = static_cast<float>(
         std::max(
             sLLMChatterConfig->_proxChatterScanRadius,
@@ -518,7 +552,8 @@ void DeliverPendingMessagesImpl()
         }
         else if (channel == "say"
             && !IsProximityPlayerbotEligible(
-                anchorPlayer, bot, proximityRadius))
+                anchorPlayer, bot, proximityRadius,
+                allowMountedProximityBot))
         {
             bot = nullptr;
             botUnavailable = true;
@@ -769,7 +804,57 @@ void DeliverPendingMessagesImpl()
             std::string processedMessage =
                 ConvertAllLinks(message);
 
-            if (channel == "party")
+            bool emoteOnly = processedMessage.empty()
+                && !emoteName.empty()
+                && (channel == "say"
+                    || (channel == "party"
+                        && bot->GetGroup()));
+            if (emoteOnly)
+            {
+                bool bgEmoteBlocked =
+                    (channel == "battleground"
+                        || (channel == "party"
+                            && bot->GetBattleground()))
+                    && !IsBGAllowedEmote(emoteName);
+                if (bgEmoteBlocked)
+                {
+                    botUnavailable = true;
+                    dropReason = "bg_emote_blocked";
+                }
+                else
+                {
+                    uint32 textEmoteId =
+                        GetTextEmoteId(emoteName);
+                    if (textEmoteId)
+                    {
+                        std::string emoteTargetName =
+                            explicitAddressee
+                                ? explicitAddressee->GetName()
+                                : (emoteTarget
+                                    ? emoteTarget->GetName()
+                                    : "");
+                        if (emoteName == "talk"
+                            && emoteTargetName.empty())
+                        {
+                            PlayUnitTextEmoteAnimation(
+                                bot, textEmoteId);
+                        }
+                        else
+                        {
+                            SendBotTextEmote(
+                                bot, textEmoteId,
+                                emoteTargetName);
+                        }
+                        sent = true;
+                    }
+                    else
+                    {
+                        botUnavailable = true;
+                        dropReason = "invalid_emote";
+                    }
+                }
+            }
+            else if (channel == "party")
             {
                 Group* grp = bot->GetGroup();
                 if (grp && grp->isRaidGroup())
@@ -945,6 +1030,7 @@ void DeliverPendingMessagesImpl()
             }
 
             if (sent
+                && !emoteOnly
                 && !emoteName.empty()
                 && channel != "general"
                 && channel != "yell")
@@ -1100,9 +1186,15 @@ void DeliverPendingMessagesImpl()
             }
             std::string msayMessage =
                 ConvertAllLinks(message);
-            speaker->Say(
-                msayMessage, LANG_UNIVERSAL);
-            sent = true;
+            bool msayEmoteOnly =
+                msayMessage.empty()
+                && !emoteName.empty();
+            if (!msayMessage.empty())
+            {
+                speaker->Say(
+                    msayMessage, LANG_UNIVERSAL);
+                sent = true;
+            }
 
             if (!emoteName.empty())
             {
@@ -1117,6 +1209,12 @@ void DeliverPendingMessagesImpl()
                     SendUnitTextEmote(
                         speaker, textEmoteId,
                         targetName);
+                    sent = true;
+                }
+                else if (msayEmoteOnly)
+                {
+                    botUnavailable = true;
+                    dropReason = "invalid_emote";
                 }
             }
 
@@ -1211,6 +1309,13 @@ void DeliverPendingMessagesImpl()
         if (pendingRes)
             replyEligible = false;
 
+        std::string deliveredContext = message;
+        if (deliveredContext.empty()
+            && !emoteName.empty())
+        {
+            deliveredContext = std::string(
+                "[performed /") + emoteName + "]";
+        }
         RecordDeliveredProximityLine(
             eventId,
             playerGuid,
@@ -1221,7 +1326,7 @@ void DeliverPendingMessagesImpl()
             channel == "msay" ? npcSpawnId : 0,
             replyEligible,
             botName,
-            message);
+            deliveredContext);
     }
 
     if (sent && channel == "party")

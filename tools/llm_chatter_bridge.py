@@ -39,9 +39,6 @@ from chatter_constants import (
     DEFAULT_GOOGLE_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_OPENROUTER_MODEL,
-    MSG_TYPE_PLAIN, MSG_TYPE_QUEST,
-    MSG_TYPE_LOOT, MSG_TYPE_QUEST_REWARD,
-    MSG_TYPE_TRADE, MSG_TYPE_SPELL,
     GOOGLE_OPENAI_BASE_URL,
     OPENROUTER_BASE_URL,
 )
@@ -1656,17 +1653,6 @@ def main():
         f"Event system: "
         f"{'enabled' if use_event_system else 'disabled'}"
     )
-    logger.info(
-        f"Message type distribution: "
-        f"{MSG_TYPE_PLAIN}% plain, "
-        f"{MSG_TYPE_QUEST - MSG_TYPE_PLAIN}% quest, "
-        f"{MSG_TYPE_LOOT - MSG_TYPE_QUEST}% loot, "
-        f"{MSG_TYPE_QUEST_REWARD - MSG_TYPE_LOOT}% "
-        f"quest+reward, "
-        f"{MSG_TYPE_TRADE - MSG_TYPE_QUEST_REWARD}% "
-        f"trade, "
-        f"{MSG_TYPE_SPELL - MSG_TYPE_TRADE}% spell"
-    )
     precache_enabled = config.get(
         'LLMChatter.GroupChatter.PreCacheEnable',
         '1'
@@ -2006,8 +1992,6 @@ def main():
     logger.info(
         f"  EventExpiration: "
         f"{config.get('LLMChatter.EventExpirationSeconds', 600)}s"
-        f"  LootRecentCooldown: "
-        f"{config.get('LLMChatter.LootRecentCooldownSeconds', 1200)}s"
     )
     logger.info(
         f"  BGChatter.MaxTokens: "
