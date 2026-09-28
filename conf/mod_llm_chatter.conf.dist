@@ -644,6 +644,18 @@ LLMChatter.Language = GB
 LLMChatter.GroupChatter.Enable = 1
 
 #
+#   LLMChatter.ChatHistoryLimit [BRIDGE]
+#       Maximum number of recent Party transcript lines included in
+#       prompts and player-message analysis. Valid range: 1-50.
+#       Higher values preserve more short-term context but consume more
+#       prompt tokens. General chat uses this value only as a fallback
+#       when GeneralChat.HistoryLimit is absent.
+#       Changes require a bridge restart.
+#       Default: 10
+#
+LLMChatter.ChatHistoryLimit = 10
+
+#
 #   LLMChatter.GeneralChannel.Enable
 #       Master switch for ALL General-channel chatter. When 0, bots
 #       produce nothing in the General channel: no ambient chatter
@@ -666,6 +678,19 @@ LLMChatter.GeneralChannel.Enable = 1
 #       Default: 1
 #
 LLMChatter.GeneralChat.PlayerReplyEnable = 1
+
+#
+#   LLMChatter.GeneralChat.HistoryLimit [BOTH]
+#       Maximum number of recent General lines retained per zone across
+#       both factions. Prompt reads are filtered to the reader's faction.
+#       Valid range: 1-50.
+#       Higher values preserve more short-term context but consume more
+#       prompt tokens. If this key is absent, ChatHistoryLimit is used.
+#       Changes require a bridge restart. The bridge also prunes this
+#       table, so reload the server config and restart the bridge together.
+#       Default: 15
+#
+LLMChatter.GeneralChat.HistoryLimit = 15
 
 #
 #   LLMChatter.PlayerChat.OptionalCasualReplyChance [BRIDGE]
@@ -1057,9 +1082,9 @@ LLMChatter.ProximityChatter.InstanceChance = 100
 #       Seconds before the same bot or NPC can be used
 #       again as the lead speaker.
 #       Clamped to 0-3 seconds for fluid local interaction.
-#       Default: 3
+#       Default: 1
 #
-LLMChatter.ProximityChatter.EntityCooldown = 3
+LLMChatter.ProximityChatter.EntityCooldown = 1
 
 #
 #   LLMChatter.ProximityChatter.ZoneFatigueThreshold
@@ -1084,6 +1109,110 @@ LLMChatter.ProximityChatter.ZoneFatigueDecay = 20
 #       Default: 40
 #
 LLMChatter.ProximityChatter.ConversationChance = 40
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.Enable [SERVER]
+#       Let bots outside the player's group react to a nearby duel or
+#       open-world PvP kill. Bots the player can read (same faction)
+#       use short proximity /say lines; opposite-faction bots only
+#       emote. Exactly one reaction per moment: a statement or a 2-3
+#       bot conversation. Immersion is a subtle balance: less is more.
+#       Fighters the reacting bots cannot see are never named.
+#       Default: 1
+#
+LLMChatter.ProximityChatter.FightReactions.Enable = 1
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.DuelChance [SERVER]
+#       Chance (0-100) that a selected duel moment gets a reaction.
+#       Scaled down by proximity zone fatigue.
+#       Default: 35
+#
+LLMChatter.ProximityChatter.FightReactions.DuelChance = 35
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.PvPChance [SERVER]
+#       Chance (0-100) that a nearby open-world PvP kill gets a
+#       reaction. Scaled down by proximity zone fatigue.
+#       Default: 25
+#
+LLMChatter.ProximityChatter.FightReactions.PvPChance = 25
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.ConversationChance [SERVER]
+#       Chance (0-100) that a reaction is a 2-3 bot conversation (or
+#       emote exchange) instead of a single statement.
+#       Default: 35
+#
+LLMChatter.ProximityChatter.FightReactions.ConversationChance = 35
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.SecondMomentChance [SERVER]
+#   LLMChatter.ProximityChatter.FightReactions.ThirdMomentChance [SERVER]
+#       Each duel gets one moment (before, during, or after). A second
+#       moment is added with SecondMomentChance, and a third with
+#       ThirdMomentChance only after a second. Defaults give 80% one,
+#       16% two, and 4% three moments.
+#       Default: 20 / 20
+#
+LLMChatter.ProximityChatter.FightReactions.SecondMomentChance = 20
+LLMChatter.ProximityChatter.FightReactions.ThirdMomentChance = 20
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.ChallengeDelaySeconds [SERVER]
+#       Seconds after a duel challenge before the "before" moment.
+#       Default: 2
+#
+LLMChatter.ProximityChatter.FightReactions.ChallengeDelaySeconds = 2
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.MidDelayMinSeconds [SERVER]
+#   LLMChatter.ProximityChatter.FightReactions.MidDelayMaxSeconds [SERVER]
+#       Random delay after a duel starts before the "during" moment.
+#       Default: 8 / 15
+#
+LLMChatter.ProximityChatter.FightReactions.MidDelayMinSeconds = 8
+LLMChatter.ProximityChatter.FightReactions.MidDelayMaxSeconds = 15
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.PendingExpirySeconds [SERVER]
+#       A due moment, kill scene, or emote step older than this is
+#       dropped instead of fired late.
+#       Default: 30
+#
+LLMChatter.ProximityChatter.FightReactions.PendingExpirySeconds = 30
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.CompletedRetentionSeconds [SERVER]
+#       How long a finished duel stays valid for delivering its
+#       "after" lines (covers LLM and delivery latency).
+#       Default: 60
+#
+LLMChatter.ProximityChatter.FightReactions.CompletedRetentionSeconds = 60
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.LineMaxAgeSeconds [SERVER]
+#       Maximum age of a PvP kill reaction line at delivery.
+#       Default: 20
+#
+LLMChatter.ProximityChatter.FightReactions.LineMaxAgeSeconds = 20
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.SceneCooldownSeconds [SERVER]
+#       Minimum seconds between duel scenes for the same player in the
+#       same area, and between reactions to the same PvP kill scene.
+#       Later moments of the same duel are not affected.
+#       Default: 120
+#
+LLMChatter.ProximityChatter.FightReactions.SceneCooldownSeconds = 120
+
+#
+#   LLMChatter.ProximityChatter.FightReactions.SceneCellYards [SERVER]
+#       Size of the area cell used by SceneCooldownSeconds: repeated
+#       duels near the same player inside one cell count as one scene.
+#       Default: 100
+#
+LLMChatter.ProximityChatter.FightReactions.SceneCellYards = 100
 
 #
 #   LLMChatter.ProximityChatter.PlayerAddressChance
@@ -1369,9 +1498,9 @@ LLMChatter.ProximityChatter.BossPresenceResetSeconds = 90
 #       explicitly names or targets a boss and speaks in /say.
 #       This is separate from the longer automatic approach cooldown.
 #       Clamped to 0-3 seconds so directed interaction stays responsive.
-#       Default: 3
+#       Default: 1
 #
-LLMChatter.ProximityChatter.BossDirectedReplyCooldownSeconds = 3
+LLMChatter.ProximityChatter.BossDirectedReplyCooldownSeconds = 1
 
 #
 #   LLMChatter.ProximityChatter.BossDirectedScanCooldownSeconds
@@ -1766,6 +1895,104 @@ LLMChatter.GroupChatter.WipeChance = 100
 LLMChatter.GroupChatter.WipeCooldown = 120
 
 #
+#   LLMChatter.GroupChatter.PvP.Enable [SERVER]
+#       Enable group reactions to open-world fights against the
+#       opposing faction: engaging an enemy, defeating one, being
+#       killed by one, offensive spells, and low health or mana
+#       during the fight. Enemies may be real players or
+#       playerbots; prompts treat both as characters of the
+#       opposing faction. Battlegrounds and arenas are not affected.
+#       Stealthed or unseen enemies are never named.
+#       When 0, reactions during PvP fights are silent; they do not
+#       fall back to creature-style reactions.
+#       Default: 1
+#
+LLMChatter.GroupChatter.PvP.Enable = 1
+
+#
+#   LLMChatter.GroupChatter.PvP.CombatChance [SERVER]
+#       Percent chance (0-100) that engaging an opposing-faction
+#       enemy triggers a battle cry.
+#       Default: 60
+#
+LLMChatter.GroupChatter.PvP.CombatChance = 60
+
+#
+#   LLMChatter.GroupChatter.PvP.KillChance [SERVER]
+#       Percent chance (0-100) that defeating an opposing-faction
+#       enemy triggers a reaction.
+#       Default: 80
+#
+LLMChatter.GroupChatter.PvP.KillChance = 80
+
+#
+#   LLMChatter.GroupChatter.PvP.DeathChance [SERVER]
+#       Percent chance (0-100) that a group member killed by an
+#       opposing-faction enemy triggers a reaction. Shares the
+#       DeathCooldown with creature deaths; full wipes use
+#       WipeChance and WipeCooldown.
+#       Default: 60
+#
+LLMChatter.GroupChatter.PvP.DeathChance = 60
+
+#
+#   LLMChatter.GroupChatter.PvP.Cooldown [SERVER]
+#       Minimum seconds between PvP reactions of the same kind
+#       (engage, kill, death) for the same group.
+#       Default: 30
+#
+LLMChatter.GroupChatter.PvP.Cooldown = 30
+
+#
+#   LLMChatter.GroupChatter.PvP.EnemyCooldown [SERVER]
+#       Minimum seconds between PvP reactions of the same kind
+#       about the same enemy for the same group. Keeps repeated
+#       ganks and corpse camping from flooding chat.
+#       Default: 120
+#
+LLMChatter.GroupChatter.PvP.EnemyCooldown = 120
+
+#
+#   LLMChatter.GroupChatter.PvP.TargetSwitchCallout [SERVER]
+#       Players have no threat table, so the tank aggro-loss
+#       callout becomes an "enemy switched targets" callout in
+#       PvP. Set to 0 to suppress it during PvP fights.
+#       Default: 1
+#
+LLMChatter.GroupChatter.PvP.TargetSwitchCallout = 1
+
+#
+#   LLMChatter.GroupChatter.Duel.Enable [SERVER]
+#       Enable group reactions to duels involving a member of a
+#       group with a real player and bots. Bot duellists and group
+#       bots watching the duel can react.
+#       Default: 1
+#
+LLMChatter.GroupChatter.Duel.Enable = 1
+
+#
+#   LLMChatter.GroupChatter.Duel.StartChance [SERVER]
+#       Percent chance (0-100) of a reaction when a duel starts.
+#       Default: 60
+#
+LLMChatter.GroupChatter.Duel.StartChance = 60
+
+#
+#   LLMChatter.GroupChatter.Duel.EndChance [SERVER]
+#       Percent chance (0-100) of a reaction when a duel ends.
+#       Default: 100
+#
+LLMChatter.GroupChatter.Duel.EndChance = 100
+
+#
+#   LLMChatter.GroupChatter.Duel.Cooldown [SERVER]
+#       Minimum seconds between duel start reactions, and between
+#       duel end reactions, for the same group.
+#       Default: 60
+#
+LLMChatter.GroupChatter.Duel.Cooldown = 60
+
+#
 #   LLMChatter.GroupChatter.BotQuestionEnable
 #       Enable bot-initiated questions to player.
 #       Default: 1
@@ -1878,10 +2105,11 @@ LLMChatter.GroupChatter.PlayerMsgSecondBotChance = 25
 #
 #   LLMChatter.GroupChatter.PlayerMsgCooldown
 #       Minimum seconds between group reactions to player
-#       chat messages.
-#       Default: 15
+#       chat messages. The default keeps player-authored
+#       turns responsive without suppressing later messages.
+#       Default: 0
 #
-LLMChatter.GroupChatter.PlayerMsgCooldown = 15
+LLMChatter.GroupChatter.PlayerMsgCooldown = 0
 
 #
 #   LLMChatter.GroupChatter.GeneralRelayEnable
@@ -1956,10 +2184,12 @@ LLMChatter.GroupChatter.GeneralRelayMaxGroups = 1
 #   LLMChatter.GeneralChat.ReactionChance
 #       Chance (0-100) that a bot reacts when a player types
 #       a non-question message in General chat. Questions
-#       (ending with ?) use QuestionChance instead.
-#       Default: 40
+#       (ending with ?) use QuestionChance instead. The shared
+#       semantic optional-reply gate can still leave naturally
+#       optional casual turns unanswered.
+#       Default: 100
 #
-LLMChatter.GeneralChat.ReactionChance = 40
+LLMChatter.GeneralChat.ReactionChance = 100
 
 #
 #   LLMChatter.GeneralChat.QuestionChance
@@ -1968,18 +2198,19 @@ LLMChatter.GeneralChat.ReactionChance = 40
 #       "?" use ReactionChance instead. This simple detection
 #       gives direct questions a higher response rate, but
 #       statements and remarks also trigger at ReactionChance.
-#       Default: 80
+#       Default: 100
 #
-LLMChatter.GeneralChat.QuestionChance = 80
+LLMChatter.GeneralChat.QuestionChance = 100
 
 #
 #   LLMChatter.GeneralChat.Cooldown
 #       Per-zone cooldown (seconds) between bot reactions to
-#       player messages in General chat. Prevents bots from
-#       responding to every single message in a busy zone.
-#       Default: 30
+#       player messages in General chat. The default leaves
+#       player-authored turns unsuppressed; set a positive value
+#       only when a busy server deliberately needs throttling.
+#       Default: 0
 #
-LLMChatter.GeneralChat.Cooldown = 30
+LLMChatter.GeneralChat.Cooldown = 0
 
 #
 #   LLMChatter.GeneralChat.ReactDelay
@@ -2167,9 +2398,9 @@ LLMChatter.GuildChatter.PlayerReplies.Enable = 1
 #       Short collection window for rapid consecutive
 #       player messages. New turns supersede undelivered
 #       continuation lines from the previous turn.
-#       Default: 2
+#       Default: 1
 #
-LLMChatter.GuildChatter.PlayerReplies.DebounceSeconds = 2
+LLMChatter.GuildChatter.PlayerReplies.DebounceSeconds = 1
 
 #
 #   LLMChatter.GuildChatter.PlayerReplies.IdleSuppressionSeconds
@@ -2521,12 +2752,28 @@ LLMChatter.RaidChatter.IdleCooldown = 20
 
 #
 #   LLMChatter.ActionChance
-#       Chance (0-100) that a response includes a narrator action
-#       displayed as *action* before the spoken text.
+#       Chance (0-100) that a response includes a narrator action.
+#       How the action is shown depends on
+#       LLMChatter.ActionAsEmote.Enable below.
 #       Only applies in roleplay mode.
 #       Default: 20
 #
 LLMChatter.ActionChance = 10
+
+#
+#   LLMChatter.ActionAsEmote.Enable
+#       Deliver the action as a separate text emote sent just
+#       before the spoken line, so it reads as a real emote in the
+#       chat log ("Miranda looks out the window") rather than
+#       *asterisks* glued to the speech.
+#       Set to 0 to restore the old inline "*action* text" form.
+#       Note that /e is proximity based: on party, raid, guild and
+#       General messages the emote is only seen by players standing
+#       near the bot, while the spoken line still reaches the whole
+#       channel.
+#       Default: 1
+#
+LLMChatter.ActionAsEmote.Enable = 1
 
 #
 #   LLMChatter.EmoteChance
@@ -3292,6 +3539,32 @@ LLMChatter.EmoteReactions.MoodSpreadChance = 50
 LLMChatter.EmoteReactions.NPCMirrorEnable = 1
 
 #
+#   LLMChatter.EmoteReactions.CustomEnable
+#       React to free-text emotes typed as /e or /me
+#       ("/e grabs hand"), not just the ~244 named emotes
+#       like /point and /salute. The typed text is passed to
+#       the model as the action.
+#       Because a custom emote has no emote id, bots can only
+#       answer verbally: there is no animation to mirror, and
+#       NPC mirroring stays named-emote only. The target is
+#       taken from whoever the player has selected, since the
+#       client sends no target with a custom emote.
+#       Requires LLMChatter.EmoteReactions.Enable.
+#       Default: 1
+#
+LLMChatter.EmoteReactions.CustomEnable = 1
+
+#
+#   LLMChatter.EmoteReactions.CustomMaxChars
+#       Clamp for the typed emote text before it reaches the
+#       prompt, counted in characters (not bytes), so non-ASCII
+#       text gets the same length. Longer emotes are cut at a
+#       character boundary.
+#       Default: 120
+#
+LLMChatter.EmoteReactions.CustomMaxChars = 120
+
+#
 #   LLMChatter.EmoteReactions.NPCVerbalReactionChance
 #       Independent chance (0-100) that an eligible NPC verbally reacts
 #       when a player directs a social emote at it.
@@ -3316,6 +3589,23 @@ LLMChatter.EmoteReactions.NPCVerbalCooldown = 3
 #       Default: 620,25305,33211,33224,6626,7233,3401
 #
 LLMChatter.EmoteReactions.CxxScriptExclusionEntries = 620,25305,33211,33224,6626,7233,3401
+
+#
+#   LLMChatter.GearContext.Enable
+#       [BRIDGE]
+#       Tell bots what they are actually carrying: the
+#       equipped main hand, off hand and ranged items by
+#       name and type, plus the pet of a hunter or warlock
+#       by name and species. Without it a bot invents its
+#       gear, talking about a sword while holding a mace,
+#       or treats its own pet as a stranger.
+#       Applies to party chatter, emote reactions and
+#       ambient chatter. Reads the character database and
+#       caches per bot, so the cost is one small query
+#       every few minutes rather than one per message.
+#       Default: 1 (enabled)
+#
+LLMChatter.GearContext.Enable = 1
 
 ###############################################
 # Screenshot Vision Feature (Experimental)

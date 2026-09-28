@@ -1170,8 +1170,23 @@ def test_implausible_watermark_resets_to_epoch_with_warning():
 # Full-fidelity condensation prompt (sanitize truncation bug)
 # ============================================================
 
-def test_sanitize_defaults_to_the_short_prompt_cap():
+def test_sanitize_defaults_to_the_stored_ceiling():
+    """Quoting a memory must not lose its tail.
+
+    Memory text is bounded when it is written
+    (_clamp_memory_text), so anything already stored is short
+    enough to quote whole. A second, tighter cut at prompt time
+    would only truncate text that was never over-long.
+    """
     text = 'x' * 400
+    out = chatter_memory.sanitize_memory_for_prompt(text)
+    assert out == text
+    assert not out.endswith('...')
+
+
+def test_sanitize_still_truncates_past_the_stored_ceiling():
+    """The cap is raised, not removed."""
+    text = 'x' * (chatter_memory.MEMORY_TEXT_MAX_CHARS + 50)
     out = chatter_memory.sanitize_memory_for_prompt(text)
     assert len(out) == chatter_memory.DEFAULT_PROMPT_MEMORY_CHARS
     assert out.endswith('...')

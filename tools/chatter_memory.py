@@ -116,8 +116,8 @@ MEMORY_MOODS = {
 }
 
 MEMORY_EXPRESSION_STYLES = [
-    'poetic', 'understated', 'vivid',
-    'wry', 'sincere',
+    'plain', 'understated', 'matter_of_fact',
+    'wry', 'observational',
 ]
 
 # memory_type -> one-line prompt description, shared by
@@ -220,10 +220,15 @@ def _clear_vibe_miss(group_id, session=None):
 # sees everything that was actually stored.
 MEMORY_TEXT_MAX_CHARS = 500
 
-# Default prompt-side truncation for memories that are merely
-# quoted as context and whose source rows survive untouched
-# (recall/context injection). Keeps routine prompts small.
-DEFAULT_PROMPT_MEMORY_CHARS = 200
+# Default prompt-side ceiling for memories quoted as context.
+# Memory text is now bounded at write time by _clamp_memory_text
+# (MEMORY_HARD_CHARS), so prompts stay small without a second,
+# tighter cut here -- and a stored memory reaches the model whole
+# rather than losing its tail. The max_chars parameter stays for
+# callers that want a tighter bound; condensation and relationship
+# summaries pass MEMORY_TEXT_MAX_CHARS explicitly because they
+# destroy or supersede the rows they read.
+DEFAULT_PROMPT_MEMORY_CHARS = MEMORY_TEXT_MAX_CHARS
 
 # Condensation defaults (see LLMChatter.Memory.Condensation.*
 # in conf.dist and _maybe_trigger_condensation() /
@@ -314,6 +319,31 @@ def _effective_score_sql(config=None):
         " ELSE importance_score"
         " END"
     ) % (max_importance, decay_days)
+MEMORY_TARGET_CHARS = 160
+MEMORY_HARD_CHARS = 240
+
+
+def _clamp_memory_text(text: str) -> str:
+    """Trim an over-long memory at a sentence boundary.
+
+    Bounding length here rather than at prompt build
+    time lets prompts carry the stored memory whole.
+    """
+    if len(text) <= MEMORY_HARD_CHARS:
+        return text
+    head = text[:MEMORY_HARD_CHARS]
+    cut = max(
+        head.rfind('. '), head.rfind('! '),
+        head.rfind('? '),
+    )
+    if cut > 60:
+        return head[:cut + 1]
+    # No usable sentence break — fall back to the last
+    # word boundary so the memory never ends mid-word.
+    word = head.rfind(' ')
+    if word > 60:
+        head = head[:word]
+    return head.rstrip(' ,;:-') + '.'
 
 
 # ============================================================
@@ -980,6 +1010,13 @@ def _top_row_exclusion_sql(score_sql):
     filtering against. Requires two extra (bot_guid,
     player_guid) query parameters supplied by the caller, in
     addition to whatever its own WHERE clause already needs.
+
+    first_meeting rows are additionally never evicted: they are
+    documented as immune to prune (the templated "Met X in Zone"
+    anchor of the whole remembers-you premise) and they become
+    used=1 the first time the bot greets a returning player.
+    When only first_meeting rows remain this deletes nothing,
+    failing closed rather than dropping the anchor.
     """
     return (
         " AND id != (SELECT id FROM ("
@@ -1023,6 +1060,7 @@ def _evict_one_used(
         " WHERE bot_guid = %s"
         "   AND player_guid = %s"
         "   AND active = 1"
+        "   AND memory_type != 'first_meeting'"
         + top_row_subquery +
         " ORDER BY "
         + score_sql +
@@ -2359,7 +2397,12 @@ def _call_llm_for_memory(
         f'"emote": "one_word_emote", '
         f'"importance": 5}}\n\n'
         f"Rules:\n"
-        f"- Memory must be 1-2 sentences\n"
+        f"- One sentence, at most "
+        f"{MEMORY_TARGET_CHARS} characters\n"
+        f"- Plain concrete language — state the facts\n"
+        f"- No metaphors, no dramatic or flowery "
+        f"wording\n"
+        f"- At most a short clause about how you felt\n"
         f"- First person perspective\n"
         f"- No quotes inside the memory text\n"
         f"- Only reference the location given above"
@@ -2431,6 +2474,8 @@ def _call_llm_for_memory(
 
         if not memory or len(memory) > MEMORY_TEXT_MAX_CHARS:
             return None, None, None
+
+        memory = _clamp_memory_text(memory)
 
         emote = data.get('emote')
         if isinstance(emote, str):

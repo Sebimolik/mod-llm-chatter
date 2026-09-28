@@ -24,6 +24,7 @@
 #include "QuestDef.h"
 #include "RandomPlayerbotMgr.h"
 #include "SpellInfo.h"
+#include "StringFormat.h"
 #include "Transport.h"
 #include "Unit.h"
 #include "Util.h"
@@ -292,7 +293,7 @@ uint32 RollConfiguredDelay(
         sLLMChatterConfig->*maxMember);
 }
 
-constexpr std::array<EventPriorityRule, 39>
+constexpr std::array<EventPriorityRule, 41>
     kTierPriorityRules = {{
         {"bot_group_combat",        PRIORITY_CRITICAL},
         {"bot_group_spell_cast",    PRIORITY_CRITICAL},
@@ -314,6 +315,8 @@ constexpr std::array<EventPriorityRule, 39>
         {"guild_login_greeting",    PRIORITY_HIGH},
         {"bot_group_death",         PRIORITY_HIGH},
         {"bot_group_wipe",          PRIORITY_HIGH},
+        {"bot_group_duel_start",    PRIORITY_HIGH},
+        {"bot_group_duel_end",      PRIORITY_HIGH},
         {"bot_group_join",          PRIORITY_HIGH},
         {"bot_group_join_batch",    PRIORITY_HIGH},
         {"bg_match_start",          PRIORITY_HIGH},
@@ -1093,6 +1096,21 @@ uint32 LookupTextEmoteId(const std::string& emoteName)
 
     return 0;
 }
+}
+
+bool IsUnitPerceivableBy(Player* viewer, Unit* unit)
+{
+    if (!viewer || !unit)
+        return false;
+    if (!viewer->IsInWorld() || !unit->IsInWorld())
+        return false;
+    if (!viewer->IsInMap(unit))
+        return false;
+    if (!viewer->IsWithinDistInMap(
+            unit, viewer->GetVisibilityRange()))
+        return false;
+    // distanceCheck=true: also apply the core sight range.
+    return viewer->CanSeeOrDetect(unit, false, true);
 }
 
 bool IsPlayerBot(Player* player)
@@ -2199,9 +2217,12 @@ std::string BuildBotStateJson(Player* player)
 
     PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
 
+    // Only name a victim the bot can actually perceive, so
+    // a stealthed or invisible target never leaks into a
+    // prompt through bot state.
     std::string targetName;
     Unit* victim = player->GetVictim();
-    if (victim)
+    if (victim && IsUnitPerceivableBy(player, victim))
         targetName = GetLocalizedUnitName(victim);
 
     std::string botState = "non_combat";
@@ -2550,14 +2571,16 @@ void UpdateGroupBotTravelState(Player* player, uint32 groupId)
         player->GetGUID().GetCounter());
 }
 
-void QueueChatterEvent(
-    const std::string& eventType,
-    const std::string& eventScope,
+namespace
+{
+std::string BuildChatterEventInsert(
+    std::string const& eventType,
+    std::string const& eventScope,
     uint32 zoneId, uint32 mapId, uint8 priority,
-    const std::string& cooldownKey,
-    uint32 subjectGuid, const std::string& subjectName,
-    uint32 targetGuid, const std::string& targetName,
-    uint32 targetEntry, const std::string& extraData,
+    std::string const& cooldownKey,
+    uint32 subjectGuid, std::string const& subjectName,
+    uint32 targetGuid, std::string const& targetName,
+    uint32 targetEntry, std::string const& extraData,
     uint32 reactAfterSeconds,
     uint32 expiresAfterSeconds,
     bool nullZeroNumeric)
@@ -2571,7 +2594,7 @@ void QueueChatterEvent(
 
     // NOTE: extraData is written directly into a single-quoted SQL
     // string literal. Callers must pre-escape it for SQL.
-    CharacterDatabase.Execute(
+    return Acore::StringFormat(
         "INSERT INTO llm_chatter_events "
         "(event_type, event_scope, zone_id, map_id, "
         "priority, cooldown_key, subject_guid, "
@@ -2600,6 +2623,48 @@ void QueueChatterEvent(
         SanitizeUtf8(extraData),
         reactAfterSeconds,
         expiresAfterSeconds);
+}
+} // namespace
+
+void QueueChatterEvent(
+    const std::string& eventType,
+    const std::string& eventScope,
+    uint32 zoneId, uint32 mapId, uint8 priority,
+    const std::string& cooldownKey,
+    uint32 subjectGuid, const std::string& subjectName,
+    uint32 targetGuid, const std::string& targetName,
+    uint32 targetEntry, const std::string& extraData,
+    uint32 reactAfterSeconds,
+    uint32 expiresAfterSeconds,
+    bool nullZeroNumeric)
+{
+    CharacterDatabase.Execute(BuildChatterEventInsert(
+        eventType, eventScope, zoneId, mapId, priority,
+        cooldownKey, subjectGuid, subjectName,
+        targetGuid, targetName, targetEntry, extraData,
+        reactAfterSeconds, expiresAfterSeconds,
+        nullZeroNumeric));
+}
+
+void AppendChatterEvent(
+    CharacterDatabaseTransaction trans,
+    std::string const& eventType,
+    std::string const& eventScope,
+    uint32 zoneId, uint32 mapId, uint8 priority,
+    std::string const& cooldownKey,
+    uint32 subjectGuid, std::string const& subjectName,
+    uint32 targetGuid, std::string const& targetName,
+    uint32 targetEntry, std::string const& extraData,
+    uint32 reactAfterSeconds,
+    uint32 expiresAfterSeconds,
+    bool nullZeroNumeric)
+{
+    trans->Append(BuildChatterEventInsert(
+        eventType, eventScope, zoneId, mapId, priority,
+        cooldownKey, subjectGuid, subjectName,
+        targetGuid, targetName, targetEntry, extraData,
+        reactAfterSeconds, expiresAfterSeconds,
+        nullZeroNumeric));
 }
 
 void AppendRaidContext(

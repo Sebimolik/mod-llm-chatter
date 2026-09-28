@@ -213,6 +213,11 @@ public:
     uint32   _nearbyObjectMaxObjects;
     bool     _facingEnable;
 
+    // Send the LLM's action field as a /e text emote just
+    // before the spoken line. When false the action stays
+    // inlined in the message as *asterisks*.
+    bool     _actionAsEmote;
+
     // Group chatter - state-triggered callouts
     bool _stateCalloutEnabled;
     bool _stateCalloutLowHealth;
@@ -220,6 +225,21 @@ public:
     bool _stateCalloutAggro;
     uint32 _stateCalloutChance;   // 0-100
     uint32 _stateCalloutCooldown; // seconds per bot
+
+    // Group chatter - overworld PvP encounters
+    bool _pvpChatterEnable;
+    uint32 _pvpCombatChance;      // 0-100
+    uint32 _pvpKillChance;        // 0-100
+    uint32 _pvpDeathChance;       // 0-100
+    uint32 _pvpCooldown;          // seconds per group
+    uint32 _pvpEnemyCooldown;     // seconds per enemy
+    bool _pvpTargetSwitchCallout;
+
+    // Group chatter - duels
+    bool _duelChatterEnable;
+    uint32 _duelStartChance;      // 0-100
+    uint32 _duelEndChance;        // 0-100
+    uint32 _duelCooldown;         // seconds per group
 
     // Pre-cached instant reactions
     bool _preCacheEnable;
@@ -328,6 +348,22 @@ public:
     uint32 _proxDirectedNPCAsideChance;
     uint32 _proxDirectedMaxLines;
     uint32 _proxDirectedExpirySeconds;
+
+    // Proximity chatter - duel and PvP onlookers
+    bool _proxFightEnable;
+    uint32 _proxFightDuelChance;           // 0-100
+    uint32 _proxFightPvPChance;            // 0-100
+    uint32 _proxFightConversationChance;   // 0-100
+    uint32 _proxFightSecondMomentChance;   // 0-100
+    uint32 _proxFightThirdMomentChance;    // 0-100
+    uint32 _proxFightChallengeDelaySeconds;
+    uint32 _proxFightMidDelayMinSeconds;
+    uint32 _proxFightMidDelayMaxSeconds;
+    uint32 _proxFightPendingExpirySeconds;
+    uint32 _proxFightCompletedRetentionSeconds;
+    uint32 _proxFightLineMaxAgeSeconds;
+    uint32 _proxFightSceneCooldownSeconds;
+    uint32 _proxFightSceneCellYards;
     std::shared_ptr<std::unordered_set<std::string> const>
             _proxDirectedNameStopwords;
     std::shared_ptr<std::unordered_set<uint32> const>
@@ -369,6 +405,12 @@ public:
     uint32 _emoteNPCVerbalCooldown;
     std::shared_ptr<std::unordered_set<uint32> const>
             _emoteCxxScriptExclusionEntries;
+
+    // Free-text emotes (/e, /me). Unlike the ~244 named
+    // emotes these carry no id, so they can only ever
+    // produce a verbal reaction, never a mirrored anim.
+    bool   _emoteCustomEnable;
+    uint32 _emoteCustomMaxChars;
 
 private:
     LLMChatterConfig() = default;

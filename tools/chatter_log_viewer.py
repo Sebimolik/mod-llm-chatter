@@ -17,7 +17,9 @@ No external dependencies — uses only stdlib.
 import argparse
 import json
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import (
+    BaseHTTPRequestHandler, ThreadingHTTPServer,
+)
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -2466,7 +2468,14 @@ if __name__ == '__main__':
         f"Viewer   : http://localhost:{args.port}"
     )
 
-    server = HTTPServer(('0.0.0.0', args.port), Handler)
+    # Threading, not the default single-connection HTTPServer:
+    # a browser holding one keep-alive socket open (or just
+    # idling on the page) would otherwise block every other
+    # request indefinitely, hanging the whole viewer.
+    server = ThreadingHTTPServer(
+        ('0.0.0.0', args.port), Handler
+    )
+    server.daemon_threads = True
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -40,6 +40,8 @@ from chatter_shared import (
 )
 from chatter_shared import (
     build_talent_context,
+    build_gear_context,
+    attach_speaker_gear,
     build_zone_metadata,
     should_include_action,
 )
@@ -309,6 +311,10 @@ def process_statement(
         db, zone_id
     )
 
+    bot['gear'] = build_gear_context(
+        db, bot['guid'], bot['class'], config,
+    )
+
     # Talent context injection (speaker only)
     speaker_talent = None
     talent_chance = int(config.get(
@@ -525,6 +531,8 @@ def process_conversation(
     recent_msgs = get_recent_zone_messages(
         db, zone_id
     )
+
+    attach_speaker_gear(db, bots, config)
 
     # Talent context injection (speaker only,
     # uses first bot as representative)

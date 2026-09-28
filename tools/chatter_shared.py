@@ -7,6 +7,7 @@ No circular dependencies.
 """
 
 import json
+import locale
 import logging
 import os
 import random
@@ -506,6 +507,19 @@ def get_race_name(race_id: int) -> str:
     return RACE_NAMES.get(race_id, "Unknown")
 
 
+def get_race_faction(race_id) -> str:
+    """Return the playable faction for a WotLK race ID."""
+    try:
+        race_id = int(race_id)
+    except (TypeError, ValueError):
+        return ""
+    if race_id in (1, 3, 4, 7, 11):
+        return "Alliance"
+    if race_id in (2, 5, 6, 8, 10):
+        return "Horde"
+    return ""
+
+
 def get_gender_label(gender_id: int) -> str:
     """Get human-readable gender label from gender ID."""
     return 'female' if gender_id == 1 else 'male'
@@ -516,6 +530,8 @@ def build_bot_identity(
     bot_race: str,
     bot_class: str,
     gender: str = '',
+    suffix: str = '.',
+    gear: str = '',
 ) -> str:
     """Return an identity prefix for bot prompts.
 
@@ -524,11 +540,16 @@ def build_bot_identity(
     """
     if bot_race and bot_class:
         gender_prefix = f"{gender} " if gender else ""
-        return (
+        identity = (
             f"You are {bot_name}, "
-            f"a {gender_prefix}{bot_race} {bot_class}."
+            f"a {gender_prefix}{bot_race} "
+            f"{bot_class}{suffix}"
         )
-    return f"You are {bot_name}."
+    else:
+        identity = f"You are {bot_name}{suffix}"
+
+    gear = (gear or '').strip()
+    return f"{identity} {gear}" if gear else identity
 
 
 def build_bot_identity_with_level(
@@ -766,14 +787,164 @@ def build_race_class_context_parts(
     )
 
 
+def _payload_bool(value):
+    """C++ payloads send JSON booleans, but tolerate
+    ints and strings ("true", "1")."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true')
+    return bool(value)
+
+
+def is_pvp_enemy(extra_data):
+    """True when the event's enemy is an
+    opposing-faction player (real player or bot)."""
+    return bool(extra_data) and (
+        extra_data.get('enemy_kind') == 'player'
+    )
+
+
+def is_pvp_identity_known(extra_data):
+    """True when the reactor could perceive the
+    PvP enemy, so its identity may be used."""
+    return is_pvp_enemy(extra_data) and _payload_bool(
+        extra_data.get('enemy_identity_known')
+    )
+
+
+def _pvp_level_gap_line(extra_data):
+    """Describe the level gap between the enemy and
+    the group member involved."""
+    if _payload_bool(extra_data.get('is_gray_kill')):
+        return (
+            "They are far lower level than your "
+            "side, a lopsided fight that earns no "
+            "honour."
+        )
+    try:
+        gap = int(extra_data.get('level_gap', 0))
+    except (TypeError, ValueError):
+        gap = 0
+    if gap >= 10:
+        return (
+            "They are far higher level than your "
+            "side and very dangerous."
+        )
+    if gap >= 4:
+        return "They are higher level than your side."
+    if gap <= -4:
+        return "They are lower level than your side."
+    return "They are roughly an even match."
+
+
+def build_pvp_enemy_context(extra_data, mode='roleplay'):
+    """Describe an opposing-faction enemy for combat
+    prompts. Returns "" for creature enemies.
+
+    Identity (name, race, class, level) is used only
+    when C++ marked it perceivable. An enemy is
+    never described as a bot, NPC, or monster.
+    """
+    if not is_pvp_enemy(extra_data):
+        return ""
+
+    from chatter_mode import is_roleplay
+    roleplay = is_roleplay(mode)
+    lines = []
+
+    via_pet = _payload_bool(extra_data.get('via_pet'))
+    pet_name = str(
+        extra_data.get('enemy_pet_name') or ''
+    ).strip()
+
+    if is_pvp_identity_known(extra_data):
+        name = str(
+            extra_data.get('enemy_name') or ''
+        ).strip() or 'an enemy'
+        try:
+            race = get_race_name(
+                int(extra_data.get('enemy_race', 0)))
+            cls = get_class_name(
+                int(extra_data.get('enemy_class', 0)))
+            level = int(extra_data.get('enemy_level', 0))
+        except (TypeError, ValueError):
+            race, cls, level = '', '', 0
+        faction = str(
+            extra_data.get('enemy_faction') or ''
+        ).strip() or 'opposing faction'
+        desc = ' '.join(
+            p for p in (
+                f"level {level}" if level else '',
+                race, cls,
+            ) if p
+        )
+        who = f"{name}, a {desc}" if desc else name
+        lines.append(
+            f"This fight is against another "
+            f"adventurer: {who} of the {faction}."
+        )
+        if via_pet and pet_name:
+            lines.append(
+                f"Their pet {pet_name} is part of it."
+            )
+        lines.append(_pvp_level_gap_line(extra_data))
+    elif via_pet and pet_name:
+        lines.append(
+            f"An enemy adventurer's pet, {pet_name}, is "
+            f"involved, but its master stayed out of "
+            f"sight. Do not name or describe the master."
+        )
+    else:
+        lines.append(
+            "An unseen adventurer of the opposing "
+            "faction is involved. Nobody saw who it "
+            "was, so do not name or describe them."
+        )
+
+    initiator = extra_data.get('initiator')
+    if initiator == 'enemy':
+        lines.append("They attacked your group first.")
+    elif initiator == 'group':
+        lines.append("Your group started this fight.")
+
+    lines.append(
+        "Treat them as a living character of the "
+        "opposing faction. Never call them a bot, "
+        "NPC, mob, or monster."
+    )
+    lines.append(
+        "Let your class, race, and personality shape "
+        "how you feel about this fight; an "
+        "honour-bound character may dislike beating a "
+        "much weaker foe, a ruthless one may not care."
+    )
+    if roleplay:
+        lines.append(
+            "Rivalry and taunts are fine, but no slurs, "
+            "abuse, or hateful language."
+        )
+    else:
+        lines.append(
+            "Use natural WoW PvP language. Playful "
+            "trash talk is fine, but no slurs, abuse, "
+            "or hateful language."
+        )
+    return ' '.join(lines)
+
+
 def build_bot_state_context(extra_data, mode='roleplay'):
     """Build natural-language state description
-    from C++ bot_state data in extra_data."""
+    from C++ bot_state data in extra_data.
+
+    Opposing-faction PvP enemy context, when present,
+    is appended so every combat prompt that already
+    includes bot state picks it up.
+    """
     if not extra_data:
         return ""
+    pvp_ctx = build_pvp_enemy_context(extra_data, mode)
     state = extra_data.get('bot_state')
     if not state or not isinstance(state, dict):
-        return ""
+        return pvp_ctx
 
     from chatter_mode import is_roleplay
     roleplay = is_roleplay(mode)
@@ -831,7 +1002,8 @@ def build_bot_state_context(extra_data, mode='roleplay'):
                     f"({mp}%)."
                 )
 
-    # Current target
+    # Current target. C++ (BuildBotStateJson) only fills it
+    # when the bot can perceive its own victim.
     target = state.get('target', '')
     if target:
         subject = "You are" if roleplay else "Your character is"
@@ -847,6 +1019,9 @@ def build_bot_state_context(extra_data, mode='roleplay'):
             parts.append(
                 f"Character gameplay travel state: {travel_ctx}"
             )
+
+    if pvp_ctx:
+        parts.append(pvp_ctx)
 
     return ' '.join(parts)
 
@@ -1019,17 +1194,45 @@ def build_group_travel_metadata(bots):
 def parse_config(config_path: str) -> dict:
     """Parse the WoW-style config file."""
     config = {}
+    # Read raw bytes so we can decode explicitly. A genuine file-access
+    # error (missing/unreadable) is fatal and logged; encoding is handled
+    # separately below so a decodable-but-non-UTF-8 file is never treated
+    # as a read failure.
     try:
-        with open(config_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' in line:
-                    key, value = line.split('=', 1)
-                    config[key.strip()] = value.strip()
+        with open(config_path, 'rb') as f:
+            raw = f.read()
     except Exception as e:
+        logger.error(
+            "FATAL: could not read config file %s: %s: %s",
+            config_path,
+            type(e).__name__,
+            e,
+        )
         sys.exit(1)
+
+    # Decode preference:
+    #   1. utf-8-sig - handles UTF-8 with or without a BOM, and pure ASCII.
+    #      Without an explicit encoding, open() used the OS locale (cp1252
+    #      on Windows), which cannot decode common UTF-8 bytes and killed
+    #      the bridge silently.
+    #   2. On UnicodeDecodeError, fall back to the OS locale encoding so
+    #      pre-existing Windows ANSI/cp1252 configs (e.g. a raw 0xE9 'e')
+    #      keep parsing the way plain open() used to read them. Use
+    #      errors='replace' so this fallback can never itself raise.
+    try:
+        text = raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = raw.decode(
+            locale.getpreferredencoding(False), errors='replace'
+        )
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '=' in line:
+            key, value = line.split('=', 1)
+            config[key.strip()] = value.strip()
     return config
 
 
@@ -3157,7 +3360,7 @@ def find_addressed_bot(
         f'{{"bot": "BotName", '
         f'"multi_addressed": true, '
         f'"brief_casual": false, '
-        f'"reply_optional": false}}\n\n'
+        f'"requires_reply": true}}\n\n'
         f"Rules:\n"
         f'- "bot": the single bot most likely '
         f"being addressed explicitly or implicitly, or "
@@ -3189,13 +3392,14 @@ def find_addressed_bot(
         f"Judge meaning and conversational function, not "
         f"keywords or message length alone. A concise but "
         f"substantive question is not brief casual talk.\n"
-        f'- "reply_optional": true only when '
-        f'"brief_casual" is true and leaving the message '
-        f"unanswered would feel socially natural. Judge the "
-        f"turn in context, not with phrase matching. Keep it "
-        f"false for questions, requests, instructions, warnings, "
-        f"important information, greetings that invite engagement, "
-        f"or any turn that clearly expects acknowledgment."
+        f'- "requires_reply": true for every question, request, '
+        f"instruction, warning, important piece of information, "
+        f"greeting that invites engagement, or any turn that "
+        f"expects acknowledgment. Questions always require a reply. "
+        f"For statements, judge their meaning and conversational "
+        f"context: use false only when leaving the statement "
+        f"unanswered would feel socially natural. Do not decide "
+        f"from keywords, punctuation, or message length alone."
     )
 
     try:
@@ -3290,14 +3494,14 @@ def find_addressed_bot(
     else:
         brief_casual = bool(raw_brief)
 
-    raw_optional = parsed.get('reply_optional', False)
-    if isinstance(raw_optional, str):
-        reply_optional = raw_optional.lower() not in (
+    raw_required = parsed.get('requires_reply', True)
+    if isinstance(raw_required, str):
+        requires_reply = raw_required.lower() not in (
             'false', '0', 'no', ''
         )
     else:
-        reply_optional = bool(raw_optional)
-    reply_optional = brief_casual and reply_optional
+        requires_reply = bool(raw_required)
+    reply_optional = brief_casual and not requires_reply
 
     return {
         'bot': matched_bot,
@@ -4064,6 +4268,127 @@ def build_talent_context(
                 f"{spec_personality}")
 
     return result
+
+
+def format_weapon_list(weapons) -> str:
+    """Render equipped weapons as "Name (type)" phrases."""
+    parts = []
+    for weapon in weapons or []:
+        name = (weapon.get('name') or '').strip()
+        kind = (weapon.get('kind') or '').strip()
+        if not name:
+            continue
+        parts.append(f"{name} ({kind})" if kind else name)
+    return ', '.join(parts)
+
+
+def format_pet_phrase(pet) -> str:
+    """Render a pet as "Name, a Species" (or just one)."""
+    if not pet:
+        return ''
+    name = (pet.get('name') or '').strip()
+    species = (pet.get('species') or '').strip()
+    if name and species and name.lower() != species.lower():
+        article = (
+            'an' if species[:1].lower() in 'aeiou' else 'a'
+        )
+        return f"{name}, {article} {species}"
+    return name or species
+
+
+def build_gear_context(
+    db, char_guid, char_class=None, config=None,
+    subject=None,
+) -> str:
+    """Describe what a bot carries and who follows it.
+
+    Returns a short line naming equipped weapons and, for
+    pet classes, the pet by name and species — so bots stop
+    inventing gear or treating their own pet as a stranger.
+    Empty string when there is nothing worth stating.
+
+    Pass `subject` (a bot name) for multi-speaker prompts,
+    which describe bots from the outside. Without it the
+    line is second person, for prompts the bot itself
+    speaks through.
+    """
+    from chatter_db import (
+        get_character_pet,
+        get_character_weapons,
+    )
+
+    if config is not None and str(
+        config.get('LLMChatter.GearContext.Enable', '1')
+    ).strip() not in ('1', 'true', 'True'):
+        return ''
+
+    try:
+        guid = int(char_guid or 0)
+    except (TypeError, ValueError):
+        return ''
+    if guid <= 0:
+        return ''
+
+    parts = []
+    subject = (subject or '').strip()
+
+    weapons = format_weapon_list(
+        get_character_weapons(db, guid)
+    )
+    if weapons:
+        parts.append(
+            f"{subject} wields {weapons}."
+            if subject
+            else f"You are wielding {weapons}."
+        )
+
+    # Only hunters and warlocks keep a permanent companion,
+    # so other classes never pay for the pet lookup.
+    class_name = char_class
+    if isinstance(class_name, int):
+        class_name = CLASS_NAMES.get(class_name, '')
+    if str(class_name or '').lower() in ('hunter', 'warlock'):
+        pet = format_pet_phrase(
+            get_character_pet(db, guid)
+        )
+        if pet:
+            parts.append(
+                f"{subject}'s pet is {pet} — a familiar "
+                "companion, not a stranger."
+                if subject
+                else f"Your pet is {pet} — a companion you "
+                "know well, not a stranger."
+            )
+
+    return ' '.join(parts)
+
+
+def attach_speaker_gear(db, bots, config=None) -> None:
+    """Give every speaker in a list a third-person gear line.
+
+    Multi-speaker prompts introduce bots from the outside
+    ("Veliana is a level 26 Blood Elf Priest"), so the
+    second-person string built for solo prompts cannot be
+    reused there. Stores the result as 'gear_third'.
+    """
+    for bot in bots or []:
+        if bot.get('gear_third') is not None:
+            continue
+        guid = bot.get('guid')
+        name = (bot.get('name') or '').strip()
+        if not guid or not name:
+            continue
+        bot['gear_third'] = build_gear_context(
+            db, guid, bot.get('class'), config,
+            subject=name,
+        )
+
+
+def append_speaker_gear(parts, bot, indent='  ') -> None:
+    """Append a speaker's gear line to a prompt part list."""
+    line = (bot.get('gear_third') or '').strip()
+    if line:
+        parts.append(f"{indent}{line}")
 
 
 # =============================================================================

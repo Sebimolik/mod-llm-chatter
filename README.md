@@ -46,6 +46,13 @@ Built from the ground up for **fantasy roleplay immersion**. Every system, perso
   and holidays.
 * **Interactive parties**: Companions banter with one another, ask the player
   questions, and react to combat, loot, quests, achievements, and travel.
+* **Open-world PvP and duels**: Companions size up enemies of the opposing
+  faction by name, race, class, and level, react to ambushes, kills, deaths,
+  and ganks in character, and cheer or tease during duels. Nearby bots
+  outside the fight and party can react before, during, or after duels,
+  or after a PvP kill. Same-faction onlookers comment in `/say`;
+  opposite-faction ones emote. Low chances and shared cooldowns keep
+  these reactions restrained, and hidden enemy identities are omitted.
 * **Living public channels**: Ambient General chat, proximity `/say`, player
   replies, battleground callouts, and encounter-aware raid dialogue make the
   wider world feel populated.
@@ -249,6 +256,10 @@ LLMChatter.GroupChatter.QuestCompleteChance = 30  # default 50
 LLMChatter.GroupChatter.KillChanceNormal = 5    # default 20
 LLMChatter.GroupChatter.SpellCastChance = 10    # default 30
 
+# Open-world PvP and duel reactions
+LLMChatter.GroupChatter.PvP.KillChance = 40     # default 80
+LLMChatter.GroupChatter.Duel.StartChance = 30   # default 60
+
 # Nearby object/creature comments
 LLMChatter.GroupChatter.NearbyObjectChance = 5  # default 20
 ```
@@ -345,6 +356,20 @@ LLMChatter.GroupChatter.VibeImportanceThreshold = 5
 characters are cleaned up automatically every 24 hours. A GM can also run it on
 demand in-game with `.llmc memoryclean` (in-game only — it is not available
 from the server console).
+**Tuning recent conversation context**:
+
+```ini
+# Recent Party transcript lines included in prompts (1-50)
+LLMChatter.ChatHistoryLimit = 10
+
+# Recent General lines per zone, both factions (1-50)
+LLMChatter.GeneralChat.HistoryLimit = 15
+```
+
+Increasing these limits can improve short-term continuity, but it also
+increases prompt size and token use. The General-specific value falls back
+to `ChatHistoryLimit` when omitted. These windows contain recent verbatim
+lines; they are not long-term memory or rolling summaries.
 
 ### Known Limitations
 - **Ollama / open-source models**: Local inference needs fast hardware and
@@ -694,6 +719,12 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260828_memory_type_additions.sql
+  modules/mod-llm-chatter/data/sql/characters/updates/20260827_widen_group_bot_traits.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260830_message_action_emote.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260908_instance_proximity_boss_events.sql
 
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
@@ -701,6 +732,9 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20260919_real_general_items.sql
+
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20260926_duel_events.sql
 
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
@@ -762,6 +796,12 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260828_memory_type_additions.sql
+  data/sql/characters/updates/20260827_widen_group_bot_traits.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260830_message_action_emote.sql
+
+mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260908_instance_proximity_boss_events.sql
 
 mysql -uroot -ppassword acore_characters < \
@@ -769,6 +809,9 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260919_real_general_items.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20260926_duel_events.sql
 ```
 
 Migrations are idempotent — safe to run on an already

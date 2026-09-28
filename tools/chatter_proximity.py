@@ -60,16 +60,40 @@ _DEFAULT_EMOTE_TONES = [
 ]
 
 
+def _is_custom_emote(extra: Dict) -> bool:
+    return bool(int(extra.get('custom_emote') or 0))
+
+
+def _describe_player_emote(
+    extra: Dict, player_emote: str, target: str
+) -> str:
+    """Phrase what the player did, for prompts and history.
+
+    A free-text /e is already phrased as an action ("slowly
+    sheathes her sword"), so it is quoted rather than
+    rendered as a /slash command.
+    """
+    if _is_custom_emote(extra):
+        return f'did this directly at {target}: "{player_emote}"'
+    return f"performed /{player_emote} directly at {target}"
+
+
 def _prepare_emote_context(
     extra: Dict, player_emote: str
 ) -> None:
-    emote_id = int(
-        extra.get('player_emote_id', 0)
-        or EMOTE_NAME_TO_ID.get(player_emote, 0)
-    )
-    category = EMOTE_CATEGORIES.get(
-        emote_id, 'social'
-    )
+    if _is_custom_emote(extra):
+        # Free text has no id and so no category; 'custom' is
+        # not a REACTION_TONES key, which selects the generic
+        # tone pool.
+        category = 'custom'
+    else:
+        emote_id = int(
+            extra.get('player_emote_id', 0)
+            or EMOTE_NAME_TO_ID.get(player_emote, 0)
+        )
+        category = EMOTE_CATEGORIES.get(
+            emote_id, 'social'
+        )
     extra['emote_category'] = category
     extra['reaction_tone'] = random.choice(
         REACTION_TONES.get(
@@ -247,6 +271,121 @@ def _playerbot_topic(config: Optional[Dict]) -> str:
         else PROXIMITY_PLAYER_CHAT_TOPICS
     )
     return random.choice(pool)
+
+
+def _describe_fighter(fighter: Dict) -> str:
+    """Name plus race/class/level; never labels anyone
+    as a bot."""
+    name = str(fighter.get('name') or '').strip()
+    try:
+        race = get_race_name(int(fighter.get('race', 0)))
+        cls = get_class_name(int(fighter.get('class', 0)))
+        level = int(fighter.get('level', 0))
+    except (TypeError, ValueError):
+        race, cls, level = '', '', 0
+    desc = ' '.join(p for p in (
+        f"level {level}" if level else '', race, cls,
+    ) if p)
+    return f"{name} ({desc})" if desc else name
+
+
+def _fight_topic(extra: Dict, mode: str) -> Optional[str]:
+    """Topic seed for a nearby duel or open-world fight.
+
+    C++ only includes fighters every speaker can perceive,
+    so an unseen fighter is never named. Returns None when
+    the event is not a fight scene.
+    """
+    scene = extra.get('fight_scene')
+    if not isinstance(scene, dict):
+        return None
+
+    fighters = [
+        f for f in (scene.get('fighters') or [])
+        if isinstance(f, dict) and f.get('name')
+    ]
+    names = [_describe_fighter(f) for f in fighters]
+    who = ' and '.join(names) if names else 'two fighters'
+    player = next(
+        (f.get('name') for f in fighters
+         if f.get('is_player')),
+        None,
+    )
+    moment = scene.get('moment', '')
+
+    if scene.get('kind') == 'duel':
+        if moment == 'before':
+            situation = (
+                f"A duel challenge right nearby: {who} are "
+                f"about to duel."
+            )
+        elif moment == 'during':
+            situation = f"A duel is underway nearby: {who}."
+        else:
+            winner = scene.get('winner_name') or ''
+            loser = scene.get('loser_name') or ''
+            outcome = scene.get('outcome', 'won')
+            if outcome == 'interrupted' or not winner:
+                situation = (
+                    f"The duel nearby between {who} just "
+                    f"ended without a clear result."
+                )
+            elif outcome == 'fled':
+                situation = (
+                    f"{winner} won the duel nearby after "
+                    f"{loser or 'the other'} left the duel "
+                    f"area."
+                )
+            else:
+                situation = (
+                    f"{winner} just won the duel nearby"
+                    + (f" against {loser}." if loser else ".")
+                )
+        tone = (
+            "A duel is a friendly contest; nobody dies. "
+            "React as a passer-by watching it: a quick "
+            "remark, a cheer, a prediction, or a friendly "
+            "bet."
+        )
+    else:
+        victor = scene.get('victor_name') or ''
+        fallen = scene.get('fallen_name') or ''
+        side_won = bool(scene.get('onlooker_side_won'))
+        if victor and fallen:
+            situation = (
+                f"Open-world fight nearby: {victor} just "
+                f"killed {fallen}."
+            )
+        else:
+            situation = (
+                "An open-world fight between the factions "
+                "just ended in a kill nearby."
+            )
+        tone = (
+            "Your side won this skirmish; react with relief "
+            "or grim satisfaction."
+            if side_won
+            else "Your side lost this skirmish; react with "
+            "anger, worry, or resolve."
+        )
+        tone += (
+            " Rivalry is fine, but no slurs, abuse, or "
+            "hateful language."
+        )
+
+    lines = [situation, tone]
+    if player:
+        lines.append(
+            f"{player} is the real player taking part; you "
+            f"may address them by name."
+        )
+    lines.append(
+        "Only name the fighters listed here; treat everyone "
+        "as a living character, never as a bot or NPC."
+    )
+    if not is_roleplay(mode):
+        lines.append("Keep it casual and natural.")
+    return ' '.join(lines)
 
 
 def _mixed_voice_guidance(mode: str) -> List[str]:
@@ -702,7 +841,10 @@ def _conversation_prompt(
         speaker.get('is_npc')
         for speaker in participants
     )
-    if is_roleplay(mode) or not has_playerbot:
+    fight_topic = _fight_topic(extra, mode)
+    if fight_topic:
+        topic = fight_topic
+    elif is_roleplay(mode) or not has_playerbot:
         topic = random.choice(PROXIMITY_CHAT_TOPICS)
     else:
         topic = (
@@ -835,7 +977,9 @@ def _generate_single_line(
         db,
         extra,
         speaker,
-        topic or (
+        topic
+        or _fight_topic(extra, get_chatter_mode(config or {}))
+        or (
             random.choice(PROXIMITY_CHAT_TOPICS)
             if speaker.get('is_npc')
             else _playerbot_topic(config)
@@ -1237,12 +1381,19 @@ def _fetch_proximity_history(
                             previous_addressed
                             or addressed_name
                         )
+                        if _is_custom_emote(event_extra):
+                            did = (
+                                f'emoted at {target_name}: '
+                                f'"{player_emote}"'
+                            )
+                        else:
+                            did = (
+                                f"performed /{player_emote}"
+                                f" at {target_name}"
+                            )
                         history.append({
                             'name': player_name,
-                            'message': (
-                                f"[performed /{player_emote}"
-                                f" at {target_name}]"
-                            ),
+                            'message': f"[{did}]",
                         })
                 seen_events.add(event_id)
             history.append({
@@ -1558,8 +1709,8 @@ def _player_emote_single_prompt(
         if speech_guidance:
             lines.append(speech_guidance)
     lines.extend([
-        f"The player ({player_name}) performed /{player_emote} "
-        f"directly at {addressed}.",
+        f"The player ({player_name}) "
+        f"{_describe_player_emote(extra, player_emote, addressed)}.",
         f"Social meaning: {extra.get('emote_category', 'social')}.",
         f"React {extra.get('reaction_tone', 'briefly')}.",
         "React to that real action. "
@@ -1639,8 +1790,8 @@ def _player_emote_conversation_prompt(
     lines.extend(_location_lines(extra, mode, participants))
     lines.extend(_mixed_voice_guidance(mode))
     lines.extend([
-        f"The player ({player_name}) performed /{player_emote} "
-        f"directly at {addressed}.",
+        f"The player ({player_name}) "
+        f"{_describe_player_emote(extra, player_emote, addressed)}.",
         f"Social meaning: {extra.get('emote_category', 'social')}.",
         f"Overall reaction tone: "
         f"{extra.get('reaction_tone', 'briefly')}.",
