@@ -905,6 +905,14 @@ void LLMChatterConfig::LoadConfig()
         GetChatterOption<uint32>(
             "LLMChatter.BGChatter."
             "IdleChatterCooldownSec", 30);
+    _bgFlagCarryChatterIntervalSec =
+        GetChatterOption<uint32>(
+            "LLMChatter.BGChatter."
+            "FlagCarryChatterIntervalSec", 45);
+    _bgFlagCarryChatterChance =
+        GetChatterOption<uint32>(
+            "LLMChatter.BGChatter."
+            "FlagCarryChatterChance", 50);
     _bgRezChance =
         GetChatterOption<uint32>(
             "LLMChatter.BGChatter."
@@ -1387,6 +1395,12 @@ void LLMChatterConfig::LoadConfig()
                 "LLMChatter.EmoteReactions."
                 "UngroupedBotWitnessReactionChance", 50),
             100u);
+    _emotePartyBotWitnessChance =
+        std::min(
+            GetChatterOption<uint32>(
+                "LLMChatter.EmoteReactions."
+                "PartyBotWitnessChance", 30),
+            100u);
     _emoteObserverChance =
         std::min(
             GetChatterOption<uint32>(
@@ -1398,9 +1412,11 @@ void LLMChatterConfig::LoadConfig()
             "LLMChatter.EmoteReactions."
             "ObserverCooldown", 30);
     _emoteMoodSpreadChance =
-        GetChatterOption<uint32>(
-            "LLMChatter.EmoteReactions."
-            "MoodSpreadChance", 50);
+        std::min(
+            GetChatterOption<uint32>(
+                "LLMChatter.EmoteReactions."
+                "MoodSpreadChance", 50),
+            100u);
     _emoteNPCMirrorEnable =
         GetChatterOption<bool>(
             "LLMChatter.EmoteReactions."

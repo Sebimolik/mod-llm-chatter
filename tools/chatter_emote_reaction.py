@@ -24,6 +24,7 @@ from chatter_group_state import (
     build_party_context,
     get_bot_traits,
 )
+from chatter_threads import capture_session, note_event
 
 _DEFAULT_TONES = [
     "with dry wit", "with humor",
@@ -106,6 +107,7 @@ def handle_emote_reaction(db, client, config, event):
         ),
     )
 
+    thread_session = capture_session(group_id)
     result = run_single_reaction(
         db, client, config,
         prompt=prompt,
@@ -131,6 +133,13 @@ def handle_emote_reaction(db, client, config, event):
     _store_chat(
         db, group_id, bot_guid,
         bot_name, True, result['message'],
+    )
+    # The emote moment joins the party conversation thread.
+    note_event(
+        group_id, 'bot_group_emote_reaction', bot_name,
+        result['message'],
+        message_id=result.get('message_id'),
+        session=thread_session,
     )
     return True
 

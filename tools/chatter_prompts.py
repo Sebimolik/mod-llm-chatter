@@ -11,10 +11,12 @@ from datetime import datetime
 from typing import List, Tuple
 
 from chatter_constants import (
-    TONES, MOODS, CREATIVE_TWISTS, MESSAGE_CATEGORIES,
+    RP_MOODS,
+    MOODS,
+    TONES, CREATIVE_TWISTS, MESSAGE_CATEGORIES,
     GOSSIP_CREATIVE_TWISTS,
     LENGTH_HINTS,
-    RP_TONES, RP_MOODS, RP_CREATIVE_TWISTS,
+    RP_TONES, RP_CREATIVE_TWISTS,
     RP_GOSSIP_CREATIVE_TWISTS,
     RP_MESSAGE_CATEGORIES, RP_LENGTH_HINTS,
     PERSONALITY_SPICES, RP_PERSONALITY_SPICES,
@@ -39,12 +41,64 @@ from chatter_mode import (
     build_player_chat_guidance,
     build_player_prompt_header,
 )
+from chatter_threads import (
+    THREAD_REPORT_FIELD,
+    THREAD_REPORT_OBJECT,
+    THREAD_REPORT_RULE,
+)
+from chatter_persona import (
+    build_cast_lines,
+    build_persona_block,
+    persona_for_bot,
+    persona_from_fields,
+)
 
 logger = logging.getLogger(__name__)
 
 # Recency buffer so the same spice doesn't repeat
 # across consecutive calls.
 _recent_spices = collections.deque(maxlen=30)
+
+# Flavor settings, loaded once from the bridge config
+# by configure_prompt_flavor(). Spice count keeps its
+# meaning ("how many, when spices are used"); spice
+# chance decides whether a prompt gets any at all.
+_spice_count = 2
+_spice_chance = 30
+_twist_chance = 25
+
+TWIST_LABEL = (
+    "Optional angle (use only if it fits your "
+    "personality)"
+)
+TWIST_LABEL_CONVERSATION = (
+    "Optional angle for this conversation (use only "
+    "where it fits each speaker's personality)"
+)
+
+
+def _clamped_int(config, key, default, low, high):
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError, AttributeError):
+        logger.error("Failed to parse %s", key)
+        value = default
+    return max(low, min(value, high))
+
+
+def configure_prompt_flavor(config) -> None:
+    """Load spice/twist settings from the bridge config."""
+    global _spice_count, _spice_chance, _twist_chance
+    config = config or {}
+    _spice_count = _clamped_int(
+        config, 'LLMChatter.PersonalitySpiceCount', 2, 0, 5
+    )
+    _spice_chance = _clamped_int(
+        config, 'LLMChatter.Persona.SpiceChance', 30, 0, 100
+    )
+    _twist_chance = _clamped_int(
+        config, 'LLMChatter.Persona.TwistChance', 25, 0, 100
+    )
 
 
 # =============================================================================
@@ -76,7 +130,7 @@ def pick_personality_spices(
         except Exception:
             count = 2
     else:
-        count = 2
+        count = _spice_count
     count = max(0, min(count, 5))
     if count == 0:
         return []
@@ -103,6 +157,31 @@ def pick_personality_spices(
     return picked
 
 
+def maybe_pick_personality_spices(mode='normal'):
+    """Pick spices only when the SpiceChance roll passes.
+
+    Returns an empty list when spices are skipped.
+    """
+    if _spice_count <= 0 or _spice_chance <= 0:
+        return []
+    if random.randint(1, 100) > _spice_chance:
+        return []
+    return pick_personality_spices(
+        mode=mode, spice_count_override=_spice_count
+    )
+
+
+def format_spices_line(spices) -> str:
+    """Render spices as subordinate background texture."""
+    if not spices:
+        return ''
+    return (
+        "Background feelings (texture only, and only where "
+        "they fit your personality; ignore any that "
+        "contradict it): " + "; ".join(spices)
+    )
+
+
 # =============================================================================
 # CREATIVE SELECTION FUNCTIONS
 # =============================================================================
@@ -112,16 +191,15 @@ def pick_random_tone(mode: str = 'normal') -> str:
     return random.choice(pool)
 
 
-def pick_random_mood(mode: str = 'normal') -> str:
-    """Pick a random mood/emotional angle for the message."""
-    pool = RP_MOODS if mode == 'roleplay' else MOODS
-    return random.choice(pool)
-
-
 def maybe_get_creative_twist(
-    chance: float = 0.3, mode: str = 'normal'
+    chance: float = None, mode: str = 'normal'
 ) -> str:
-    """Maybe return a creative twist (30% chance by default)."""
+    """Maybe return a creative twist.
+
+    ``chance`` defaults to LLMChatter.Persona.TwistChance.
+    """
+    if chance is None:
+        chance = _twist_chance / 100.0
     if random.random() < chance:
         pool = (
             RP_CREATIVE_TWISTS if mode == 'roleplay'
@@ -132,9 +210,14 @@ def maybe_get_creative_twist(
 
 
 def maybe_get_gossip_creative_twist(
-    chance: float = 0.3, mode: str = 'normal'
+    chance: float = None, mode: str = 'normal'
 ) -> str:
-    """Maybe return a gossip-specific creative twist."""
+    """Maybe return a gossip-specific creative twist.
+
+    ``chance`` defaults to LLMChatter.Persona.TwistChance.
+    """
+    if chance is None:
+        chance = _twist_chance / 100.0
     if random.random() < chance:
         pool = (
             RP_GOSSIP_CREATIVE_TWISTS
@@ -487,11 +570,13 @@ def build_dynamic_guidelines(
     if include_humor:
         if is_rp:
             guidelines.append(
-                "A touch of wry or dry humor fits here"
+                "A touch of wry or dry humor fits here, "
+                "if it suits the speaker's personality"
             )
         else:
             guidelines.append(
-                "A touch of humor fits here"
+                "A touch of humor fits here, if it suits "
+                "the speaker's personality"
             )
 
     if is_rp:
@@ -513,15 +598,11 @@ def build_dynamic_guidelines(
     if random.random() < 0.5:
         guidelines.append(random.choice(extras))
 
-    spices = pick_personality_spices(
-        config=config, mode=mode
+    spice_line = format_spices_line(
+        maybe_pick_personality_spices(mode)
     )
-    if spices:
-        guidelines.append(
-            "Background feelings (not the main topic, "
-            "just texture you can weave in naturally): "
-            + "; ".join(spices)
-        )
+    if spice_line:
+        guidelines.append(spice_line)
 
     return guidelines
 
@@ -541,6 +622,7 @@ def build_plain_statement_prompt(
     topic: str = None,
     area_id: int = 0,
     length_hint: str = "",
+    thread_turn=None,
 ) -> str:
     """Build a dynamically varied prompt for a plain statement."""
     mode = get_chatter_mode(config) if config else 'normal'
@@ -575,6 +657,10 @@ def build_plain_statement_prompt(
 
     if topic:
         parts.append(f"Topic: {topic}")
+    # The zone channel's conversation thread replaces the
+    # random topic (the caller then passes topic=None).
+    if thread_turn is not None:
+        parts.append(thread_turn.prompt_block)
 
     zone_flavor = get_zone_flavor(zone_id)
     if is_rp and zone_flavor:
@@ -612,14 +698,13 @@ def build_plain_statement_prompt(
             "as plain text, never in brackets."
         )
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     category = pick_random_message_category(mode)
     parts.append(f"Message type: {category}")
@@ -660,12 +745,21 @@ def build_plain_statement_prompt(
     parts.append("Guidelines: " + "; ".join(guidelines))
 
     anti_rep = build_anti_repetition_context(
-        recent_messages
+        recent_messages,
+        allow_same_subject=bool(
+            thread_turn and thread_turn.builds_on_subject
+        ),
     )
     if anti_rep:
         parts.append(anti_rep)
 
     prompt = "\n".join(parts)
+    if thread_turn is not None:
+        return append_json_instruction(
+            prompt, allow_action, skip_emote=True,
+            extra_field=THREAD_REPORT_FIELD,
+            extra_rule=THREAD_REPORT_RULE,
+        )
     return append_json_instruction(
         prompt, allow_action, skip_emote=True
     )
@@ -723,7 +817,7 @@ def build_quest_statement_prompt(
     if random.random() < 0.5:
         parts.append(f"Player level: {bot['level']}")
 
-    quest_placeholder = f"{{{{quest:{quest['quest_name']}}}}}"
+    quest_placeholder = f"{{quest:{quest['quest_name']}}}"
     parts.append(f"Quest: {quest['quest_name']}")
     parts.append(
         f"REQUIRED: Include exactly "
@@ -737,14 +831,13 @@ def build_quest_statement_prompt(
             f"Quest involves: {quest['description'][:80]}"
         )
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     if is_rp:
         quest_actions = [
@@ -820,7 +913,7 @@ def build_loot_statement_prompt(
     )
 
     parts = []
-    item_placeholder = f"{{{{item:{item['item_name']}}}}}"
+    item_placeholder = f"{{item:{item['item_name']}}}"
 
     if is_rp:
         identity = build_bot_identity(
@@ -880,14 +973,13 @@ def build_loot_statement_prompt(
             )
             parts.append(f"Class fit: {usability}")
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     if is_rp:
         reactions = [
@@ -1012,24 +1104,23 @@ def build_quest_reward_statement_prompt(
 
     parts.append(
         f"Quest: {quest['quest_name']} "
-        f"(use {{{{quest:{quest['quest_name']}}}}} placeholder)"
+        f"(use {{quest:{quest['quest_name']}}} placeholder)"
     )
     parts.append(
         f"Reward: {item_name} ({quality}) "
-        f"(use {{{{item:{item_name}}}}} placeholder)"
+        f"(use {{item:{item_name}}} placeholder)"
     )
 
     if random.random() < 0.5:
         parts.append(f"Player class: {bot['class']}")
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     if is_rp:
         reactions = [
@@ -1093,6 +1184,7 @@ def build_plain_conversation_prompt(
     speaker_talent_context=None,
     topic: str = None,
     area_id: int = 0,
+    thread_turn=None,
 ) -> str:
     """Build a prompt for a plain conversation with 2-4 bots."""
     mode = get_chatter_mode(config) if config else 'normal'
@@ -1125,6 +1217,8 @@ def build_plain_conversation_prompt(
 
     if topic:
         parts.append(f"Topic: {topic}")
+    if thread_turn is not None:
+        parts.append(thread_turn.prompt_block)
 
     zone_flavor = get_zone_flavor(zone_id)
     if is_rp and zone_flavor:
@@ -1216,13 +1310,14 @@ def build_plain_conversation_prompt(
             "as plain text, never in brackets."
         )
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_creative_twist(chance=0.4, mode=mode)
+    twist = maybe_get_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: {twist}"
         )
 
     min_msgs = bot_count
@@ -1230,23 +1325,19 @@ def build_plain_conversation_prompt(
     msg_count = select_conversation_message_count(
         bot_count, min_msgs, max_msgs
     )
-    mood_sequence = generate_conversation_mood_sequence(
-        msg_count, mode
-    )
     length_sequence = generate_conversation_length_sequence(
         msg_count
     )
 
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     if is_rp:
@@ -1267,7 +1358,7 @@ def build_plain_conversation_prompt(
             "complaining about something",
             "celebrating something",
         ]
-    if random.random() < 0.5:
+    if thread_turn is None and random.random() < 0.5:
         parts.append(
             f"Topic hint: {random.choice(topics)}"
         )
@@ -1279,7 +1370,7 @@ def build_plain_conversation_prompt(
         "Plain text only - never wrap creature, NPC, "
         "zone, or faction names in brackets"
     )
-    guidelines.append("Follow the mood and length sequence above")
+    guidelines.append("Follow the length sequence above")
     if bot_count > 2:
         guidelines.append(
             f"EVERY speaker MUST have at least one "
@@ -1310,12 +1401,21 @@ def build_plain_conversation_prompt(
     parts.append("Guidelines: " + "; ".join(guidelines))
 
     anti_rep = build_anti_repetition_context(
-        recent_messages
+        recent_messages,
+        allow_same_subject=bool(
+            thread_turn and thread_turn.builds_on_subject
+        ),
     )
     if anti_rep:
         parts.append(anti_rep)
 
     prompt = "\n".join(parts)
+    if thread_turn is not None:
+        return append_conversation_json_instruction(
+            prompt, bot_names, msg_count, allow_action,
+            trailing_object=THREAD_REPORT_OBJECT,
+            extra_rule=THREAD_REPORT_RULE,
+        )
     return append_conversation_json_instruction(
         prompt, bot_names, msg_count, allow_action
     )
@@ -1438,14 +1538,13 @@ def build_gossip_statement_prompt(
     if speaker_talent_context:
         parts.append(speaker_talent_context)
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_gossip_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     target_label = 'NPC' if target_type == 'npc' else 'bot'
     guidelines = build_dynamic_guidelines(
@@ -1542,35 +1641,31 @@ def build_gossip_conversation_prompt(
     if speaker_talent_context:
         parts.append(speaker_talent_context)
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_gossip_creative_twist(
-        chance=0.4, mode=mode
-    )
+    twist = maybe_get_gossip_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: {twist}"
         )
 
     msg_count = select_conversation_message_count(
         bot_count, bot_count, bot_count + 3
     )
-    mood_sequence = generate_conversation_mood_sequence(
-        msg_count, mode
-    )
     length_sequence = generate_conversation_length_sequence(
         msg_count
     )
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, length={length_sequence[i]}"
+            f"length={length}"
         )
 
     target_label = 'NPC' if target_type == 'npc' else 'bot'
@@ -1582,7 +1677,7 @@ def build_gossip_conversation_prompt(
         f"Do not make the {target_label} a speaker",
         "Do not address the gossip subject directly",
         "Use the subject's exact name if it sounds natural",
-        "Follow the mood and length sequence above",
+        "Follow the length sequence above",
     ])
     if bot_count > 2:
         guidelines.append(
@@ -1660,20 +1755,21 @@ def build_quest_conversation_prompt(
 
     parts.append(
         f"Quest: {quest['quest_name']} "
-        f"(use {{{{quest:{quest['quest_name']}}}}} placeholder)"
+        f"(use {{quest:{quest['quest_name']}}} placeholder)"
     )
     if quest.get('description') and random.random() < 0.4:
         parts.append(
             f"Quest involves: {quest['description'][:60]}"
         )
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_creative_twist(chance=0.4, mode=mode)
+    twist = maybe_get_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: {twist}"
         )
 
     min_msgs = bot_count
@@ -1681,23 +1777,19 @@ def build_quest_conversation_prompt(
     msg_count = select_conversation_message_count(
         bot_count, min_msgs, max_msgs
     )
-    mood_sequence = generate_conversation_mood_sequence(
-        msg_count, mode
-    )
     length_sequence = generate_conversation_length_sequence(
         msg_count
     )
 
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     if is_rp:
@@ -1725,7 +1817,7 @@ def build_quest_conversation_prompt(
         config=config, mode=mode
     )
     guidelines.append("Use quest placeholder at least once")
-    guidelines.append("Follow the mood and length sequence above")
+    guidelines.append("Follow the length sequence above")
     if bot_count > 2:
         guidelines.append(
             f"EVERY speaker MUST have at least one "
@@ -1867,10 +1959,6 @@ def build_event_conversation_prompt(
             "to mention it explicitly."
         )
 
-    zone_flavor = get_zone_flavor(zone_id)
-    if is_rp and zone_flavor:
-        parts.append(f"Zone context: {zone_flavor}")
-
     weather_for_context = (
         current_weather
         if 'weather' not in event_context.lower()
@@ -1928,13 +2016,14 @@ def build_event_conversation_prompt(
                         )
                     seen_classes.add(cls)
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_creative_twist(chance=0.4, mode=mode)
+    twist = maybe_get_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: {twist}"
         )
 
     min_msgs = bot_count
@@ -1942,29 +2031,25 @@ def build_event_conversation_prompt(
     msg_count = select_conversation_message_count(
         bot_count, min_msgs, max_msgs
     )
-    mood_sequence = generate_conversation_mood_sequence(
-        msg_count, mode
-    )
     length_sequence = generate_conversation_length_sequence(
         msg_count
     )
 
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     guidelines = build_dynamic_guidelines(
         config=config, mode=mode
     )
-    guidelines.append("Follow the mood and length sequence above")
+    guidelines.append("Follow the length sequence above")
     if bot_count > 2:
         guidelines.append(
             f"EVERY speaker MUST have at least one "
@@ -2013,7 +2098,10 @@ def build_event_statement_prompt(
     """Build a prompt for an event-triggered statement."""
     mode = get_chatter_mode(config) if config else 'normal'
     is_rp = (mode == 'roleplay')
-    tone = pick_random_tone(mode)
+    persona = bot.get('persona') or persona_from_fields(
+        bot.get('bot1_name', ''), mode,
+        bot.get('bot1_guid', 0),
+    )
     extra_data = extra_data or {}
 
     is_transport = (
@@ -2136,7 +2224,7 @@ def build_event_statement_prompt(
         f"{rp_personality}\n\n"
         f"CONTEXT: {event_context}\n\n"
         f"{event_instruction}\n\n"
-        f"Your current mood: {tone}"
+        f"{build_persona_block(persona, mode)}"
         f"{rp_style}\n\n"
         f"Respond with a single short "
         f"sentence (under 100 "
@@ -2170,7 +2258,7 @@ def build_spell_statement_prompt(
     parts = []
 
     spell_placeholder = (
-        f"{{{{spell:{spell['spell_name']}}}}}"
+        f"{{spell:{spell['spell_name']}}}"
     )
 
     if is_rp:
@@ -2222,14 +2310,13 @@ def build_spell_statement_prompt(
         f"(this becomes a clickable spell link)"
     )
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     if is_rp:
         approaches = [
@@ -2307,7 +2394,7 @@ def build_spell_conversation_prompt(
     bot_names = [b['name'] for b in bots]
 
     spell_placeholder = (
-        f"{{{{spell:{spell['spell_name']}}}}}"
+        f"{{spell:{spell['spell_name']}}}"
     )
 
     if is_rp:
@@ -2411,27 +2498,21 @@ def build_spell_conversation_prompt(
         "placeholder) for comparison."
     )
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_creative_twist(
-        chance=0.4, mode=mode
-    )
+    twist = maybe_get_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this "
-            f"conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: "
+            f"{twist}"
         )
 
     min_msgs = bot_count
     max_msgs = bot_count + 2
     msg_count = select_conversation_message_count(
         bot_count, min_msgs, max_msgs
-    )
-    mood_sequence = (
-        generate_conversation_mood_sequence(
-            msg_count, mode
-        )
     )
     length_sequence = (
         generate_conversation_length_sequence(
@@ -2440,15 +2521,14 @@ def build_spell_conversation_prompt(
     )
 
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     if is_rp:
@@ -2484,7 +2564,7 @@ def build_spell_conversation_prompt(
         "Use spell placeholder at least once"
     )
     guidelines.append(
-        "Follow the mood and length sequence above"
+        "Follow the length sequence above"
     )
     if bot_count > 2:
         guidelines.append(
@@ -2543,7 +2623,7 @@ def build_trade_statement_prompt(
 
     parts = []
     item_placeholder = (
-        f"{{{{item:{item['item_name']}}}}}"
+        f"{{item:{item['item_name']}}}"
     )
 
     if is_rp:
@@ -2605,14 +2685,13 @@ def build_trade_statement_prompt(
         f"This becomes a clickable link"
     )
 
-    tone = pick_random_tone(mode)
-    mood = pick_random_mood(mode)
-    parts.append(f"Tone: {tone}")
-    parts.append(f"Mood: {mood}")
+    parts.append(
+        build_persona_block(persona_for_bot(bot, mode), mode)
+    )
 
     twist = maybe_get_creative_twist(mode=mode)
     if twist:
-        parts.append(f"Creative twist: {twist}")
+        parts.append(f"{TWIST_LABEL}: {twist}")
 
     if is_rp:
         styles = [
@@ -2699,7 +2778,7 @@ def build_trade_conversation_prompt(
         item.get('item_quality', 2), "uncommon"
     )
     item_placeholder = (
-        f"{{{{item:{item['item_name']}}}}}"
+        f"{{item:{item['item_name']}}}"
     )
 
     if is_rp:
@@ -2768,27 +2847,21 @@ def build_trade_conversation_prompt(
         f"This becomes a clickable link"
     )
 
-    tone = pick_random_tone(mode)
-    parts.append(f"Overall tone: {tone}")
+    parts.extend(build_cast_lines(
+        [persona_for_bot(b, mode) for b in bots], mode
+    ))
 
-    twist = maybe_get_creative_twist(
-        chance=0.4, mode=mode
-    )
+    twist = maybe_get_creative_twist(mode=mode)
     if twist:
         parts.append(
-            f"Creative twist for this "
-            f"conversation: {twist}"
+            f"{TWIST_LABEL_CONVERSATION}: "
+            f"{twist}"
         )
 
     min_msgs = bot_count
     max_msgs = bot_count + 2
     msg_count = select_conversation_message_count(
         bot_count, min_msgs, max_msgs
-    )
-    mood_sequence = (
-        generate_conversation_mood_sequence(
-            msg_count, mode
-        )
     )
     length_sequence = (
         generate_conversation_length_sequence(
@@ -2797,15 +2870,14 @@ def build_trade_conversation_prompt(
     )
 
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
+        "\nLENGTH SEQUENCE "
         "(follow this for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % bot_count]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     if is_rp:
@@ -2848,7 +2920,7 @@ def build_trade_conversation_prompt(
         "pst, OBO"
     )
     guidelines.append(
-        "Follow the mood and length sequence above"
+        "Follow the length sequence above"
     )
     if bot_count > 2:
         guidelines.append(

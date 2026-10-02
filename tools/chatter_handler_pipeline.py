@@ -29,62 +29,57 @@ from chatter_db import (
 )
 from chatter_party_gate import policy_for_reason
 from chatter_group_state import (
+    get_bot_mood_label,
     _mark_event,
     _store_chat,
     _get_recent_chat,
     format_chat_history,
     get_bot_traits,
-    get_bot_mood_label,
     update_bot_mood,
 )
-from chatter_raid_base import dual_worker_dispatch
 from chatter_memory import get_session_vibe_details
-from chatter_prompts import (
-    build_session_vibe_line, build_bot_mood_line,
+from chatter_prompts import build_session_vibe_line
+from chatter_persona import (
+    format_backstory_block,
+    format_mood_line,
+    party_reaction_backstory,
+    resolve_mood,
+)
+from chatter_threads import capture_session, note_event
+from chatter_raid_base import (
+    dual_worker_dispatch,
+    fire_subgroup_worker,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def build_mood_and_vibe_suffix(group_id, bot_guid, config):
-    """Mood lines appended to every reaction prompt.
+def build_vibe_suffix(group_id, bot_guid, config):
+    """The party-wide session vibe, as one prompt line.
 
-    Two separate axes, and the prompt says so:
+    A different axis from the bot's own mood, which the
+    persona layer now owns: the vibe is what the whole party
+    just lived through (see get_session_vibe_details()). The
+    two can legitimately disagree -- a cheerful bot in a
+    shaken party is characterization -- so the wording keeps
+    them distinct when the bot's own mood is non-neutral.
 
-    - the per-bot mood is this bot's own drift (see
-      _bot_mood_scores / MOOD_DELTAS in chatter_group_state)
-    - the session vibe is what the whole party just lived
-      through (see get_session_vibe_details())
-
-    They can legitimately disagree -- a cheerful bot in a
-    shaken party is characterization, not a bug -- so neither
-    suppresses the other; the wording keeps them distinct
-    instead of leaving the model to guess. Both lines render
-    wholly in the configured language. Kept to one extra
-    sentence: this goes into every reaction prompt.
-
-    Returns "" when the bot is neutral and no vibe is live.
+    Returns "" when no vibe is live.
     """
-    mood_label = get_bot_mood_label(group_id, bot_guid)
     vibe, vibe_source = get_session_vibe_details(
         group_id, config,
     )
-    has_mood = mood_label != 'neutral'
     vibe_line = build_session_vibe_line(
         vibe, vibe_source,
-        distinct_from_bot_mood=has_mood,
+        distinct_from_bot_mood=(
+            get_bot_mood_label(group_id, bot_guid)
+            != 'neutral'
+        ),
     )
-    suffix = ""
-    if has_mood:
-        # Localized label *and* word (build_bot_mood_line):
-        # an English "Your own mood:" over a localized vibe
-        # sentence is the same hybrid defect in miniature.
-        suffix += "\n" + build_bot_mood_line(
-            mood_label, alongside_vibe=bool(vibe_line),
-        )
-    if vibe_line:
-        suffix += f"\n{vibe_line}"
-    return suffix
+    return f"\n{vibe_line}" if vibe_line else ""
+
+
+
 
 
 def _build_bot_from_extra(extra_data):
@@ -228,18 +223,35 @@ def run_group_handler(
     trait_data = get_bot_traits(
         db, group_id, bot_guid,
     )
+    # Thread session before the slow LLM call, so a
+    # cleanup during the wait cannot be undone later.
+    thread_session = capture_session(group_id)
 
-    # 7. BG fallback if no traits
-    if not trait_data and bg_fallback_prompt:
+    # 7. BG path: inside a battleground always use the
+    # BG prompt (score, flags, faction) — the generic
+    # party prompts carry no BG context. The event's
+    # own bot speaks, and only if the player can hear
+    # it (same sub-group).
+    in_bg = bool(extra_data.get('is_battleground'))
+    if bg_fallback_prompt and (in_bg or not trait_data):
         try:
-            ok = dual_worker_dispatch(
-                db, client, config, event,
-                extra_data,
-                subgroup_prompt_fn=(
-                    bg_fallback_prompt
-                ),
-                label=label,
-            )
+            if in_bg:
+                ok = bool(fire_subgroup_worker(
+                    db, client, config, event,
+                    extra_data,
+                    prompt_fn=bg_fallback_prompt,
+                    label=label,
+                    speaker_guid=bot_guid,
+                ))
+            else:
+                ok = dual_worker_dispatch(
+                    db, client, config, event,
+                    extra_data,
+                    subgroup_prompt_fn=(
+                        bg_fallback_prompt
+                    ),
+                    label=label,
+                )
             _mark_event(
                 db, event_id,
                 'completed' if ok else 'skipped',
@@ -341,9 +353,28 @@ def run_group_handler(
         # 10. Build prompt
         prompt = build_prompt(ctx)
 
-        # 11. Mood + group vibe injection
+        # 10b. Backstory (roleplay only, config-gated),
+        # same wording as the persona block.
+        backstory = party_reaction_backstory(
+            config, trait_data.get('backstory'), mode,
+        )
+        if backstory:
+            prompt += (
+                f"\n{format_backstory_block(backstory, mode)}"
+            )
+
+        # 11. Mood injection: the bot's real event
+        # mood, shared with guild and General.
         if inject_mood:
-            prompt += build_mood_and_vibe_suffix(
+            mood_line = format_mood_line(
+                resolve_mood(bot_guid)
+            )
+            if mood_line:
+                prompt += f"\n{mood_line}"
+
+            # 11b. Session vibe: the party-wide axis, kept
+            # separate from the persona's per-bot mood above.
+            prompt += build_vibe_suffix(
                 group_id, bot_guid, config,
             )
 
@@ -389,6 +420,13 @@ def run_group_handler(
         _store_chat(
             db, group_id, bot_guid,
             bot_name, True, message,
+        )
+        # The reaction interrupts (or, for a wipe or
+        # death, takes over) the conversation thread.
+        note_event(
+            group_id, event_type_label, bot_name, message,
+            message_id=result.get('message_id'),
+            session=thread_session,
         )
 
         # 15. Update mood

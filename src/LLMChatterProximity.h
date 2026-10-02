@@ -75,6 +75,13 @@ bool HandleProximityPlayerbotEmote(
     Player* player, Player* bot,
     uint32 textEmote, uint32 mirrorEmote,
     std::string const& customText = "");
+// The player emoted at a bot in their own party: that bot
+// answers in party chat, while nearby NPCs and non-party
+// playerbots may witness the moment in /say.
+bool HandleProximityPartyBotEmoteWitness(
+    Player* player, Player* partyBot,
+    uint32 textEmote,
+    std::string const& customText = "");
 void RecordDeliveredProximityLine(
     uint32 eventId, uint32 playerGuid,
     uint32 zoneId, uint32 mapId,

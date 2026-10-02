@@ -5,6 +5,7 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 from chatter_db import insert_chat_message
+from chatter_identity import prepare_guild_speakers
 from chatter_general import _pick_length_hint
 from chatter_guild import (
     _apply_participant_references,
@@ -23,7 +24,15 @@ from chatter_llm import call_llm
 from chatter_mode import build_player_chat_guidance, is_roleplay
 from chatter_prompts import (
     generate_conversation_length_sequence,
-    generate_conversation_mood_sequence,
+)
+from chatter_threads import (
+    guild_key,
+    note_player_message,
+    render_for_player_reply,
+)
+from chatter_persona import (
+    CONVERSATION_EMOTION_RULE,
+    PERSONA_PRIORITY_RULE,
 )
 from chatter_shared import (
     append_conversation_json_instruction,
@@ -675,9 +684,10 @@ def _build_multi_prompt(
             "Every selected bot must speak at least once.",
         ])
 
-    moods = generate_conversation_mood_sequence(
-        message_count, mode
+    lines.append(
+        PERSONA_PRIORITY_RULE.format(who='the speakers')
     )
+    lines.append(CONVERSATION_EMOTION_RULE)
     lengths = (
         ["2-8 words, max 50 chars"] * message_count
         if brief_casual
@@ -697,7 +707,6 @@ def _build_multi_prompt(
     for index, speaker in enumerate(sequence_names):
         instruction = (
             f"  Message {index + 1} ({speaker}): "
-            f"mood={moods[index]}, "
             f"length={lengths[index]}"
         )
         plan = reference_by_index.get(index)
@@ -1312,6 +1321,8 @@ def process_guild_player_message_event(
         _mark_event(db, event_id, 'skipped')
         return False
 
+    responders = prepare_guild_speakers(db, client, config, responders)
+
     callback_requested = (
         not brief_casual
         and memory_enabled
@@ -1372,6 +1383,19 @@ def process_guild_player_message_event(
         extra.get('guild_name') or 'the guild'
     )
     faction = str(extra.get('team') or '')
+
+    # The guild's conversation thread: replies see what the
+    # guild was talking about (not for brief casual turns),
+    # and the player's line joins it for the next idle line.
+    thread_key = guild_key(extra.get('guild_id'))
+    thread_note = (
+        '' if brief_casual
+        else render_for_player_reply(thread_key, db)
+    )
+    note_player_message(thread_key, player_name, player_message)
+    session_context = '\n'.join(
+        part for part in (session_context, thread_note) if part
+    )
 
     if topology == 'single':
         messages = _generate_single_reply(

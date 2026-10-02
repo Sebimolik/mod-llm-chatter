@@ -331,9 +331,24 @@ void HandleGroupPlayerKilledByCreatureImpl(
     if (!GroupHasRealPlayer(group))
         return;
 
+    // In a BG, player pets/totems fall through the PvP
+    // path above. Name the owner so the prompt doesn't
+    // treat a pet called "Cat" as the enemy player
+    // ("Wulobe's Cat", "Majir's Searing Totem").
+    std::string killerName =
+        killer ? GetLocalizedCreatureName(killer) : "";
+    if (killer)
+    {
+        Player* owner = killer
+            ->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (owner && owner != killed)
+            killerName = owner->GetName() + "'s "
+                + GetLocalizedCreatureName(killer);
+    }
+
     QueueGroupDeathOrWipe(
         killed, group,
-        killer ? GetLocalizedCreatureName(killer) : "",
+        killerName,
         killer ? killer->GetEntry() : 0,
         nullptr);
 }
@@ -759,9 +774,9 @@ void HandleGroupPlayerEnterCombatImpl(
         return;
 
     uint32 rank = tmpl->rank;
-    bool isBoss = (rank == 3)
-        || (tmpl->type_flags
-            & CREATURE_TYPE_FLAG_BOSS_MOB);
+    // Same boss test as kill reactions, so dungeon
+    // encounter bosses (elite rank) count as bosses.
+    bool isBoss = IsLLMChatterBoss(creature);
     bool isElite = (rank >= 1);
 
     uint32 groupId =
@@ -2874,9 +2889,36 @@ static void DispatchPlayerEmote(
     {
         case EMOTE_TGT_GROUP_BOT:
             if (cachedTargetPlayer)
+            {
                 HandleEmoteAtGroupBot(
                     player, cachedTargetPlayer,
                     textEmote, group, customText);
+
+                // The rest of the party notices too: other
+                // nearby bots may comment, contagious emotes
+                // may spread, and nearby non-party bots/NPCs
+                // may witness it in /say.
+                std::vector<Player*> others;
+                for (Player* bot : nearbyAliveBots)
+                    if (bot != cachedTargetPlayer)
+                        others.push_back(bot);
+                if (!player->IsInCombat())
+                {
+                    if (!others.empty())
+                        HandleEmoteObserver(
+                            player, textEmote, group,
+                            EMOTE_TGT_GROUP_BOT,
+                            targetName, 0u, 0u, 0u, "",
+                            others, customText,
+                            cachedTargetPlayer);
+                    HandleProximityPartyBotEmoteWitness(
+                        player, cachedTargetPlayer,
+                        textEmote, customText);
+                }
+                if (!isCustom)
+                    HandleEmoteMoodSpread(
+                        player, textEmote, others);
+            }
             break;
         case EMOTE_TGT_UNGROUPED_BOT:
             if (!ungroupedBotDirectAccepted
@@ -2914,6 +2956,10 @@ static void DispatchPlayerEmote(
                     0u, "",
                     nearbyAliveBots, customText,
                     cachedTargetPlayer);
+            // An undirected cheer or dance can spread too.
+            if (tgtType == EMOTE_TGT_NONE && !isCustom)
+                HandleEmoteMoodSpread(
+                    player, textEmote, nearbyAliveBots);
             break;
         case EMOTE_TGT_GROUP_PLAYER:
             break;

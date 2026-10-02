@@ -53,6 +53,15 @@ from chatter_group_general_reaction import (
     maybe_queue_group_general_reaction,
 )
 from chatter_text import pick_statement_length
+from chatter_identity import prepare_channel_persona
+from chatter_threads import (
+    general_key,
+    plan_idle_turn,
+    record_idle_exchange,
+    report_tokens,
+)
+from chatter_shared import count_conversation_items, get_race_faction
+from chatter_constants import RACE_NAMES
 from chatter_prompts import (
     build_plain_statement_prompt,
     build_quest_statement_prompt,
@@ -92,6 +101,19 @@ def _build_zone_metadata(zone_id, area_id=0):
             get_subzone_lore(zone_id, area_id) or ''
         ),
     )
+
+
+def _general_thread_key(request, zone_id):
+    """Thread key of the zone General channel the speaking bot
+    posts in (General is split by faction)."""
+    race = request.get('bot1_race')
+    if not isinstance(race, int):
+        race = next(
+            (rid for rid, name in RACE_NAMES.items()
+             if name == race),
+            0,
+        )
+    return general_key(zone_id, get_race_faction(race))
 
 
 def _request_message_type(request):
@@ -314,6 +336,9 @@ def process_statement(
     bot['gear'] = build_gear_context(
         db, bot['guid'], bot['class'], config,
     )
+    bot['persona'] = prepare_channel_persona(
+        db, client, config, bot['guid'], bot['name'], 'general',
+    )
 
     # Talent context injection (speaker only)
     speaker_talent = None
@@ -337,6 +362,7 @@ def process_statement(
 
     # Build appropriate prompt
     chosen_topic = ""
+    thread_turn = None
     if msg_type == "plain":
         # Get zone mobs for context
         zone_mobs = []
@@ -352,8 +378,15 @@ def process_statement(
             if mode == 'roleplay'
             else AMBIENT_CHAT_TOPICS
         )
-        topic = random.choice(topic_pool)
-        chosen_topic = topic
+        thread_turn = plan_idle_turn(
+            _general_thread_key(request, zone_id),
+            [bot['name']], topic_pool=topic_pool, db=db,
+        )
+        topic = (
+            None if thread_turn is not None
+            else random.choice(topic_pool)
+        )
+        chosen_topic = topic or f"thread:{thread_turn.kind}"
         prompt = build_plain_statement_prompt(
             bot, zone_id, zone_mobs,
             config, current_weather,
@@ -362,6 +395,7 @@ def process_statement(
             topic=topic,
             area_id=area_id,
             length_hint=rng_length,
+            thread_turn=thread_turn,
         )
     elif msg_type == "quest":
         prompt = build_quest_statement_prompt(
@@ -422,7 +456,14 @@ def process_statement(
             if mode == 'roleplay'
             else AMBIENT_CHAT_TOPICS
         )
-        topic = random.choice(topic_pool)
+        thread_turn = plan_idle_turn(
+            _general_thread_key(request, zone_id),
+            [bot['name']], topic_pool=topic_pool, db=db,
+        )
+        topic = (
+            None if thread_turn is not None
+            else random.choice(topic_pool)
+        )
         prompt = build_plain_statement_prompt(
             bot, zone_id,
             config=config,
@@ -432,6 +473,7 @@ def process_statement(
             topic=topic,
             area_id=area_id,
             length_hint=rng_length,
+            thread_turn=thread_turn,
         )
 
     # Call LLM
@@ -439,8 +481,15 @@ def process_statement(
         zone_meta['speaker_talent'] = (
             speaker_talent
         )
+    if thread_turn is not None:
+        zone_meta['thread_move'] = thread_turn.kind
     response = call_llm(
         client, prompt, config,
+        max_tokens_override=(
+            int(config.get('LLMChatter.MaxTokens', 200))
+            + report_tokens()
+            if thread_turn is not None else None
+        ),
         context=f"ambient:{bot['name']}",
         label='ambient_statement',
         metadata=zone_meta,
@@ -473,12 +522,18 @@ def process_statement(
             msg_type, topic_label, bot['name'],
             extra,
         )
-        insert_chat_message(
+        message_id = insert_chat_message(
             db, bot['guid'], bot['name'], message,
             channel=channel,
             delay_seconds=extra,
             queue_id=request['id'],
             sequence=0,
+        )
+        # Adopted into the zone channel thread only once
+        # the line was actually sent.
+        record_idle_exchange(
+            thread_turn, response, [bot['name']],
+            [message_id],
         )
         if channel == 'general':
             maybe_queue_group_general_reaction(
@@ -533,6 +588,10 @@ def process_conversation(
     )
 
     attach_speaker_gear(db, bots, config)
+    for b in bots:
+        b['persona'] = prepare_channel_persona(
+            db, client, config, b['guid'], b['name'], 'general',
+        )
 
     # Talent context injection (speaker only,
     # uses first bot as representative)
@@ -619,6 +678,7 @@ def process_conversation(
 
     # Build prompt
     chosen_topic = ""
+    thread_turn = None
     if msg_type == "plain":
         # Get zone mobs for context
         zone_mobs = []
@@ -634,8 +694,15 @@ def process_conversation(
             if mode == 'roleplay'
             else AMBIENT_CHAT_TOPICS
         )
-        topic = random.choice(topic_pool)
-        chosen_topic = topic
+        thread_turn = plan_idle_turn(
+            _general_thread_key(request, zone_id),
+            bot_names, topic_pool=topic_pool, db=db,
+        )
+        topic = (
+            None if thread_turn is not None
+            else random.choice(topic_pool)
+        )
+        chosen_topic = topic or f"thread:{thread_turn.kind}"
         prompt = build_plain_conversation_prompt(
             bots, zone_id, zone_mobs,
             config, current_weather,
@@ -643,6 +710,7 @@ def process_conversation(
             speaker_talent_context=speaker_talent,
             topic=topic,
             area_id=area_id,
+            thread_turn=thread_turn,
         )
     elif msg_type == "quest":
         prompt = build_quest_conversation_prompt(
@@ -695,6 +763,9 @@ def process_conversation(
         zone_meta['speaker_talent'] = (
             speaker_talent
         )
+    if thread_turn is not None:
+        conversation_max_tokens += report_tokens()
+        zone_meta['thread_move'] = thread_turn.kind
     bot_names_ctx = ','.join(bot_names)
     response = call_llm(
         client, prompt, config,
@@ -780,6 +851,8 @@ def process_conversation(
                 f" topic={chosen_topic}"
                 if chosen_topic else ""
             )
+            queued_ids = []
+            queued_speakers = []
             for (
                 i, msg, bot_guid, final_message,
                 relative_delay,
@@ -797,14 +870,15 @@ def process_conversation(
                     cumulative_delay, i,
                     len(messages),
                 )
-                insert_chat_message(
+                queued_ids.append(insert_chat_message(
                     db, bot_guid,
                     msg['name'], final_message,
                     channel=channel,
                     delay_seconds=cumulative_delay,
                     queue_id=request['id'],
                     sequence=i,
-                )
+                ))
+                queued_speakers.append(msg['name'])
                 if channel == 'general':
                     maybe_queue_group_general_reaction(
                         db, config,
@@ -819,5 +893,16 @@ def process_conversation(
 
 
             db.commit()
+            # Adopted into the zone channel thread only once
+            # every line was sent, and only if no line the
+            # model wrote was dropped on the way.
+            record_idle_exchange(
+                thread_turn, response,
+                sorted(set(queued_speakers)), queued_ids,
+                complete=(
+                    len(queued_ids)
+                    == count_conversation_items(response)
+                ),
+            )
             return True
     return False

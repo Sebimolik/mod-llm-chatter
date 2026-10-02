@@ -2682,6 +2682,25 @@ void AppendRaidContext(
     uint8 playerSubGroup =
         group->GetMemberGroup(player->GetGUID());
 
+    // Bot-triggered events pass the bot here. Anchor
+    // the party list on the real player's subgroup so
+    // Python targets bots the player can actually hear.
+    if (IsPlayerBot(player))
+    {
+        for (GroupReference* itr =
+                 group->GetFirstMember();
+             itr; itr = itr->next())
+        {
+            Player* member = itr->GetSource();
+            if (member && !IsPlayerBot(member))
+            {
+                playerSubGroup = group->GetMemberGroup(
+                    member->GetGUID());
+                break;
+            }
+        }
+    }
+
     std::string partyGuids = "[";
     std::string raidGuids = "[";
     bool firstParty = true;

@@ -1394,25 +1394,25 @@ def _suffix(mood_label, vibe, vibe_source):
         lambda g, c: (vibe, vibe_source),
     ):
         return chatter_handler_pipeline\
-            .build_mood_and_vibe_suffix(GROUP, BOT, CONFIG)
+            .build_vibe_suffix(GROUP, BOT, CONFIG)
 
 
 def test_reaction_suffix_injects_the_vibe_when_active():
     out = _suffix('cheerful', 'humbled', 'wipe')
-    assert 'Your own mood: cheerful' in out
     assert 'still humbled after being cut down' in out
-    # Contradiction is framed as characterization.
+    # The bot's own mood comes from the persona layer now, but
+    # a non-neutral one still has to be contrasted against, so
+    # the contradiction reads as characterization.
     assert 'not your own mood' in out
 
 
 def test_reaction_suffix_omits_the_vibe_when_none_is_active():
-    out = _suffix('cheerful', None, None)
-    assert out == "\nCurrent mood: cheerful"
+    """No vibe means no line at all: the persona carries the mood."""
+    assert _suffix('cheerful', None, None) == ""
 
 
 def test_reaction_suffix_vibe_only_for_a_neutral_bot():
     out = _suffix('neutral', 'humbled', 'wipe')
-    assert 'mood:' not in out
     assert 'still humbled after being cut down' in out
     # Nothing to contrast against, so no distinctness clause.
     assert 'not your own mood' not in out
@@ -1423,9 +1423,9 @@ def test_reaction_suffix_is_empty_when_nothing_applies():
 
 
 def test_reaction_suffix_is_localized_end_to_end():
-    """Mood label and vibe sentence render in the same
-    language -- an English "Your own mood:" over a localized
-    vibe sentence is the same hybrid defect in miniature."""
+    """The vibe sentence renders wholly in the configured
+    language -- English scaffolding wrapped around localized
+    words is the hybrid defect this guards against."""
     for code in _LOCALES:
         with _Language(code):
             out = _suffix('cheerful', 'humbled', 'wipe')
@@ -1434,7 +1434,7 @@ def test_reaction_suffix_is_localized_end_to_end():
         assert 'cheerful' not in out, code
         assert 'humbled' not in out, code
         assert out.startswith("\n"), code
-        assert len(out.strip().splitlines()) == 2, code
+        assert len(out.strip().splitlines()) == 1, code
 
 
 def test_miss_cache_engages_without_an_in_memory_session():
@@ -1442,7 +1442,7 @@ def test_miss_cache_engages_without_an_in_memory_session():
 
     Sessions only exist for altbots with memory enabled, so a
     session-scoped cache did nothing for groups of random playerbots --
-    and build_mood_and_vibe_suffix() runs on every reaction prompt, so
+    and build_vibe_suffix() runs on every reaction prompt, so
     each one opened and closed a fresh MySQL connection.
     """
     table, connector = _fresh()

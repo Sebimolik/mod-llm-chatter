@@ -1157,6 +1157,53 @@ std::string BuildBotParticipantJson(Player* bot)
         + "\",\"role\":\"bot\"}";
 }
 
+// A creature has no race of its own; humanoid NPCs take one
+// from their display model's extended info. Empty for beasts
+// and other models without it.
+static std::string GetNPCRaceName(Creature const* cr)
+{
+    CreatureDisplayInfoEntry const* display =
+        sCreatureDisplayInfoStore.LookupEntry(
+            cr->GetDisplayId());
+    if (!display || !display->ExtendedDisplayInfoID)
+        return "";
+    CreatureDisplayInfoExtraEntry const* extra =
+        sCreatureDisplayInfoExtraStore.LookupEntry(
+            display->ExtendedDisplayInfoID);
+    if (!extra || !extra->DisplayRaceID)
+        return "";
+    // ChrRaces also names non-playable races (goblins,
+    // ogres...) that GetRaceName() does not know.
+    ChrRacesEntry const* race =
+        sChrRacesStore.LookupEntry(extra->DisplayRaceID);
+    if (!race)
+        return "";
+    uint8 locale = sWorld->GetDefaultDbcLocale();
+    char const* name = race->name[locale];
+    if (!name || !*name)
+        name = race->name[LOCALE_enUS];
+    return name ? name : "";
+}
+
+// The faction the NPC belongs to (e.g. "Darnassus",
+// "Defias Brotherhood"), from its faction template.
+static std::string GetNPCFactionName(Creature const* cr)
+{
+    FactionTemplateEntry const* factionTemplate =
+        cr->GetFactionTemplateEntry();
+    if (!factionTemplate)
+        return "";
+    FactionEntry const* faction =
+        sFactionStore.LookupEntry(factionTemplate->faction);
+    if (!faction)
+        return "";
+    uint8 locale = sWorld->GetDefaultDbcLocale();
+    char const* name = faction->name[locale];
+    if (!name || !*name)
+        name = faction->name[LOCALE_enUS];
+    return name ? name : "";
+}
+
 std::string BuildNPCParticipantJson(
     Creature* cr, Player* player)
 {
@@ -1182,6 +1229,10 @@ std::string BuildNPCParticipantJson(
             GetLocalizedCreatureSubName(cr))
         + "\",\"gender\":\""
         + gender
+        + "\",\"race\":\""
+        + JsonEscape(GetNPCRaceName(cr))
+        + "\",\"faction\":\""
+        + JsonEscape(GetNPCFactionName(cr))
         + "\",\"disposition\":\""
         + JsonEscape(
             GetNPCDisposition(cr, player))
@@ -2943,6 +2994,106 @@ bool HandleProximityPlayerbotEmote(
         isCustom ? customText : GetTextEmoteName(textEmote),
         textEmote, mirrorEmote,
         "player_inclusive", addressedSpeaks, isCustom);
+}
+
+bool HandleProximityPartyBotEmoteWitness(
+    Player* player, Player* partyBot,
+    uint32 textEmote,
+    std::string const& customText)
+{
+    bool const isCustom = !customText.empty();
+    if (!IsProximityPlayerbotEmoteRouteEnabled()
+        || !player || IsPlayerBot(player) || !partyBot)
+    {
+        return false;
+    }
+    uint32 const chance = sLLMChatterConfig
+        ->_emotePartyBotWitnessChance;
+    if (!chance || !IsEligibleProximityAnchor(player))
+        return false;
+
+    float radius = static_cast<float>(
+        sLLMChatterConfig
+            ->_proxChatterPlayerSayScanRadius);
+    // The target must be the player's own party member and a
+    // valid scene anchor (in range, in sight, not in combat).
+    if (!IsSameGroup(partyBot, player->GetGroup())
+        || !IsEligibleProximityBot(
+            player, partyBot, radius, true))
+    {
+        return false;
+    }
+
+    Map* map = player->GetMap();
+    std::string pairKey = "partybot:"
+        + std::to_string(
+            player->GetGUID().GetCounter())
+        + ":" + std::to_string(player->GetMapId())
+        + ":" + std::to_string(
+            map ? map->GetInstanceId() : 0)
+        + ":" + std::to_string(
+            partyBot->GetGUID().GetCounter());
+    uint32 cooldownSeconds =
+        sLLMChatterConfig->_emoteMirrorCooldown * 2;
+    if (IsProximityCooldownActive(
+            _directedBotEmoteCooldowns,
+            pairKey, cooldownSeconds, false))
+    {
+        return false;
+    }
+    if (urand(1, 100) > chance)
+        return false;
+
+    std::vector<ProximityCandidate> candidates;
+    CollectNearbyBots(player, radius, candidates, true);
+    CollectNearbyNPCs(player, radius, candidates);
+    DeduplicateCandidates(candidates);
+    auto addressedIt = std::find_if(
+        candidates.begin(), candidates.end(),
+        [partyBot](ProximityCandidate const& candidate)
+        {
+            return !candidate.isNPC && candidate.bot
+                && candidate.bot->GetGUID()
+                    == partyBot->GetGUID();
+        });
+    if (addressedIt == candidates.end())
+        return false;
+
+    // Only outsiders witness in /say; the party bot itself
+    // answers in party chat through the group emote path.
+    std::vector<ProximityCandidate> speakers =
+        SelectDirectedReactors(
+            player, candidates, *addressedIt, nullptr,
+            DirectedReactorScope::NPCsAndUngroupedBots,
+            sLLMChatterConfig
+                ->_proxDirectedBotMaxParticipants - 1,
+            true);
+    if (speakers.empty())
+        return false;
+
+    if (!TryReserveProximityCooldown(
+            _directedBotEmoteCooldowns,
+            pairKey, cooldownSeconds))
+    {
+        return false;
+    }
+
+    if (sLLMChatterConfig->IsDebugLog())
+    {
+        LOG_DEBUG(
+            "module",
+            "LLMChatter: party-bot emote witnesses target={} "
+            "speakers={}",
+            partyBot->GetName(), speakers.size());
+    }
+
+    // No mirror is passed: the party bot's own mirror and
+    // reply are owned by the group emote path.
+    return QueuePlayerEmoteProximityEvent(
+        player, *addressedIt, speakers, candidates,
+        isCustom ? customText : GetTextEmoteName(textEmote),
+        textEmote, 0,
+        "player_inclusive", false, isCustom);
 }
 
 void RecordDeliveredProximityLine(

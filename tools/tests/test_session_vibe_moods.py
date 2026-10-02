@@ -174,19 +174,36 @@ def test_vibe_without_a_source_still_replaces_the_tone():
     assert "Overall tone:" not in prompt
 
 
-def test_no_vibe_prompt_uses_a_random_tone():
+def test_no_vibe_prompt_still_gives_every_speaker_a_tone():
+    """Without a vibe the persona cast supplies the tones.
+
+    There is deliberately no single "Overall tone" line any
+    more: each speaker carries its own tone from its persona,
+    so one shared tone would contradict them.
+    """
     random.seed(15)
     prompt = chatter_group.build_idle_conversation_prompt(
         BOTS, TRAITS, 'normal', 'the road ahead',
         members=['Testbotone', 'Testbottwo'],
         zone_id=1, map_id=0, session_vibe=None,
     )
-    tone_line = next(
+    assert "Overall tone:" not in prompt
+
+    toned = [
         line for line in prompt.splitlines()
-        if line.startswith("Overall tone: ")
+        if "tone: " in line and "—" in line
+    ]
+    assert len(toned) >= 2, (
+        "expected a tone per speaker in the cast, got %r" % toned
     )
-    tone = tone_line[len("Overall tone: "):]
-    assert tone in chatter_constants.TONES
+    for line in toned:
+        tone = line.split("tone: ", 1)[1].split(";")[0].strip()
+        # Persona tones are composed phrases seeded from the
+        # bot's identity, not bare TONES entries, so the shape
+        # is what matters: a non-empty descriptive tone.
+        assert tone and not tone.endswith(":"), (
+            "%r is not a usable tone" % tone
+        )
 
 
 def main() -> int:
@@ -199,7 +216,7 @@ def main() -> int:
         test_no_vibe_keeps_the_full_random_pool,
         test_vibe_reaches_the_idle_conversation_prompt,
         test_vibe_without_a_source_still_replaces_the_tone,
-        test_no_vibe_prompt_uses_a_random_tone,
+        test_no_vibe_prompt_still_gives_every_speaker_a_tone,
     ]
     for test in tests:
         test()

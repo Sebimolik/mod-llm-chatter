@@ -284,6 +284,8 @@ public:
     uint32 _bgBigEventCooldownSec;
     uint32 _bgIdleChatterChance{25};
     uint32 _bgIdleChatterCooldownSec{30};
+    uint32 _bgFlagCarryChatterIntervalSec{45};
+    uint32 _bgFlagCarryChatterChance{50};
     uint32 _bgRezChance{20};
 
     // Raid chatter (PvE)
@@ -397,6 +399,7 @@ public:
     uint32 _emoteUngroupedBotMirrorChance;
     uint32 _emoteUngroupedBotVerbalReactionChance;
     uint32 _emoteUngroupedBotWitnessReactionChance;
+    uint32 _emotePartyBotWitnessChance;
     uint32 _emoteObserverChance;
     uint32 _emoteObserverCooldown;
     uint32 _emoteMoodSpreadChance;
