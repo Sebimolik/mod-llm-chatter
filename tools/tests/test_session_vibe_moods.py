@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Focused session-vibe mood-bias checks.
+"""Focused session-vibe prompt checks.
 
 Run directly from the module root:
   python tools/tests/test_session_vibe_moods.py
 """
 
-import collections
 import importlib
 import random
 import sys
@@ -48,7 +47,6 @@ _install_non_strict_stubs()
 
 import chatter_constants  # noqa: E402
 import chatter_group  # noqa: E402
-import chatter_prompts  # noqa: E402
 
 BOTS = [
     {
@@ -63,78 +61,6 @@ BOTS = [
     },
 ]
 TRAITS = {'Testbotone': ['gruff'], 'Testbottwo': ['calm']}
-
-
-def test_family_moods_exist_in_the_real_pools():
-    pools = {
-        'normal': chatter_constants.MOODS,
-        'roleplay': chatter_constants.RP_MOODS,
-    }
-    for mode, pool in pools.items():
-        by_family = chatter_constants.VIBE_FAMILY_MOODS[mode]
-        assert set(by_family) == set(
-            chatter_constants.VIBE_MOOD_FAMILIES.values()
-        )
-        for moods in by_family.values():
-            for mood in moods:
-                assert mood in pool, (mode, mood)
-
-
-def test_unknown_and_empty_vibes_do_not_bias():
-    assert chatter_prompts.get_vibe_mood_pool(None) is None
-    assert chatter_prompts.get_vibe_mood_pool("") is None
-    assert chatter_prompts.get_vibe_mood_pool("bewildered") is None
-
-
-def test_underscored_memory_mood_is_normalized():
-    assert chatter_prompts.get_vibe_mood_pool(
-        "grimly_amused", "roleplay"
-    ) == chatter_prompts.get_vibe_mood_pool(
-        "grimly amused", "roleplay"
-    )
-
-
-def test_first_message_always_matches_the_vibe():
-    pool = chatter_prompts.get_vibe_mood_pool("humbled")
-    random.seed(11)
-    for _ in range(200):
-        seq = chatter_prompts.generate_conversation_mood_sequence(
-            4, 'normal', session_vibe='humbled',
-        )
-        assert len(seq) == 4
-        assert seq[0] in pool
-
-
-def test_bias_decays_across_the_exchange():
-    pool = chatter_prompts.get_vibe_mood_pool("triumphant")
-    random.seed(12)
-    hits = [0, 0, 0, 0]
-    runs = 1500
-    for _ in range(runs):
-        seq = chatter_prompts.generate_conversation_mood_sequence(
-            4, 'normal', session_vibe='triumphant',
-        )
-        for i, mood in enumerate(seq):
-            if mood in pool:
-                hits[i] += 1
-    rates = [hit / runs for hit in hits]
-    assert rates[0] == 1.0
-    # Strictly loosening grip, but never back to pure chance
-    # inside a short exchange.
-    assert rates[0] > rates[1] > rates[2] > rates[3]
-    assert rates[3] > len(pool) / len(chatter_constants.MOODS)
-
-
-def test_no_vibe_keeps_the_full_random_pool():
-    random.seed(13)
-    seen = collections.Counter()
-    for _ in range(4000):
-        seen.update(
-            chatter_prompts.generate_conversation_mood_sequence(
-                4, 'normal',
-            )
-        )
-    assert len(seen) == len(chatter_constants.MOODS)
 
 
 def test_vibe_reaches_the_idle_conversation_prompt():
@@ -153,12 +79,15 @@ def test_vibe_reaches_the_idle_conversation_prompt():
         in prompt
     )
     assert "Overall tone:" not in prompt
-    pool = chatter_prompts.get_vibe_mood_pool("humbled")
+    # The per-message sequence sets length only: moods belong to
+    # each speaker's persona, which is built from what actually
+    # happened to that bot.
     first_line = next(
         line for line in prompt.splitlines()
         if line.strip().startswith("Message 1 ")
     )
-    assert any(f"mood={mood}" in first_line for mood in pool)
+    assert "mood=" not in first_line
+    assert "length=" in first_line
 
 
 def test_vibe_without_a_source_still_replaces_the_tone():
@@ -208,12 +137,6 @@ def test_no_vibe_prompt_still_gives_every_speaker_a_tone():
 
 def main() -> int:
     tests = [
-        test_family_moods_exist_in_the_real_pools,
-        test_unknown_and_empty_vibes_do_not_bias,
-        test_underscored_memory_mood_is_normalized,
-        test_first_message_always_matches_the_vibe,
-        test_bias_decays_across_the_exchange,
-        test_no_vibe_keeps_the_full_random_pool,
         test_vibe_reaches_the_idle_conversation_prompt,
         test_vibe_without_a_source_still_replaces_the_tone,
         test_no_vibe_prompt_still_gives_every_speaker_a_tone,

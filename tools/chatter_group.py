@@ -96,7 +96,6 @@ from chatter_mode import (
 )
 from chatter_prompts import (
     build_session_vibe_line,
-    generate_conversation_mood_sequence,
     configure_prompt_flavor,
     maybe_get_creative_twist,
     build_environmental_context_lines,
@@ -3885,27 +3884,19 @@ def build_idle_conversation_prompt(
     # volume constant regardless of group size.
     # Bots still all participate via round-robin
     # speaker assignment (bot_names[i % num_bots]).
-    mood_sequence = (
-        generate_conversation_mood_sequence(
-            msg_count, mode,
-            session_vibe=session_vibe,
-        )
-    )
     length_sequence = (
         generate_conversation_length_sequence(
             msg_count
         )
     )
     parts.append(
-        "\nMOOD AND LENGTH SEQUENCE "
-        "(follow for each message):"
+        "\nLENGTH SEQUENCE (follow for each message):"
     )
-    for i, mood in enumerate(mood_sequence):
+    for i, length in enumerate(length_sequence):
         speaker = bot_names[i % num_bots]
         parts.append(
             f"  Message {i+1} ({speaker}): "
-            f"mood={mood}, "
-            f"length={length_sequence[i]}"
+            f"length={length}"
         )
 
     # Natural flow instruction for 3+ bots
