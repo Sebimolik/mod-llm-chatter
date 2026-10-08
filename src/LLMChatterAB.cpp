@@ -357,9 +357,12 @@ void QueueABNodeBatch(Battleground* bg)
         auto callback = CharacterDatabase.AsyncCommitTransaction(trans);
         // Owned and polled by this tracker on the world thread. Destroy/reset
         // drops callbacks; no live game object or cross-lifetime reference.
-        callback.AfterComplete([&tracker, audience, items](bool success)
+        // The key is copied into a named variable first: capturing a
+        // structured binding needs clang 16 / gcc 10.
+        LLMChatterAB::Audience const audienceKey = audience;
+        callback.AfterComplete([&tracker, audienceKey, items](bool success)
         {
-            tracker.pending.Acknowledge(audience, items, success);
+            tracker.pending.Acknowledge(audienceKey, items, success);
         });
         tracker.insertions.push_back(std::move(callback));
         tracker.recentNodeUntil = GetTimeMS().count()
