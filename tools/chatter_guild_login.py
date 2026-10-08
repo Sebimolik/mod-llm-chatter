@@ -31,6 +31,7 @@ from chatter_shared import (
     append_conversation_json_instruction,
     append_json_instruction,
     build_conversation_json_repair_prompt,
+    structured_output_enabled,
     calculate_dynamic_delay,
     get_chatter_mode,
     parse_conversation_response,
@@ -118,12 +119,12 @@ def _choose_responder_count(
     maximum = max(
         1,
         min(
-            3,
+            4,
             _safe_int(config.get(
                 'LLMChatter.GuildChatter.'
                 'LoginGreeting.MaxResponders',
-                3,
-            ), 3),
+                4,
+            ), 4),
             candidate_count,
         ),
     )
@@ -134,7 +135,7 @@ def _choose_responder_count(
         config,
         'LLMChatter.GuildChatter.'
         'LoginGreeting.MultiReplyChance',
-        20,
+        75,
     )
     if random.randint(1, 100) > chance:
         return 1
@@ -452,6 +453,9 @@ def _generate_multi(
                 prompt,
                 names,
                 message_only=True,
+                structured_output=(
+                    structured_output_enabled(config)
+                ),
             ),
             config,
             max_tokens_override=token_budget,

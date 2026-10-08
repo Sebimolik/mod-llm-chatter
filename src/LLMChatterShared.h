@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+class Channel;
 struct AchievementEntry;
 struct CharTitlesEntry;
 class Creature;
@@ -112,6 +113,7 @@ void RecordPartyChatGateActivity(
     const std::string& deliveryPolicy,
     const std::string& deliveryReason);
 void EnsureBotInGeneralChannel(Player* bot);
+bool IsPlayerInChannel(Player const* player, Channel const* channel);
 bool CanSpeakInGeneralChannel(Player* bot);
 bool IsEventOnCooldown(
     std::map<std::string, time_t>& cooldownCache,

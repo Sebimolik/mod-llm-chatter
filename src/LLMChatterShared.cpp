@@ -74,6 +74,17 @@ std::string const& GetCreatureEntryColumn()
 
 namespace
 {
+// Core has no public membership accessor. Form a pointer to the
+// protected base member here, then read it on the actual Player.
+// No derived object, downcast, or channel-list copy is involved.
+struct PlayerChannelAccess : Player
+{
+    static auto const& JoinedChannels(Player const& player)
+    {
+        return player.*&PlayerChannelAccess::m_channels;
+    }
+};
+
 constexpr uint8 PRIORITY_FILLER =
     static_cast<uint8>(LLMChatterPriorityBand::Filler);
 constexpr uint8 PRIORITY_NORMAL =
@@ -1119,16 +1130,16 @@ bool IsPlayerBot(Player* player)
         return false;
 
     WorldSession* session = player->GetSession();
-    if (session && session->IsBot())
+    if (session && session->IsHeadless())
         return true;
 
     PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
     if (!ai)
         return false;
 
-    // During playerbot login, the synthetic bot
+    // During playerbot login, the socketless bot
     // WorldSession exists before PlayerbotAI master
-    // state is always available. Session::IsBot()
+    // state is always available. IsHeadless()
     // handles that timing window. A user-controlled
     // self-bot uses a real client session and sets
     // master == bot, so IsSelfBot() keeps it in
@@ -1885,6 +1896,16 @@ void LogIgnoredAddonChat(
         preview);
 }
 
+bool IsPlayerInChannel(Player const* player, Channel const* channel)
+{
+    if (!player || !channel)
+        return false;
+
+    auto const& channels = PlayerChannelAccess::JoinedChannels(*player);
+    return std::find(channels.begin(), channels.end(), channel)
+        != channels.end();
+}
+
 bool CanSpeakInGeneralChannel(Player* bot)
 {
     if (!bot || !bot->IsInWorld())
@@ -1931,7 +1952,8 @@ bool CanSpeakInGeneralChannel(Player* bot)
             == std::string::npos)
             continue;
 
-        return bot->IsInChannel(channel);
+        if (IsPlayerInChannel(bot, channel))
+            return true;
     }
 
     return false;
@@ -2443,6 +2465,15 @@ bool HasUnsafeChatterFacingMotion(Unit* unit)
 
     if (Creature* creature = unit->ToCreature())
     {
+        // A facing spline replaces an NPC's own movement and can strand
+        // its wander or patrol script. Only turn NPCs that never move.
+        if (creature->GetDefaultMovementType() != IDLE_MOTION_TYPE
+            || motion->GetCurrentMovementGeneratorType()
+                != IDLE_MOTION_TYPE
+            || (activeType != NULL_MOTION_TYPE
+                && activeType != IDLE_MOTION_TYPE))
+            return true;
+
         if (CreatureAI* ai = creature->AI())
         {
             if (ai->IsEscorted())

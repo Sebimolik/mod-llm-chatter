@@ -216,6 +216,21 @@ LLMChatter.RequestLog.MaxSizeMB = 50
 # LLM PROVIDER SETTINGS [BRIDGE]
 ###############################################################################
 #
+#   LLMChatter.StructuredOutput.Enable
+#       Request native JSON Schema output for all runtime JSON generation,
+#       including quick analysis, memory and host screenshot vision.
+#       0 = existing prompt/parser behavior; 1 = require validated schema output.
+#       Enable only when every configured JSON target supports this format.
+#       Unsupported endpoints must use 0; no automatic downgrade is performed.
+#       Local Ollama support depends on the server/model; Qwen is not an API.
+#       Install updated tools/requirements.txt before enabling. Restart the
+#       chatter bridge and host screenshot agent to load changes, not worldserver.
+#       Default: 0
+#       [BRIDGE / HOST SCREENSHOT AGENT]
+#
+LLMChatter.StructuredOutput.Enable = 0
+
+#
 # To switch providers, just change LLMChatter.Provider and LLMChatter.Model.
 # Only configure the settings for your chosen provider.
 # The bridge selects a safe parameter profile for the model and learns from
@@ -748,6 +763,62 @@ LLMChatter.PlayerChat.IgnoredPrefixes =
 #
 LLMChatter.BGChatter.Enable = 1
 
+# Chance (0-100) for each changed node at a speech polling opportunity.
+# AB observes every BG update; failed rolls/cooldown do not freeze its state.
+# Pending changes are consumed once, without retries. 0 disables node lines.
+LLMChatter.BGChatter.NodeEventChance = 80
+
+# Chance (0-100) for score milestone reactions; 0 disables these reactions.
+LLMChatter.BGChatter.ScoreMilestoneChance = 80
+
+# Milliseconds between legacy BG polls and AB pending-node speech attempts.
+# AB node observation runs every update regardless of this setting.
+# 0 evaluates speech every update; it does not provide stronger evidence.
+LLMChatter.BGChatter.StatePollingIntervalMs = 3000
+
+# Shared minimum seconds between big BG events; 0 disables the cooldown.
+LLMChatter.BGChatter.BigEventCooldownSec = 15
+
+# Maximum actual gap (ms) for sampled AB transition labels. BG updates run
+# about once per second; 2000 tolerates ordinary scheduling jitter.
+# Larger gaps or multiple pending changes use state-only wording.
+# 0 disables transition labels. This does not change speech frequency.
+LLMChatter.BGChatter.AB.TransitionMaxGapMs = 2000
+
+# Enable AB node observation, reactions and snapshot enrichment. Disabling
+# clears AB state; re-enable seeds silently. Other BG/score chatter remains.
+LLMChatter.BGChatter.AB.Enable = 1
+
+# Maximum uncertainty of internal contest estimates, in seconds (0-60).
+# 0 omits estimates. These use the BG timer clock, not a wall-clock ETA.
+# Numerical timer wording stays disabled pending delivery-time validation.
+LLMChatter.BGChatter.AB.TimerEstimateMaxUncertaintySec = 3
+
+# Maximum age in seconds at final BG delivery (clamped to 1-300).
+# These cannot disable match/audience validation. 0 is clamped to 1.
+# Match-end has its own limit and is allowed only during WAIT_LEAVE.
+# FactualMaxAgeSec covers every BG row without AB base facts, AB included.
+# AB.FactualMaxAgeSec covers only rows carrying the AB base snapshot (node,
+# idle/objective-status, score); base revision checks still drop stale ones.
+LLMChatter.BGChatter.FactualMaxAgeSec = 30
+LLMChatter.BGChatter.AB.FactualMaxAgeSec = 45
+## AB node batches: attempt spacing and pending expiry clamp to 1-300 sec.
+## Chance failures consume the interval but retain current pending facts.
+LLMChatter.BGChatter.AB.NodeBatchCooldownSec = 15
+LLMChatter.BGChatter.AB.PendingMaxAgeSec = 30
+## Maximum referenced nodes in one reaction, clamped to 1-5.
+LLMChatter.BGChatter.AB.MaxNodesPerBatch = 3
+## Percentages 1-99; sorted/deduplicated. Any invalid list uses 30,60,90.
+## Rounded up against the verified target; core warning wins collisions.
+LLMChatter.BGChatter.AB.ScoreMilestonePercents = "30,60,90"
+## Score attempt interval, clamped 1-300 sec. Uses ScoreMilestoneChance.
+LLMChatter.BGChatter.AB.ScoreCooldownSec = 30
+## Replace an idle opportunity with objective status. Zero disables status;
+## positive intervals clamp to 1-3600 sec; chance clamps to 0-100.
+LLMChatter.BGChatter.AB.ObjectiveStatusIntervalSec = 60
+LLMChatter.BGChatter.AB.ObjectiveStatusChance = 50
+LLMChatter.BGChatter.MatchEndMaxAgeSec = 45
+
 #
 #   LLMChatter.RaidChatter.Enable
 #       Enable PvE raid boss chatter (pull, kill, wipe reactions).
@@ -1245,10 +1316,26 @@ LLMChatter.ProximityChatter.MaxConversationLines = 4
 
 #
 #   LLMChatter.ProximityChatter.ConversationLineDelay
-#       Seconds between proximity conversation lines.
+#       Fixed seconds between lines when DynamicPacing.Enable = 0.
 #       Default: 2
 #
 LLMChatter.ProximityChatter.ConversationLineDelay = 2
+
+#
+#   LLMChatter.ProximityChatter.DynamicPacing.* [BRIDGE]
+#       Length-aware gaps between nearby conversation lines. The first
+#       line has no added delay. Reading and typing overlap: the longer
+#       of the previous and current visible lines sets the length term.
+#       MinSeconds + characters / CharsPerSecond sets the base gap,
+#       bounded by MaxSeconds, with JitterPercent variation inside bounds.
+#       Defaults: enabled, 3-8 seconds, 20 chars/sec, 20% variation.
+#       Set Enable = 0 to use ConversationLineDelay instead.
+#
+LLMChatter.ProximityChatter.DynamicPacing.Enable = 1
+LLMChatter.ProximityChatter.DynamicPacing.MinSeconds = 3
+LLMChatter.ProximityChatter.DynamicPacing.MaxSeconds = 8
+LLMChatter.ProximityChatter.DynamicPacing.CharsPerSecond = 20
+LLMChatter.ProximityChatter.DynamicPacing.JitterPercent = 20
 
 #
 #   LLMChatter.ProximityChatter.ReplyWindowSeconds
@@ -2238,13 +2325,11 @@ LLMChatter.GeneralChat.QuestionChance = 100
 
 #
 #   LLMChatter.GeneralChat.Cooldown
-#       Per-zone cooldown (seconds) between bot reactions to
-#       player messages in General chat. The default leaves
-#       player-authored turns unsuppressed; set a positive value
-#       only when a busy server deliberately needs throttling.
-#       Default: 0
+#       Per-zone, per-faction cooldown (seconds) between bot reactions
+#       to player messages in General chat. Set to 0 to disable.
+#       Default: 3
 #
-LLMChatter.GeneralChat.Cooldown = 0
+LLMChatter.GeneralChat.Cooldown = 3
 
 #
 #   LLMChatter.GeneralChat.ReactDelay
@@ -2602,18 +2687,19 @@ LLMChatter.GuildChatter.MaxReferenceLines = 2
 
 #
 #   LLMChatter.GuildChatter.LoginGreeting.MultiReplyChance
-#       Chance (0-100) that two or three Guild bots greet
-#       the player instead of the usual single greeting.
-#       Default: 20
+#       Chance (0-100) that two to four Guild bots greet
+#       the player instead of a single greeting. With four eligible
+#       bots and MaxResponders = 4, 75 gives each count equal odds.
+#       Default: 75
 #
-LLMChatter.GuildChatter.LoginGreeting.MultiReplyChance = 20
+LLMChatter.GuildChatter.LoginGreeting.MultiReplyChance = 75
 
 #
 #   LLMChatter.GuildChatter.LoginGreeting.MaxResponders
-#       Maximum greeting bots. Supported range is 1-3.
-#       Default: 3
+#       Maximum greeting bots. Supported range is 1-4.
+#       Default: 4
 #
-LLMChatter.GuildChatter.LoginGreeting.MaxResponders = 3
+LLMChatter.GuildChatter.LoginGreeting.MaxResponders = 4
 
 #
 #   LLMChatter.GuildChatter.LoginGreeting.PlayerNameChance
@@ -3064,7 +3150,7 @@ LLMChatter.DistanceUnit = yards
 #       Does NOT affect party chat or event reactions.
 #       Default: 900 (15 minutes)
 #
-LLMChatter.BotSpeakerCooldownSeconds = 900
+LLMChatter.BotSpeakerCooldownSeconds = 120
 
 #
 #   LLMChatter.EventExpirationSeconds
@@ -3085,33 +3171,17 @@ LLMChatter.EventExpirationSeconds = 600
 LLMChatter.BGChatter.MaxTokens = 300
 
 #
-#   LLMChatter.BGChatter.ArrivalGreetingMax
-#       [BRIDGE] Maximum number of bots that greet when you
-#       enter a battleground. Greeters come from your BG
-#       sub-group. 0 disables BG arrival greetings.
-#       Default: 4
+#   BG arrival greetings [BRIDGE]
+#       Always select one BG-wide greeting when enabled and bots exist.
+#       A second BG-wide greeting has ArrivalRaidSecondChance percent chance.
+#       Independently roll a uniform Party count from ArrivalPartyMin to Max.
+#       Counts are capped by subgroup bots. A bot may speak once per channel.
+#       Generation and delivery guards still apply.
 #
-LLMChatter.BGChatter.ArrivalGreetingMax = 4
-
-#
-#   LLMChatter.BGChatter.ArrivalGreetingMin
-#       [BRIDGE] Minimum number of bots that greet when you
-#       enter a battleground. Each entry rolls a random count
-#       between ArrivalGreetingMin and ArrivalGreetingMax
-#       (capped by the bots in your sub-group).
-#       Default: 1
-#
-LLMChatter.BGChatter.ArrivalGreetingMin = 1
-
-#
-#   LLMChatter.BGChatter.ArrivalBGChannelGreetings
-#       [BRIDGE] Maximum BG arrival greetings sent to battleground
-#       chat (heard by the whole team); the rest go to party chat.
-#       The split is random, and with two or more greetings each
-#       channel gets at least one line. 0 = party chat only.
-#       Default: 2
-#
-LLMChatter.BGChatter.ArrivalBGChannelGreetings = 2
+LLMChatter.BGChatter.ArrivalGreetings.Enable = 1
+LLMChatter.BGChatter.ArrivalRaidSecondChance = 50
+LLMChatter.BGChatter.ArrivalPartyMin = 0
+LLMChatter.BGChatter.ArrivalPartyMax = 3
 
 #
 #   LLMChatter.BGChatter.FlagRegrabWindowSec
@@ -4068,6 +4138,8 @@ LLMChatter.Screenshot.Enable = 0
 #       MySQL host for the screenshot agent, which runs
 #       on the host machine (not inside Docker). Use
 #       127.0.0.1 when MySQL is exposed on localhost.
+#       If unset, falls back to LLMChatter.Database.Host,
+#       which is usually a Docker-internal hostname.
 #       Default: 127.0.0.1
 #
 LLMChatter.Screenshot.DBHost = 127.0.0.1
@@ -4108,13 +4180,13 @@ LLMChatter.Screenshot.VisionProvider = openai
 #       Vision model used for screenshot analysis.
 #       Format: an exact vision-capable API model ID with no quotes. Use a
 #       vendor/model slug when VisionProvider is openrouter.
-#       Recommended: gpt-4o-mini (fast and inexpensive)
-#       Alternatives: claude-haiku-4-5-20251001,
+#       Recommended: gpt-6-luna (fast, inexpensive, good vision)
+#       Alternatives: gpt-4o-mini, claude-haiku-4-5-20251001,
 #       gemini-3.1-flash-lite, gemini-2.5-flash,
 #       anthropic/claude-haiku-4.5 (OpenRouter)
-#       Default: gpt-4o-mini
+#       Default: gpt-6-luna
 #
-LLMChatter.Screenshot.VisionModel = gpt-4o-mini
+LLMChatter.Screenshot.VisionModel = gpt-6-luna
 
 #
 #   LLMChatter.Screenshot.ConversationChance
@@ -4147,24 +4219,54 @@ LLMChatter.Screenshot.JpegQuality = 75
 
 #
 #   LLMChatter.Screenshot.BoundAccountId
-#       Bind this screenshot agent to a specific player
-#       account so the observation is routed to the correct
-#       group. Required for multi-player servers.
-#       For single-player, leave at 0 to auto-detect.
-#       Find your ID: SELECT id FROM acore_auth.account
-#         WHERE username = 'YOURNAME'
-#       Default: 0 (auto-detect first active group)
+#       Bind observations to the account in the captured WoW window.
+#       Required for multi-player servers and always required for NPC
+#       proximity. Zero auto-detects a group for Party only.
+#       Consumed by host and worldserver: restart host and reload server
+#       config after edits. Find your ID in acore_auth.account.
+#       Default: 0 (Party auto-detection; NPC proximity unavailable)
 #
 LLMChatter.Screenshot.BoundAccountId = 0
 
 #
-#   LLMChatter.Screenshot.DBHost
-#       Database host override for the host-side agent.
-#       The bridge uses a Docker-internal hostname (e.g.
-#       ac-database) that the Windows host can't resolve.
-#       Set this to 127.0.0.1 for the host agent.
-#       If unset, falls back to LLMChatter.Database.Host.
-#       Default: (uses LLMChatter.Database.Host)
+#   LLMChatter.Screenshot.Proximity.Enable
+#       Enable screenshot-triggered nearby NPC chatter independently of
+#       Party, including while solo. Requires the characters migration,
+#       ProximityChatter.Enable and an explicit Screenshot.BoundAccountId.
+#       Host and worldserver setting: restart host and reload server config.
+#       Default: 0 (disabled)
 #
-# LLMChatter.Screenshot.DBHost = 127.0.0.1
+LLMChatter.Screenshot.Proximity.Enable = 0
 
+#
+#   LLMChatter.Screenshot.Proximity.Chance
+#       Host-side chance after the existing Screenshot.Chance cycle roll.
+#       Party has no additional roll. Range: 0-100. Restart the host agent.
+#       Default: 30
+#
+LLMChatter.Screenshot.Proximity.Chance = 30
+
+#
+#   LLMChatter.Screenshot.Proximity.PollIntervalMs
+#       Worldserver mailbox polling interval. Clamped to 100-10000 ms.
+#       Reload server config after changing this setting.
+#       Default: 1000
+#
+LLMChatter.Screenshot.Proximity.PollIntervalMs = 1000
+
+#
+#   LLMChatter.Screenshot.Proximity.RequestTimeoutSeconds
+#       Host wait for server preflight. Clamped to 1-30 seconds.
+#       Restart the host agent after changing this setting.
+#       Default: 5
+#
+LLMChatter.Screenshot.Proximity.RequestTimeoutSeconds = 5
+
+#
+#   LLMChatter.Screenshot.Proximity.MaxAgeSeconds
+#       Server preflight-to-consumption lifetime, clamped to 5-300 seconds.
+#       Final speech uses normal event expiry plus live session/range checks.
+#       Reload server config after changing this setting.
+#       Default: 60
+#
+LLMChatter.Screenshot.Proximity.MaxAgeSeconds = 60

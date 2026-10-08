@@ -17,6 +17,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 #include <unordered_set>
 
 class LLMChatterConfig
@@ -29,6 +30,12 @@ public:
     }
 
     void LoadConfig();
+
+    bool _screenshotEnable = false;
+    bool _screenshotProximityEnable = false;
+    uint32 _screenshotBoundAccountId = 0;
+    uint32 _screenshotProximityPollMs = 1000;
+    uint32 _screenshotProximityMaxAge = 60;
     bool IsEnabled() const { return _enabled; }
     bool IsDebugLog() const { return _debugLog; }
     bool IsProximitySpeakerAllowed(uint32 creatureEntry) const;
@@ -281,6 +288,19 @@ public:
     uint32 _bgScoreMilestoneChance;
     uint32 _bgRaidWorkerChance;
     uint32 _bgStatePollingIntervalMs;
+    uint32 _bgABTransitionMaxGapMs;
+    uint32 _bgABNodeBatchCooldownSec;
+    uint32 _bgABPendingMaxAgeSec;
+    uint32 _bgABMaxNodesPerBatch;
+    std::vector<uint32> _bgABScoreMilestonePercents;
+    uint32 _bgABScoreCooldownSec;
+    uint32 _bgABObjectiveStatusIntervalSec;
+    uint32 _bgABObjectiveStatusChance;
+    bool _bgABEnable;
+    uint32 _bgABTimerEstimateMaxUncertaintySec;
+    uint32 _bgFactualMaxAgeSec;
+    uint32 _bgABFactualMaxAgeSec;
+    uint32 _bgMatchEndMaxAgeSec;
     uint32 _bgBigEventCooldownSec;
     uint32 _bgIdleChatterChance{25};
     uint32 _bgIdleChatterCooldownSec{30};

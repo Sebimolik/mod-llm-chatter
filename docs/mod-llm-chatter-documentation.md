@@ -631,6 +631,12 @@ sampling models receive `temperature`; known reasoning models receive
 their supported token-limit shape and configured reasoning effort;
 unrecognized direct OpenAI models start without optional parameters.
 
+One ordered capability table in `llm_compat.py` owns model matching. Specific
+model rules precede family fallbacks, and both request parameters and token
+budgets use the resolved capabilities. GPT-6 Luna and GPT-6 Sol support
+explicit `none`; GPT-6 Astra and GPT-6.1 Sol retain the reasoning fallback.
+OpenRouter routing and fine-tuned IDs are normalized before model matching.
+
 If a provider explicitly rejects `temperature`, `reasoning_effort`,
 `max_tokens`, or `max_completion_tokens`, the bridge adjusts that one
 parameter, retries the rejected request, and caches the successful shape
@@ -639,7 +645,7 @@ or 422 errors and prefers the provider's structured parameter/code fields;
 other failures are not hidden or retried by this compatibility path.
 
 Generic provider error types such as `invalid_request_error` are not treated
-as parameter rejection codes by themselves. When a dotted GPT-5 generation
+as parameter rejection codes by themselves. When a model supporting `none`
 rejects `ReasoningEffort = none`, the retry also removes temperature and
 expands the completion budget before allowing the model's default reasoning.
 
@@ -658,7 +664,7 @@ LLMChatter.Model = haiku
 
 ```ini
 LLMChatter.Provider = openai
-LLMChatter.Model = gpt-5.6-luna
+LLMChatter.Model = gpt-6-luna
 LLMChatter.OpenAI.ReasoningEffort = none
 LLMChatter.OpenAI.MaxTokensMultiplier = 4
 ```
@@ -1124,6 +1130,10 @@ token use.
 
 ### Shared zone pacing
 
+`LLMChatter.GeneralChat.Cooldown` limits player-message reaction attempts
+per zone and faction. Both presets and the server fallback use 3 seconds;
+set it to 0 to disable this cooldown. Apply changes with `.reload config`.
+
 Automated ambient and world-event General producers share one per-zone
 delivery reservation. Multi-line conversations reserve the complete
 scheduled sequence before inserting their first row, and the next
@@ -1351,7 +1361,7 @@ The feature is gated by:
 - per-group per-zone cooldown
 - per-bot per-name cooldown
 - combat suppression
-- mounted/flying/BG suppression
+- flying/BG suppression (ground mounting does not block observations)
 
 ### Python handling
 
@@ -1411,21 +1421,292 @@ rows instead of speaking directly.
 
 Battleground-specific logic is self-contained in its own files.
 
+Matches entered through Random Battleground use the selected map's rules
+and prompt context, just like directly queued matches. Event payloads carry
+the actual map type in `bg_type_id` and the original queue in
+`queue_type_id`. This applies to WSG flag/carry events, AB/EY objective and
+score polling, and arrival greetings; it does not change channel routing.
+
+Arathi Basin node reactions distinguish sampled claims, assaults,
+counter-claims, defences and captures using the observed pair and the
+core's captured flag. Wording is team-relative and never credits a nearby
+player. Ambiguous or older payloads describe only occupied, contested or
+neutral state. Both normal and RP modes use the same factual rules. A
+contested team is the claimant, not the occupied owner.
+
+First observations seed silently. The pending window retains its first
+previous state and latest result; multiple observed changes or long actual
+gaps degrade to state-only wording. Speech chance and cooldown can still
+suppress node lines; pending changes are consumed at the next speech
+opportunity without retry. Delivery-time state validation is not provided
+by this observation path.
+
+Existing BG selection settings (prefix `LLMChatter.`):
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `BGChatter.NodeEventChance` | 80 | Once per AB batch attempt; legacy per-node EY chance; 0 disables node reactions |
+| `BGChatter.ScoreMilestoneChance` | 80 | Per pending AB score attempt; 0 disables milestone reactions; EY keeps its legacy detection policy |
+| `BGChatter.StatePollingIntervalMs` | 3000 | Legacy polling and AB speech evaluation; 0 evaluates every update |
+| `BGChatter.BigEventCooldownSec` | 15 | Legacy shared big-event cooldown; AB node/score selection uses separate budgets; 0 disables this cooldown |
+| `BGChatter.AB.TransitionMaxGapMs` | 2000 | Maximum actual sample gap for transition labels; 0 uses state-only wording |
+| `BGChatter.AB.Enable` | 1 | AB node/resource observation, reactions and snapshots; other battlegrounds are unchanged |
+| `BGChatter.AB.NodeBatchCooldownSec` | 15 | Minimum between AB batch attempts, including chance failure; clamped 1-300 seconds |
+| `BGChatter.AB.PendingMaxAgeSec` | 30 | Expire pending changes since their latest change; clamped 1-300 seconds |
+| `BGChatter.AB.MaxNodesPerBatch` | 3 | Maximum referenced nodes per reaction; clamped 1-5 |
+| `BGChatter.AB.ScoreMilestonePercents` | 30,60,90 | Integers 1-99, sorted/deduplicated; any malformed list falls back to defaults |
+| `BGChatter.AB.ScoreCooldownSec` | 30 | Minimum between pending score attempts, including chance failure; clamped 1-300 seconds |
+| `BGChatter.AB.ObjectiveStatusIntervalSec` | 60 | Minimum between status opportunities; 0 disables, maximum 3600 seconds |
+| `BGChatter.AB.ObjectiveStatusChance` | 50 | Chance to replace an eligible idle opportunity with objective status; clamped 0-100 |
+| `BGChatter.AB.TimerEstimateMaxUncertaintySec` | 3 | Internal estimate width, clamped to 0-60 seconds; 0 omits estimates; no numerical timer speech |
+
+AB observes all five nodes every in-progress update regardless of the
+speech polling interval. Disabling chatter or leaving in-progress state
+clears AB reaction/estimate baselines; re-enable seeds a new baseline.
+Pre-start/end updates can still publish node snapshots without reactions. The
+observation gap is measured from actual monotonic timestamps. The default
+2000ms tolerates scheduling jitter around the core's one-second BG update.
+Labels describe net sampled team transitions, not every intermediate
+click. The inference relies on map-before-BG ordering and one 1000ms timer
+advance per BG update; it does not rely on banner spell cast duration.
+
+Recent AB node changes combine into one brief reaction, with oldest pending
+changes selected first and rotating ties. Failed chance rolls retain them
+until the next attempt or expiry. A newer change replaces its old revision;
+an entirely unsent reversal can cancel the obsolete alarm. Node batches
+have their own attempt cooldown, so score/start announcements cannot erase
+them. WSG/EY behavior is unchanged.
+
+AB node transitions use the BG-wide raid worker, without a Party copy.
+This includes claim, assault, counter-claim, defence, capture and state-only
+updates. Each eligible team/group receives at most one event per selected
+revision, regardless of how many humans or subgroups share that raid.
+Eligibility requires a present real listener and a bot in the same BG raid.
+Audience membership is frozen for a revision at its first insertion attempt:
+new humans in an existing group may hear retries, while entirely new groups
+receive
+future changes. Failed DB insertions retry only unacknowledged audiences;
+successful inserts are never replayed merely because generation or delivery
+later suppressed them. Pending scheduling waits for outstanding DB results
+and is bounded to five node records and one audience snapshot per revision.
+This acknowledges event insertion, not visible speech.
+
+### AB score milestones and objective status
+
+AB milestones use the actual verified match target. Default percentages
+produce 480/960/1440 for target 1600, 450/900/1350 for 1500, or
+300/600/900 for 1000. The core's 1400 warning is also included only when
+below the target. Thresholds round up, duplicate values collapse, and a
+warning wins a collision. Tiny targets cannot create a milestone at or
+above the winning score.
+
+Reached thresholds are remembered even when chance fails. Multiple
+crossings coalesce into the latest relevant pending context rather than
+replaying every milestone. Pending age and attempt spacing are independent:
+retry is possible only while the original crossing remains within
+`PendingMaxAgeSec`. Defaults of 30 seconds for both age and score cooldown
+may leave no second attempt after polling delay; tune these together if
+retries are desired. Ended matches discard pending score work. Configuration
+reload and late enable seed current scores without historical reactions.
+
+Objective status replaces an existing idle opportunity and uses the same
+Party filler gate and speaker selection. It is suppressed during pending
+or recent node batches. A failed status chance leaves ordinary idle chatter
+available. Zero interval or zero chance disables objective status without
+disabling ordinary idle chatter.
+
+Resource prompts describe observed lead/trail, owned and contested bases,
+income rates and resources remaining. A trailing team may earn faster, and
+a leading team may own no bases. Neither a score gap nor a raw score of
+1500 is treated as proof of dominance or an impending win. No exact
+finish-time prediction is produced. Malformed snapshots omit their facts
+and use conservative general encouragement instead.
+
+### AB snapshot context
+
+AB prompts receive a five-base snapshot: occupied owners, contested
+claimants, occupied counts and resource income from the core's nonlinear
+tick table. Contested bases earn nothing. All bases have equal resource
+value. The verified match target comes from that match's world-state data,
+so custom targets and config reloads do not substitute a guessed default.
+Unavailable target data is marked unverified and omitted from prompt facts;
+initialization retries on later updates.
+
+Base snapshots are reserved for node events, score milestones and idle/objective-status
+chatter. Node prompts expose only the referenced base; idle/status prompts
+receive all five. Arrival greetings, combat/death/spell/state callouts and
+player replies, including conversations and second speakers, receive no
+base snapshot. Normal and RP modes follow the same policy.
+Disabling `AB.Enable` clears the cached context and pending node
+reactions; the next enabled observation seeds silently. Existing chance
+and shared-cooldown policies remain unchanged.
+
+Optional internal contest estimates use the core BG clock and allow for
+unseen timer resets. They are omitted for unknown/gapped/ambiguous samples
+or excessive uncertainty. They are not displayed as countdowns. Snapshots
+are sampled context. Final delivery checks their age and the live five-node
+vector; numerical timer speech remains disabled because unseen same-state
+timer resets cannot be ruled out.
+
+### BG delivery freshness and rollout
+
+Queued BG-context lines are tied to a match lifetime and real recipient.
+Before any facing, action, emote or speech, delivery rechecks the match,
+actual map instance, team and group. Party also checks the recorded
+subgroup. Departures, instance reuse, stale facts and changed AB objectives
+drop the row with a diagnostic `bg_*` reason. New valid WSG/EY rows use the
+same guard and retain their existing generation and channel policies.
+
+Freshness limits are seconds from the original observation, including
+generation and queue delay:
+
+| Configuration under `LLMChatter.BGChatter.` | Default |
+|---|---:|
+| `FactualMaxAgeSec` (rows without AB base facts, all BGs) | 30 |
+| `AB.FactualMaxAgeSec` (rows carrying the AB snapshot) | 45 |
+| `MatchEndMaxAgeSec` (all BGs) | 45 |
+
+The AB limit applies only to node, idle/objective-status and score rows
+that carry `ab_state`; their base revisions are also rechecked at send.
+Normal pipeline latency (reaction delay, party gate, generation and
+pacing) can exceed 15 seconds, so a tighter AB limit silently drops
+otherwise current base-status lines.
+
+Values are clamped to 1-300; zero cannot disable validation. Match-end
+requires the same match in WAIT_LEAVE. Ordinary reactions require
+in-progress; arrival/start permit pre-start. Score snapshots do not claim
+an exact current score or predicted victory time. Node reactions validate
+only their referenced base and expose no other base/income facts.
+Idle/objective-status and score prompts expose the full snapshot and validate all
+five nodes. Ordinary replies have no base facts and check only the shared
+match, audience, status and age contract; unrelated captures cannot drop
+them. This deliberately means an ordinary reply has no authoritative
+five-base snapshot, including when the player asks about base control.
+
+AB objective wording is team-relative ("your team", "the enemy (Horde)").
+Snapshot prompts open with one race-verdict line (who leads by how much,
+who earns faster with how many bases held) so the key comparison is not
+buried in the detail lines. Milestones state absolute progress ("480 of
+1600 resources"), not percentages. Node facts spell out what a transition
+does not mean: a claim or assault is not held by anyone yet, an enemy
+claim on a neutral base is not a loss, and an assault on your base costs
+income but is lost only if it completes. Batched node prompts list the
+facts and state the shared constraint once.
+
+When the server can verify who took a banner, bots name them. A real
+player on your team gets warm, named recognition ("Karaez took that banner
+personally"); when their claim or assault later completes, bots can credit
+"Karaez's flag on Farm held". Bot teammates are mentioned lightly; enemy
+cappers are named neutrally. Credit requires the caster's own spell to have
+changed that base; when two clicks hit the same base between observations,
+or the evidence is otherwise unclear, nobody is named. Node prompts no
+longer include the team roster, so names never come from guesses.
+
+Age applies separately to every line, including later conversation turns.
+There is no exemption after the first line: a slow generation or delivery
+gate can truncate an exchange, possibly leaving a question unanswered.
+For example, lines sent at ages 10, 14 and 18 seconds under the 15-second
+limit allow the first two and reject the third. Match/audience checks also
+run for each line. The defaults are conservative freshness budgets from
+the implementation plan, not measured latency percentiles. No end-to-end
+generation latency has been measured for this rollout. Inspect
+`bg_facts_expired` drop reasons during an authorized live test and tune
+these limits for the configured model and pacing.
+
+BG classification uses owner, channel, event category or explicit BG
+payload fields, never map location alone. Group producer policy is:
+
+| Group events | Delivery policy |
+|---|---|
+| kill, combat, death, achievement, spell_cast, player_msg, low_health, oom | BG-enriched producers use the guard; ordinary variants retain group policy |
+| join_batch | Dedicated BG arrival uses the guard; ordinary group arrival retains group policy |
+| join, farewell, resurrect, corpse_run, zone_transition, subzone_change | Ordinary group policy without BG context |
+| loot, levelup, quest_accept, quest_accept_batch, quest_complete, quest_objectives, dungeon_entry, wipe | Ordinary group policy without BG context |
+| emote_reaction, emote_observer, nearby_object, aggro | Existing producer eligibility and ordinary group policy |
+
+The producer inventory is pinned in the transport regression tests. Any
+of these rows carrying explicit BG context is guarded regardless of its
+ordinary policy; no existing producer is silently suppressed by map ID.
+
+Deploy producer and bridge changes together. Before activation, finish or
+drain pending old-contract AB, WSG and EY work where practical, pausing
+production while draining. If old rows remain at activation, they are
+explicitly discarded by the final guard with `bg_contract_missing` rather
+than delivered without match identity. Restart also invalidates previous
+match tokens. Older incidental AB rows that still contain `ab_state` are
+discarded with `bg_ab_context_unexpected`, since previously generated prose
+may contain base claims even after the new bridge stops rendering them.
+Do not replay those rows into a new match. This applies to
+arrival and BG-context Party replies as well as BG-wide reactions.
+New C++ owners require source discovery in a separately authorized full
+build; Python changes require the affected bridge update. These deployment
+steps are separate from source implementation.
+
+### AB integrated verification and release gates
+
+Run the focused Python regressions directly from the module root:
+
+```text
+python tools/tests/test_arathi_integration.py
+python tools/tests/test_arathi_batches.py
+python tools/tests/test_arathi_resource_race.py
+python tools/tests/test_arathi_context.py
+python tools/tests/test_arathi_snapshot.py
+python tools/tests/test_bg_delivery_contract.py
+python tools/tests/test_battleground_type_context.py
+python tools/tests/test_battleground_flag_context.py
+python tools/tests/test_battleground_carrier_messages.py
+python tools/tests/test_normal_mode_player_chat.py
+```
+
+The integration test uses actual handlers, dispatch and response parsing,
+with LLM/DB boundary replacements. It covers node, score and objective
+idle events in both modes, Party filler deferral, invalid transport,
+missing speakers, generation/insertion failure and overlapping match
+generations. The source checks in other scripts do not execute C++ guards.
+
+Before release, complete these separately authorized gates:
+
+1. Compile and run the production-header harnesses under `tools/tests/cpp/`
+   (`test_ab_pending.cpp`, `test_ab_score.cpp`, `test_ab_integration.cpp`
+   and `test_json_fields.cpp`) with assertions enabled. A passing harness
+   does not replace the full module/worldserver build and link.
+2. Build with discovery of the new C++ owners and coordinate the bridge
+   update with the legacy-row policy above. Follow the host project's
+   build and restart instructions; no SQL migration is required for AB.
+3. Validate explicit and Random AB for both teams and normal/RP modes:
+   simultaneous nodes and score crossings, late entry, human/bot banner
+   interactions, subgroup changes, exit/requeue, match end, custom target
+   and disable/re-enable. Recheck WSG carrier/regrab/return and EY reactions.
+4. Delay generation across a node flip, subgroup move and match change.
+   Verify no facing, action, emote or speech occurs on rejected rows.
+   Test stalled observations, later conversation lines and actual listener
+   audibility. Examine `bg_facts_expired`, `bg_ab_node_changed`,
+   `bg_ab_state_changed`, `bg_subgroup_changed` and `bg_match_changed`.
+
+Python regression success establishes neither compiled compatibility nor
+live delivery correctness. Keep those outcomes distinct in release evidence.
+
 ### C++ ownership
 
 - `LLMChatterBG.cpp`
 - `LLMChatterBG.h`
+- `LLMChatterAB.cpp/.h`
+- `LLMChatterBGDelivery.cpp/.h`
 
 ### Python ownership
 
 - `chatter_battlegrounds.py`
 - `chatter_bg_prompts.py`
+- `chatter_ab.py`
+- `chatter_bg_delivery.py`
 - `chatter_raid_base.py`
 
 ### Typical BG events
 
 - match start / end
 - flag pickup / drop / capture / return
+- all AB node transitions, including state-only updates
 - node assault / capture
 - PvP kill
 - score milestones
@@ -1446,7 +1727,7 @@ BG-wide only:
 Subgroup/party only:
 
 - PvP kills
-- node assault / capture chatter
+- EY node assault / capture chatter
 - score milestones
 - spell/state chatter
 - idle chatter
@@ -1503,13 +1784,18 @@ wounded bot's combat target, not the wounded person.
 
 About 15 seconds after a real player enters a battleground,
 `bot_group_join_batch` fires with the bots in the player's sub-group.
-Python rolls a greeting count between `ArrivalGreetingMin` and
-`ArrivalGreetingMax` and uses the BG arrival prompt. The arrival event
-carries `match_in_progress` and the live score, so a late join into a
-running match is not described as the pre-fight gathering. A random split of
-at most `ArrivalBGChannelGreetings` speak in battleground chat and the
-rest in party chat; with two or more greetings each channel gets at
-least one line.
+Python independently selects one BG-wide greeting plus a second with
+`ArrivalRaidSecondChance` probability (default 50%), and a uniform Party
+count between `ArrivalPartyMin` and `ArrivalPartyMax` (default 0?3).
+Counts are capped by available subgroup bots; a bot can speak once in each
+channel. Channel choices survive failed generation of an earlier greeting.
+These are selection guarantees; duplicate suppression, generation failures
+and final delivery guards can still suppress messages. Disable the feature
+with `ArrivalGreetings.Enable = 0`. The old `ArrivalGreetingMin`,
+`ArrivalGreetingMax` and `ArrivalBGChannelGreetings` split controls are
+replaced by these independent controls.
+The event carries `match_in_progress` and live scores, so a late join is
+not described as the pre-fight gathering.
 BG arrivals skip the party welcome, composition comment, first-meeting
 memory, and farewell pre-generation.
 
@@ -1544,9 +1830,10 @@ a capture is possible while the team's own flag is at base.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `BGChatter.ArrivalGreetingMin` | 1 | Min bots greeting on BG entry |
-| `BGChatter.ArrivalGreetingMax` | 4 | Max bots greeting on BG entry; 0 disables |
-| `BGChatter.ArrivalBGChannelGreetings` | 2 | Max arrival greetings in BG chat (random split); 0 = party only |
+| `BGChatter.ArrivalGreetings.Enable` | 1 | Enable arrival greetings |
+| `BGChatter.ArrivalRaidSecondChance` | 50 | Percent chance of a second BG-wide greeting; first is always selected |
+| `BGChatter.ArrivalPartyMin` | 0 | Minimum independent Party greetings |
+| `BGChatter.ArrivalPartyMax` | 3 | Maximum independent Party greetings |
 | `BGChatter.FlagRegrabWindowSec` | 15 | Same-carrier re-pickup window with no callout; 0 disables |
 | `BGChatter.AchievementCooldownSec` | 45 | Min seconds between BG achievement reactions per group; 0 disables |
 | `BGChatter.AchievementRepeatWindowSec` | 300 | Min seconds before the same achievement gets another reaction in a BG; 0 disables |
@@ -3130,7 +3417,7 @@ from the resulting description.
 5. Receives structured JSON: environment description, atmosphere,
    canonical tags (`landmark_type`, `biome`, `weather`, `time_of_day`,
    `creature_presence`)
-6. Canonical tag dedup prevents repeated observations of the same scene
+6. Party-only canonical tag dedup prevents repeated Party observations
 7. Inserts `bot_group_screenshot_observation` event into
    `llm_chatter_events` via direct MySQL connection. If available, the
    selected bot's live travel state from `llm_group_bot_traits` is
@@ -3157,6 +3444,60 @@ as a description of the game screenshot, allows supplied world or UI
 details to be discussed without inventing them, and responds in player
 voice rather than claiming physical presence in the scene.
 
+### Optional nearby NPC reactions
+
+`Screenshot.Proximity.Enable` adds a separate local reaction to the same
+visual observation. Party keeps its existing behavior. The host rolls
+`Screenshot.Proximity.Chance` independently after the existing
+`Screenshot.Chance` capture-cycle roll; either channel, both, or neither
+may speak. Solo players can use the NPC route without a group. A Party
+duplicate or failed insertion does not suppress local publication, and a
+local failure does not suppress Party.
+
+Local reactions require an explicit `Screenshot.BoundAccountId`, matching
+the account in the captured WoW window. Party's automatic group fallback
+does not identify the local player. Before spending on vision, the host
+requests server preflight for eligible live NPCs within
+`ProximityChatter.ScanRadius`. No eligible Party recipient or NPC ticket
+means no capture/vision call. BG/arena, combat, flying, disabled instance
+maps and active proximity conversations reject local scenes. Ground
+mounts remain eligible. After analysis the server rechecks the player and
+selects a fresh NPC-only roster using existing proximity compatibility,
+conversation chance, line limits, entity cooldowns and zone fatigue.
+The fatigue budget can reduce local opportunities further; the screenshot
+chance itself is rolled only once. Player `/say` handling is unchanged.
+
+Visuals are background for a personal reaction, never speaker identity or
+a list to recite. NPCs always speak as inhabitants of Azeroth, including
+normal mode. Authoritative location/lore remains; this route uses the
+supplied visual environment/time/weather instead of the ordinary proximity
+environment block and random topic. Ordinary proximity weather handling is
+unchanged. Biome is not used in prompts.
+
+The request expires if vision takes too long, the player changes session,
+map or instance, or moves beyond the scan radius from preflight. Each
+delivered line rechecks the snapshot and NPC range/visibility. Restart or
+config reload invalidates outstanding local captures. `MaxAgeSeconds`
+bounds preflight through server consumption, not the last spoken line;
+normal event expiry applies after consumption. Capture and server ticks
+are not atomic, so the scene can still change within these bounds.
+
+Deployment for this opt-in route requires:
+
+1. Apply `data/sql/characters/updates/20261003_screenshot_proximity.sql`
+   to the characters database (fresh installs include the base table).
+2. Regenerate the build configuration for the new C++ source, then build,
+   install and restart the worldserver using the deployment's normal flow.
+3. Set the account binding and enable screenshot/proximity settings;
+   reload worldserver config and restart the affected host agent/bridge
+   after installing the Python changes.
+4. Verify solo/grouped/mounted reactions, no-NPC silence, independent
+   channels, and suppression after leaving range, teleporting or relogging.
+
+Missing schema disables server polling with one diagnostic until config
+reload. The host preserves Party when local preflight fails. Feature
+defaults remain disabled; installing files alone does not activate it.
+
 ### Config keys
 
 All under `LLMChatter.Screenshot.*`:
@@ -3165,14 +3506,19 @@ All under `LLMChatter.Screenshot.*`:
 |---|---|---|
 | `Enable` | 0 | Enable/disable the feature |
 | `IntervalMinSeconds` | 45 | Minimum seconds between captures |
-| `IntervalMaxSeconds` | 90 | Maximum seconds between captures |
-| `Chance` | 60 | % chance per interval tick |
+| `IntervalMaxSeconds` | 120 | Maximum seconds between captures |
+| `Chance` | 90 | % chance per interval tick |
 | `VisionProvider` | openai | Vision LLM provider (openai, anthropic, google, or openrouter) |
-| `VisionModel` | gpt-4o-mini | Vision model name |
-| `ConversationChance` | 30 | % chance of multi-bot conversation vs statement |
-| `MaxWidthPx` | 800 | Max image width for vision API |
-| `JpegQuality` | 70 | JPEG compression quality |
-| `BoundAccountId` | 0 | Account ID to find grouped bots |
+| `VisionModel` | gpt-6-luna | Vision model name |
+| `ConversationChance` | 40 | % chance of multi-bot conversation vs statement |
+| `MaxWidthPx` | 1024 | Max image width for vision API |
+| `JpegQuality` | 75 | JPEG compression quality |
+| `BoundAccountId` | 0 | Party account binding; nonzero required for NPC proximity |
+| `Proximity.Enable` | 0 | Opt-in NPC route; worldserver and host setting |
+| `Proximity.Chance` | 30 | Host local roll after the shared capture-cycle roll |
+| `Proximity.PollIntervalMs` | 1000 | Server mailbox poll interval, 100-10000 ms |
+| `Proximity.RequestTimeoutSeconds` | 5 | Host preflight wait, 1-30 seconds |
+| `Proximity.MaxAgeSeconds` | 60 | Server preflight-to-consumption age, 5-300 seconds |
 | `DBHost` | 127.0.0.1 | MySQL host (host machine, not Docker) |
 
 ### Relevant files
@@ -3188,7 +3534,8 @@ All under `LLMChatter.Screenshot.*`:
 ### Notes
 
 - The agent runs on the host machine, not inside Docker
-- No C++ changes are required
+- Party-only screenshot operation needs no screenshot-specific C++ path;
+  the optional NPC route requires its server coordinator and migration
 - The vision biome tag is excluded from bot prompts (unreliable);
   zone/subzone names from the database are authoritative
 - Indoor scenes are explicitly supported in the vision prompt
@@ -3253,9 +3600,11 @@ Three local delivery channels are handled by
 | `msay` | `CHAT_MSG_MONSTER_SAY` | NPC speech bubble |
 | `myell` | monster yell | Extended-range boss line |
 
-Ordinary-scene facing is best effort. A speaker with only idle or random
-movement may rotate via `SetFacingToObject()`; any scripted or controlled
-movement speaks without rotation. Directed rows can identify the real
+Ordinary-scene facing is best effort. A bot with idle or random movement,
+or an NPC whose spawn never moves, may rotate via `SetFacingToObject()`.
+NPCs that wander or patrol, and any scripted or controlled movement, speak
+or emote without rotation: turning them replaces their own movement and
+the core may not resume it. Directed rows can identify the real
 player, bot, or NPC addressee explicitly, so NPC asides face the other NPC
 while player-inclusive lines face the player when appropriate. One facing
 lease is kept through the final queued line before the original orientation
@@ -3274,7 +3623,9 @@ preferred joiner rather than automatically replacing the selected addressee.
 An ineligible cross-faction named bot falls back only to an already selected
 eligible NPC or same-team ungrouped bot; otherwise the direct route is
 suppressed. A living selected player, party bot, boss, or runtime-ineligible
-speaking NPC suppresses random fallback with a diagnostic reason. Dead and
+speaking NPC only suppresses fallback when named by full name or a unique
+meaningful name token in the message.
+An unrelated selection no longer prevents nearby replies. Dead and
 non-speaking targets such as corpses and critters are ignored, allowing
 normal fallback. The
 `ProximityScene` struct tracks:
@@ -3304,15 +3655,14 @@ only the first speaker's cooldown key is stored with the event, so persisted
 lookups cannot represent joiner cooldowns. The addressed `/say` target remains
 unthrottled as before; targeted emote speech retains its dedicated pair
 cooldown.
-Mounted players and mounted playerbots remain eligible for directed
-interactions and active-scene replies. Mounting continues to suppress
-automatic scenes and untargeted fallback selection. Untargeted `/say` events
-share their event types with directed `/say`, so delivery uses the presence of
-`addressed_name` to preserve that distinction if a selected speaker mounts
-after queueing. The parser accepts both compact
-`{"addressed_name":"Bob"}` and MySQL-formatted
-`{"addressed_name": "Bob"}` JSON; missing and empty values remain
-untargeted. A mounted playerbot still sends the mirrored text-emote packet,
+Mounted players and mounted playerbots remain eligible for player-initiated
+`/say`, including untargeted speech that starts a new scene, as well as
+emotes and active-scene replies. Selection and delivery both allow mounting
+for these interactions and for automatic nearby conversations. Ground
+mounting also permits party observations of nearby points of interest,
+raid idle morale, and duel/PvP spectator reactions. Existing combat,
+flying, faction, range, visibility and cooldown rules remain in force.
+A mounted playerbot still sends the mirrored text-emote packet,
 although the client may suppress the corresponding character animation while
 the mount is displayed. Before the delayed packet is sent, the bot is
 rechecked for combat and the player is rechecked for presence, map, and range
@@ -3445,6 +3795,21 @@ Roster entries identify each participant as `NPC` or
 to playerbots. Uses global `EmoteChance` and `ActionChance` gates (not
 custom proximity-specific ones).
 
+### Conversation pacing
+
+Ordinary, directed `/say`, and multi-speaker emote conversations share
+`chatter_proximity_pacing.py`. The first generated line has no added wait.
+Subsequent gaps use the longer of the current and previous visible lines,
+allowing reading and composing to overlap. The default base is 3 seconds
+plus that length divided by 20, capped at 8 seconds. Each gap varies by
+up to 20%, sampled within the 3-8-second bounds so even long lines vary.
+A four-line scene therefore finishes within 24 seconds after its first
+scheduled line; generation latency and delivery polling are additional.
+Emote-only lines retain the minimum breathing room. Existing delivery-time
+range and scene checks still apply. Disable `DynamicPacing.Enable` to
+restore the fixed `ConversationLineDelay`. Restart the chatter bridge
+when changing these Python-owned settings.
+
 ### C++ ownership
 
 | File | Responsibility |
@@ -3464,6 +3829,7 @@ custom proximity-specific ones).
 | File | Responsibility |
 |------|----------------|
 | `chatter_proximity.py` | Ordinary/directed handlers, prompts, strict parser, and addressed history |
+| `chatter_proximity_pacing.py` | Bounded length-aware gaps for nearby conversation sequences |
 | `chatter_instance_context.py` | Shared instance location/lore grounding |
 | `chatter_boss_dialogue.py` | Safe one-line boss prompt and `myell` insertion |
 | `chatter_constants.py` | `PROXIMITY_CHAT_TOPICS` (250+ entries) |
@@ -3501,7 +3867,12 @@ All under `LLMChatter.ProximityChatter.*`:
 | `EntityCooldown` | 3 | Seconds per-entity (spawn GUID) cooldown; clamped to 0-3 |
 | `PlayerAddressChance` | 30 | % chance to address the real player |
 | `MaxConversationLines` | 4 | Maximum ambient lines |
-| `ConversationLineDelay` | 2 | Seconds between lines |
+| `ConversationLineDelay` | 2 | Fixed gap when dynamic pacing is disabled |
+| `DynamicPacing.Enable` | 1 | Bridge: length-aware conversation gaps |
+| `DynamicPacing.MinSeconds` | 3 | Minimum inter-line gap |
+| `DynamicPacing.MaxSeconds` | 8 | Maximum inter-line gap |
+| `DynamicPacing.CharsPerSecond` | 20 | Length contribution rate |
+| `DynamicPacing.JitterPercent` | 20 | Random variation within gap bounds |
 | `ReplyWindowSeconds` | 30 | How long a scene accepts replies |
 | `ReplyMaxTurns` | 5 | Maximum tracked scene turns |
 | `EnableBossDialogue` | 0 | Boss path; enable for controlled testing |
@@ -3790,6 +4161,12 @@ recent history, never an input-length threshold or phrase list. A terse
 invitation for news, advice, an experience, or an explanation can deserve a
 concrete answer. Acknowledgments and conversational closure remain brief.
 The existing `brief_casual` and `requires_reply` decisions stay separate.
+Reply necessity is judged from the whole exchange: silence is eligible only
+when the turn clearly needs no further engagement. If silence would feel
+like ignoring an ongoing contribution, or the intent is uncertain, the model
+is instructed to favor a short acknowledgment unless the purpose clearly
+calls for detail. A casual or
+declarative message does not by itself signal conversational closure.
 Channel length guidance and hard limits still apply; useful detail is
 permitted, never mandatory, and replies should not be padded.
 
@@ -3943,9 +4320,11 @@ pacing.
 
 One high-priority `guild_login_greeting` event carries the current
 session, target player, delay band, and shuffled live candidates.
-`chatter_guild_login.py` normally selects one responder. On a
-`LoginGreeting.MultiReplyChance` success, it selects two or three,
-bounded by `LoginGreeting.MaxResponders` and available candidates.
+`chatter_guild_login.py` selects one responder, or two to four on a
+`LoginGreeting.MultiReplyChance` success, bounded by
+`LoginGreeting.MaxResponders` and available candidates. The defaults
+(75% multiple-greeter chance and a cap of four) give each count from
+one to four a 25% chance when at least four candidates are available.
 
 One LLM request generates the complete greeting sequence. Prompts:
 
@@ -3992,8 +4371,8 @@ duplicate greeting.
 | `LoginGreeting.RetryInterval` | 5 | Server | Bot readiness retry |
 | `LoginGreeting.ReadinessTimeout` | 90 | Server | Total bounded wait |
 | `LoginGreeting.MaxCandidates` | 12 | Server | Live candidate cap |
-| `LoginGreeting.MultiReplyChance` | 20 | Bridge | Multiple-greeter chance |
-| `LoginGreeting.MaxResponders` | 3 | Bridge | Greeter cap |
+| `LoginGreeting.MultiReplyChance` | 75 | Bridge | Multiple-greeter chance |
+| `LoginGreeting.MaxResponders` | 4 | Bridge | Greeter cap |
 | `LoginGreeting.PlayerNameChance` | 60 | Bridge | Primary name chance |
 | `LoginGreeting.MaxCharacters` | 100 | Bridge | Per-greeting hard cap |
 
@@ -4030,6 +4409,13 @@ Typical single-message JSON shape:
 {"message": "...", "emote": null, "action": null}
 ```
 
+Off mode retains the existing permissive parser and its format-reliability
+limitations. It has no general leaked-field or bare-thread-report stripping
+heuristic. Enabled mode validates the complete wire response first, as
+described below. A schema checks structure and types; it cannot establish
+factual accuracy or prevent a model from putting unwanted prose inside an
+otherwise valid `message` string.
+
 ### Conversation response contract
 
 Typical multi-message JSON shape:
@@ -4042,6 +4428,120 @@ Typical multi-message JSON shape:
 ```
 
 ---
+
+### Native structured output
+
+```ini
+LLMChatter.StructuredOutput.Enable = 0
+```
+
+This single Python setting defaults to `0` when absent. `0` preserves
+legacy prompts, sampling choices, request parameters and parsers. `1`
+requests native schema output on every runtime JSON route: statements,
+conversations, cached reactions, quick analysis, memory and screenshot
+vision. Farewells and identity tone/backstory generation remain free text.
+The global switch applies to the actual selected provider/model for each
+role, including auxiliary overrides and the host vision configuration.
+
+Enable only if **all configured JSON targets** support the required schema
+format. There is no model allowlist or automatic capability detection. A
+model name alone does not establish support: the serving endpoint, deployed
+version and routing also matter. Existing provider/model defaults, reasoning
+settings and output budgets are unchanged.
+
+| Route | Native format used |
+|---|---|
+| Anthropic Messages | `output_config.format` with `type: json_schema` |
+| OpenAI Chat Completions | `response_format` with `type: json_schema`, `strict: true` |
+| Google OpenAI-compatible endpoint | The same Chat Completions schema envelope |
+| OpenRouter | The same envelope plus `provider.require_parameters: true`, merged with existing options |
+| Local Ollama OpenAI-compatible endpoint | The same envelope; support depends on the installed server/model |
+
+Check the provider's current documentation for the endpoint/model you use:
+[OpenAI](https://developers.openai.com/api/docs/guides/structured-outputs),
+[Anthropic](https://platform.claude.com/docs/en/build-with-claude/structured-outputs),
+[Google compatibility](https://ai.google.dev/gemini-api/docs/openai),
+[OpenRouter](https://openrouter.ai/docs/guides/features/structured-outputs),
+and [Ollama](https://docs.ollama.com/capabilities/structured-outputs).
+Ollama's local schema feature does not establish Ollama Cloud support.
+Qwen and similar model families inherit this route's capabilities when
+served through local Ollama; other hosts must expose the compatible API.
+OpenRouter requires a route supporting all request parameters, including
+any configured reasoning options, so routing can reject a request even
+when a model supports structured output elsewhere.
+
+Enabled dialogue prompts carry a contract describing the already selected
+emote/action policy and channel restrictions. Schemas are stable across
+speaker names and requested counts. Every object is closed and its fields
+are required; nullable fields express genuine absence. Conversation wire
+output is an object containing `messages` and, where applicable, `thread`.
+The shared boundary normalizes it to the existing array consumed by channel
+handlers. Thread feelings travel as an array of speaker entries, then become
+the existing known-speaker map. Duplicate known speakers discard the report,
+not otherwise valid dialogue. Thread state still advances only on delivery.
+
+Refusal, incomplete completion, malformed JSON and schema validation failure
+return no usable output to existing failure paths. Existing bounded repair
+calls retain the schema. A format rejection never triggers a retry with the
+schema removed, a different model, or a weaker mode. Speaker/count checks,
+channel policy and delivery eligibility remain the responsibility of their
+existing handlers. JSON callers missing a contract fail before any API call;
+only explicit free-text callers bypass schema enforcement. This also catches
+accidental loss of prompt metadata in future code changes.
+
+**Installation and process loading.** Install the updated
+`tools/requirements.txt` in each interpreter that runs generation. It adds
+`jsonschema>=4.23.0,<5.0.0`; schema validation is local and requires no
+network access. The standard Docker bridge startup installs requirements,
+subject to package/network availability. Verify that installation succeeds
+when restarting the bridge after an upgrade. For a manually managed bridge
+or the host screenshot agent, run the following with that process's Python
+interpreter from the module directory:
+
+```shell
+python -m pip install -r tools/requirements.txt
+```
+
+Retain the host screenshot extras from its installation instructions, such
+as Pillow. Restart only the chatter bridge and the host screenshot agent
+when used, after changing this setting. `.reload config` does not reload
+these Python processes. No C++ build, SQL migration or worldserver restart
+is needed. Enabled startup checks for `jsonschema` and exits with an explicit
+installation error if it is absent, before generation begins. Import failures
+from the validator during a call also fail closed with a rate-limited
+`dependency_missing` diagnostic. Off mode does not import the validator.
+
+**Diagnostics.** Normal logs report requested on/off mode and the resolved
+main/vision targets at startup. Analysis and memory targets appear on first
+use without creating disabled clients or making probes. This is configuration
+evidence, not proof of endpoint support. The ordinary healthcheck's `OK`
+likewise establishes connectivity, not schema enforcement.
+
+Failures identify unsupported formats, rejected schemas/requests, incomplete
+or refused completions, invalid responses, or missing/conflicting caller
+contracts. Incomplete output includes the effective token budget and finish
+reason; contract failures identify the call label. The first occurrence is a
+warning, repeats are DEBUG, and continued failures produce another warning
+at most once per five minutes per diagnostic key with the repeat count.
+This bounded state affects logging only and resets at process startup.
+
+Optional bridge `LLMChatter.RequestLog.Enable = 1` adds requested/applied mode,
+schema ID, actual token field/budget, usage, completion state and validation
+outcome when available, alongside the actual prompt and raw response.
+The host screenshot agent uses its normal logger for mode, target and
+failure diagnostics; it does not initialize or write the bridge JSONL log.
+Both processes can therefore use the same config without the host treating
+the container's `/logs/...` path as a local path. Image payloads are not
+written to these diagnostics. Bridge request logging remains off by default.
+
+**Rollout and rollback.** Keep `0` until dependencies and representative
+requests have been checked on each active endpoint. Include a local
+Ollama/Qwen check when used; success on a remote provider proves nothing
+about that local deployment. Then set `1` and restart the affected Python
+processes. To restore legacy compatibility, set `0` and restart them again.
+Already queued or cached speech retains its existing delivery checks; no
+database migration or cache invalidation is required. Off mode also restores
+its original format-reliability limitations.
 
 ## 15. Database Tables
 

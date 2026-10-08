@@ -92,7 +92,11 @@ from chatter_event_registry import (
     validate_registry,
 )
 from llm_compat import describe_model_compatibility
-from chatter_llm import compatible_reasoning_effort
+from chatter_llm import (
+    compatible_reasoning_effort, log_structured_target,
+    reset_structured_diagnostics, resolve_model, check_structured_dependencies,
+)
+from chatter_structured import structured_output_enabled
 
 # Configure logging
 logging.basicConfig(
@@ -1453,6 +1457,9 @@ def main():
         init_request_logger,
     )
     init_request_logger(config)
+    reset_structured_diagnostics()
+    if not check_structured_dependencies(structured_output_enabled(config)):
+        sys.exit(1)
 
     # Derive snapshot dir from log path
     import os as _os
@@ -1630,6 +1637,9 @@ def main():
     logger.info("=" * 60)
     logger.info(f"ChatterMode: {chatter_mode}")
     logger.info(f"Provider: {provider}")
+    log_structured_target(
+        'main', provider, resolve_model(model), structured_output_enabled(config),
+    )
     logger.info(
         f"Model: {model}"
     )
@@ -1829,7 +1839,7 @@ def main():
         f"  QuestionChance: "
         f"{config.get('LLMChatter.GeneralChat.QuestionChance', 100)}%"
         f"  Cooldown: "
-        f"{config.get('LLMChatter.GeneralChat.Cooldown', 0)}s"
+        f"{config.get('LLMChatter.GeneralChat.Cooldown', 3)}s"
     )
     logger.info("-" * 60)
     logger.info("Guild chatter:")

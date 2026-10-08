@@ -1,5 +1,202 @@
 # Changelog
 
+### 2026-10-06 - LF Line Endings
+
+* **Repository**: Add `.gitattributes` forcing LF line endings, so
+  checkouts on Windows with `core.autocrlf` enabled no longer write CRLF
+  files that break shell scripts in Linux builds. Committed files were
+  already LF; no code, configuration or database changes.
+
+### 2026-10-04 - Playerbot Core Compatibility
+
+* **Bot identification**: Use headless sessions to identify playerbots
+  after upstream removed `WorldSession::IsBot()`. Preserve the existing
+  AI fallback and treatment of player-controlled self-bots.
+* **General channel membership**: Replace the removed
+  `Player::IsInChannel()` calls with a shared, read-only check of the
+  player's joined channels. Eligibility and delivery require membership
+  in the exact channel; eligibility continues searching past matching
+  channels the bot has not joined. No core patch is required.
+* **Documentation**: Explain the membership helper in the architecture
+  guide and remind users in the README to keep both upstream dependencies
+  up to date as chatter is frequently re-aligned with them.
+* **Upgrade**: Update AzerothCore's Playerbot branch and mod-playerbots
+  together, then rebuild, install, and restart worldserver. Older cores
+  without `WorldSession::IsHeadless()` are no longer supported. This
+  chatter fix adds no database migration or configuration changes.
+
+### 2026-10-04 - Structured Output Setup Guide
+
+* **README**: Recommend structured output on compatible endpoints and
+  explain its formatting reliability, on/off behavior, model requirements
+  and handling of rejected responses.
+* **Dependencies**: Document automatic installation for the Docker bridge,
+  separate host screenshot-agent requirements, the missing-validator error,
+  and the Python process restarts needed to enable or disable the feature.
+
+### 2026-10-03 - Optional Native Structured Output
+
+* **Global switch**: Add `LLMChatter.StructuredOutput.Enable`, default `0`,
+  for JSON generation across Anthropic, OpenAI, Google, OpenRouter and
+  Ollama, including analysis, memory and host screenshot vision.
+* **Strict responses**: Enabled calls request a native schema and reject
+  incomplete, refused or invalid output before existing parsers. Repairs
+  retain their schema; unsupported formats never silently fall back to text.
+  Farewell and identity prose remain explicit free-text calls.
+* **Diagnostics**: Report requested mode and resolved targets, categorized
+  failures and periodic repeat counts. Optional request logs include schema,
+  completion and validation details. Host vision diagnostics use its normal
+  logger, without image payloads or writes to the bridge's JSONL path.
+* **Upgrade**: Install updated `tools/requirements.txt` (adds `jsonschema`)
+  in bridge and host environments; enabled startup checks for the validator.
+  Restart the affected Python processes
+  to load the setting. No rebuild, migration or worldserver restart.
+  Enable only after checking every configured JSON endpoint's capability;
+  return the flag to `0` and restart those processes to restore legacy mode.
+
+### 2026-10-03 - Screenshot Cycle Diagnostics
+
+* **Host agent logging**: Show each cycle's randomized wait and next
+  check time, capture and proximity rolls, foreground-window checks,
+  Party recipients, and server preflight approval or rejection.
+* **Capture pipeline**: Report image size, capture and vision durations,
+  Party deduplication and observation publication. Successful publication
+  is explicitly distinct from NPC generation and speech delivery.
+* **Upgrade**: Restart the host screenshot agent. No rebuild, database
+  migration or server config reload is required.
+
+### 2026-10-03 - Revert Leaked-Field Parser Workarounds
+
+* **Chat parsing**: Remove the leaked `emote`, `action` and `thread`
+  field stripping and the bare thread report cleanup added earlier
+  today. The heuristics did not handle the range of malformed output
+  some models return and will be replaced by structured output. The
+  `BotSpeakerCooldownSeconds` default of 120 is unchanged.
+* **Upgrade**: Restart the chatter bridge. No rebuild or database
+  migration is required.
+
+### 2026-10-03 - Screenshot Proximity and Private Metadata Cleanup
+
+* **Nearby NPC screenshot reactions**: Optionally trigger NPC statements
+  or conversations from the same visual observation used by Party.
+  Party and proximity are independent, and solo players are supported.
+  Requires an explicit `Screenshot.BoundAccountId`; proximity defaults
+  to disabled with a 30% chance after the existing capture-cycle roll.
+* **Live scene validation**: Server preflight checks nearby NPC eligibility
+  within the configured proximity scan radius. Session, map, instance,
+  movement and NPC eligibility are rechecked before delayed delivery.
+  Existing proximity conversation pacing and ambient limits apply.
+* **Visual grounding**: NPCs react in-world to the supplied surroundings
+  without unrelated random topics or identifying speakers from pixels.
+  Ordinary proximity weather handling is unchanged.
+* **Screenshot diagnostics**: Distinguish chance-roll skips, missing
+  account binding, server rejection and preflight expiry instead of
+  reporting every skipped cycle as having no recipients.
+* **Private JSON cleanup**: Remove complete trailing bare thread reports
+  and the opening brace of wrapped response metadata from dialogue.
+  Preserve unrelated objects, incomplete JSON and ordinary quoted labels.
+* **Upgrade**: Apply
+  `data/sql/characters/updates/20261003_screenshot_proximity.sql` to the
+  characters database, regenerate CMake for the new source, rebuild and
+  install worldserver, and restart the chatter bridge and screenshot
+  agent. Configure the account binding and opt-in proximity setting, then
+  reload server config. Fresh installations include the mailbox table.
+
+### 2026-10-03 - Chat Parsing and Ambient Speaker Pacing
+
+* **Chat parsing**: When the model writes its `emote`, `action` or
+  `thread` fields inside the message text, cut them off before delivery
+  in single replies, truncated replies and conversation lines.
+  Previously the raw JSON could appear in General chat. Only a trailing
+  block that is valid JSON made of those fields is removed; quoted
+  labels in normal speech are kept.
+* **Ambient speaker pacing**: Set `BotSpeakerCooldownSeconds` to 120
+  seconds in both the normal template and quieter preset, down from
+  900. This reduces long silences between a bot's ambient turns;
+  party chat and event reactions are unaffected. Existing configurations
+  retain their explicit value.
+* **Upgrade**: Restart the chatter bridge. No rebuild or database
+  migration is required.
+
+### 2026-10-03 - Screenshot Vision Hardening
+
+* **Vision model**: Recommend and default to `gpt-6-luna` for screenshot
+  analysis. It accepts image input and costs less than `gpt-4o-mini`.
+  Existing configurations keep their explicit `VisionModel`.
+* **In-character conversations**: Roleplay screenshot conversations now
+  carry the shared in-character voice guidance, matching single comments.
+* **Real-player grouping**: Without `BoundAccountId`, the screenshot agent
+  only picks bots whose group has an online real player, using the same
+  rule as the bridge.
+* **Config parsing**: The screenshot agent reuses the bridge's config
+  parser, so a BOM or non-UTF-8 characters no longer stop it at startup.
+* **Clean shutdown**: Pressing Ctrl+C stops the screenshot agent with a
+  log line instead of a Python traceback.
+* **Documentation**: The README and the screenshot defaults table now
+  match the configuration templates, and the duplicate
+  `Screenshot.DBHost` entry is gone.
+* **Upgrade**: Restart the chatter bridge and the host-side screenshot
+  agent. No rebuild or database migration is required.
+
+### 2026-10-02 - Model Compatibility, NPC Facing and Responsive Chatter
+
+* **Model capabilities**: Use one ordered capability table for OpenAI
+  request parameters and reasoning-token budgets. GPT-6 Luna and GPT-6 Sol
+  honor explicit `none` reasoning without inflating the output budget;
+  other reasoning models keep conservative fallbacks and parameter-rejection
+  recovery. OpenRouter and fine-tuned model names share the resolver.
+* **NPC facing safety**: Only rotate creatures with idle default and current
+  movement and an empty or idle active movement slot. Wandering and
+  patrolling NPCs can still speak and emote without having their movement
+  replaced by a facing spline. Bot behavior is unchanged. This does not
+  repair movement interruptions caused by stock NPC scripts.
+* **Screenshot reactions**: Treat scene descriptions as background for
+  personal reactions rather than listing visible objects. Preserve scene
+  atmosphere, prefer recognized visual time of day over clock context,
+  and frame roleplay conversations as the speakers' surroundings.
+* **General reply cooldown**: Align both configuration templates, the server
+  fallback and the bridge's displayed default at 3 seconds per zone and
+  faction. Previously the normal template and fallback used 0, while the
+  quieter preset used 30. Set 0 to disable throttling.
+* **Upgrade**: Rebuild worldserver for the NPC-facing change and restart the
+  chatter bridge for Python changes. Existing configurations retain their
+  explicit cooldown; set it to 3 and run `.reload config` to apply the new
+  value. No database migration is required.
+
+### 2026-10-02 - Arathi Basin Objectives and Battleground Arrival Variety
+
+* **Arathi Basin objectives**: Observe claims, assaults, counter-claims,
+  defences and completed captures separately. Batch recent base changes
+  into one reaction, retain pending observations across failed chance
+  rolls, and credit banner interactions only when the actor is verified.
+* **Raid-wide base announcements**: All AB node transitions, including
+  state-only updates, use battleground chat without a Party copy. Humans
+  in different subgroups of the same raid no longer create duplicate
+  announcements for the same node revision.
+* **Grounded objective context**: Score milestones and objective-status
+  chatter use observed ownership, income and verified score targets.
+  Combat and social messages do not inherit unrelated base snapshots.
+  Team-relative prompts distinguish contested bases from held bases.
+* **Delivery freshness**: Match identity, team, group, event age and AB
+  objective revisions are checked before delivery. Random battleground
+  queues retain their actual map identity. BG history excludes dropped
+  messages and is scoped to the appropriate match and audience.
+* **Independent arrival greetings**: Select one battleground-wide greeting,
+  with a 50% chance of a second, independently of a uniform 0–3 Party
+  greetings. Available subgroup bots cap each count; a bot may speak once
+  in each channel. Generation and delivery checks still apply.
+* **Conversational replies**: General and Guild replies judge whether the
+  exchange is still open from its context. Brief or declarative messages
+  no longer imply that the player wants silence; uncertain cases favor a
+  short acknowledgment while keeping reply length a separate decision.
+* **Configuration**: Added AB observation, batching, milestone, status and
+  freshness controls. Arrival controls are now `ArrivalGreetings.Enable`,
+  `ArrivalRaidSecondChance`, `ArrivalPartyMin` and `ArrivalPartyMax` under
+  `BGChatter`. They replace `ArrivalGreetingMin`, `ArrivalGreetingMax` and
+  `ArrivalBGChannelGreetings`; migrate old overrides, including disables.
+* **Upgrade**: Rebuild worldserver for the AB changes and restart the
+  chatter bridge. No database migration is required.
+
 ### 2026-10-01 - Shared Chat Profiles and More Natural Player Replies
 
 * **Shared bot profiles**: General speakers create missing traits, tone and

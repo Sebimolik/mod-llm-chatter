@@ -4,6 +4,8 @@
  */
 
 #include "LLMChatterConfig.h"
+#include "LLMChatterScreenshot.h"
+#include "LLMChatterABScore.h"
 #include "Config.h"
 #include "Log.h"
 #include "SharedDefines.h"
@@ -296,6 +298,22 @@ void LLMChatterConfig::LoadConfig()
 {
     _enabled = GetChatterOption<bool>("LLMChatter.Enable", false);
     _debugLog = GetChatterOption<bool>("LLMChatter.DebugLog", false);
+
+    _screenshotEnable = GetChatterOption<bool>(
+        "LLMChatter.Screenshot.Enable", false);
+    _screenshotProximityEnable = GetChatterOption<bool>(
+        "LLMChatter.Screenshot.Proximity.Enable", false);
+    _screenshotBoundAccountId = GetChatterOption<uint32>(
+        "LLMChatter.Screenshot.BoundAccountId", 0);
+    _screenshotProximityPollMs = std::clamp<uint32>(
+        GetChatterOption<uint32>(
+            "LLMChatter.Screenshot.Proximity.PollIntervalMs", 1000),
+        100, 10000);
+    _screenshotProximityMaxAge = std::clamp<uint32>(
+        GetChatterOption<uint32>(
+            "LLMChatter.Screenshot.Proximity.MaxAgeSeconds", 60),
+        5, 300);
+    ResetScreenshotProximity();
 
     // General settings
     _triggerIntervalSeconds = GetChatterOption<uint32>("LLMChatter.TriggerIntervalSeconds", 60);
@@ -843,7 +861,7 @@ void LLMChatterConfig::LoadConfig()
     _generalChatQuestionChance = GetChatterOption<uint32>(
         "LLMChatter.GeneralChat.QuestionChance", 100);
     _generalChatCooldown = GetChatterOption<uint32>(
-        "LLMChatter.GeneralChat.Cooldown", 0);
+        "LLMChatter.GeneralChat.Cooldown", 3);
     _generalChatConversationChance = GetChatterOption<uint32>(
         "LLMChatter.GeneralChat.ConversationChance", 30);
     uint32 chatHistoryLimit = std::clamp(
@@ -897,6 +915,34 @@ void LLMChatterConfig::LoadConfig()
         GetChatterOption<uint32>(
             "LLMChatter.BGChatter."
             "BigEventCooldownSec", 15);
+    _bgABTransitionMaxGapMs = GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.TransitionMaxGapMs", 2000);
+    _bgABNodeBatchCooldownSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.NodeBatchCooldownSec", 15), 1, 300);
+    _bgABPendingMaxAgeSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.PendingMaxAgeSec", 30), 1, 300);
+    _bgABMaxNodesPerBatch = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.MaxNodesPerBatch", 3), 1, 5);
+    _bgABScoreMilestonePercents = LLMChatterAB::ParseMilestonePercents(
+        GetChatterOption<std::string>(
+            "LLMChatter.BGChatter.AB.ScoreMilestonePercents", "30,60,90"));
+    _bgABScoreCooldownSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.ScoreCooldownSec", 30), 1, 300);
+    _bgABObjectiveStatusIntervalSec = std::min<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.ObjectiveStatusIntervalSec", 60), 3600);
+    _bgABObjectiveStatusChance = std::min<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.ObjectiveStatusChance", 50), 100);
+    _bgABEnable = GetChatterOption<bool>(
+        "LLMChatter.BGChatter.AB.Enable", true);
+    _bgFactualMaxAgeSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.FactualMaxAgeSec", 30), 1, 300);
+    _bgABFactualMaxAgeSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.AB.FactualMaxAgeSec", 45), 1, 300);
+    _bgMatchEndMaxAgeSec = std::clamp<uint32>(GetChatterOption<uint32>(
+        "LLMChatter.BGChatter.MatchEndMaxAgeSec", 45), 1, 300);
+    _bgABTimerEstimateMaxUncertaintySec = std::min<uint32>(
+        GetChatterOption<uint32>(
+            "LLMChatter.BGChatter.AB.TimerEstimateMaxUncertaintySec", 3), 60);
     _bgIdleChatterChance =
         GetChatterOption<uint32>(
             "LLMChatter.BGChatter."

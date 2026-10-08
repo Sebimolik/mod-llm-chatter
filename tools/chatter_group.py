@@ -969,6 +969,24 @@ def process_group_event(db, client, config, event):
         return False
 
 
+def _select_bg_arrival_greetings(bots, config):
+    """Roll each channel independently; a bot may greet once per channel."""
+    if not bots or not int(config.get(
+            'LLMChatter.BGChatter.ArrivalGreetings.Enable', 1)):
+        return []
+    second_chance = max(0, min(100, int(config.get(
+        'LLMChatter.BGChatter.ArrivalRaidSecondChance', 50))))
+    raid_count = min(len(bots), 1 + (
+        random.randint(1, 100) <= second_chance))
+    party_max = max(0, min(len(bots), int(config.get(
+        'LLMChatter.BGChatter.ArrivalPartyMax', 3))))
+    party_min = max(0, min(party_max, int(config.get(
+        'LLMChatter.BGChatter.ArrivalPartyMin', 0))))
+    party_count = random.randint(party_min, party_max)
+    return ([(bot, 'battleground') for bot in random.sample(bots, raid_count)]
+            + [(bot, 'party') for bot in random.sample(bots, party_count)])
+
+
 def process_group_join_batch_event(
     db, client, config, event
 ):
@@ -1048,36 +1066,12 @@ def process_group_join_batch_event(
     # (first-meeting memory, farewell pre-gen) that
     # make no sense for random BG teammates.
     in_bg_arrival = bool(extra_data.get('bg_type'))
-    bg_channel_greets = 0
+    greetings = [(bot, 'party') for bot in bots_raw]
     if in_bg_arrival:
-        bg_greet_max = int(config.get(
-            'LLMChatter.BGChatter.ArrivalGreetingMax', 4
-        ))
-        bg_greet_min = int(config.get(
-            'LLMChatter.BGChatter.ArrivalGreetingMin', 1
-        ))
-        bg_greet_max = min(bg_greet_max, len(bots_raw))
-        if bg_greet_max <= 0:
+        greetings = _select_bg_arrival_greetings(bots_raw, config)
+        if not greetings:
             _mark_event(db, event_id, 'skipped')
             return False
-        bg_greet_min = max(1, min(bg_greet_min, bg_greet_max))
-        greet_count = random.randint(
-            bg_greet_min, bg_greet_max)
-        bots_raw = random.sample(bots_raw, greet_count)
-        # Random BG/party split; with 2+ greetings each
-        # channel gets at least one line (when allowed).
-        bg_chan_max = int(config.get(
-            'LLMChatter.BGChatter.ArrivalBGChannelGreetings',
-            2,
-        ))
-        bg_chan_max = max(0, min(bg_chan_max, greet_count))
-        if bg_chan_max == 0:
-            bg_channel_greets = 0
-        elif greet_count == 1:
-            bg_channel_greets = random.randint(0, 1)
-        else:
-            bg_channel_greets = random.randint(
-                1, min(bg_chan_max, greet_count - 1))
 
     greeted_bots = []
     last_bot = None
@@ -1089,7 +1083,7 @@ def process_group_join_batch_event(
 
     try:
         # --- Per-bot greetings (staggered) ---
-        for idx, bot_raw in enumerate(bots_raw):
+        for idx, (bot_raw, greet_channel) in enumerate(greetings):
             bot_guid = int(
                 bot_raw.get('bot_guid', 0)
             )
@@ -1285,6 +1279,9 @@ def process_group_join_batch_event(
                     'bg_type_id': int(
                         extra_data.get(
                             'bg_type_id', 0)),
+                    'queue_type_id': int(
+                        extra_data.get(
+                            'queue_type_id', 0)),
                     'bg_type': extra_data.get(
                         'bg_type', ''),
                     'team': extra_data.get(
@@ -1378,14 +1375,8 @@ def process_group_join_batch_event(
             last_delay = delay
 
             emote = parsed.get('emote')
-            # BG arrivals only list bots in the player's
-            # sub-group (C++), so party chat is audible.
-            # The first few greeters rally the whole team
-            # in BG chat instead.
-            greet_channel = 'party'
-            if (in_bg_arrival
-                    and len(greeted_bots) < bg_channel_greets):
-                greet_channel = 'battleground'
+            # The arrival plan fixes the channel independently of which
+            # earlier greetings generated successfully.
             insert_chat_message(
                 db, bot_guid, bot_name, message,
                 channel=greet_channel,
@@ -1963,6 +1954,7 @@ def process_group_player_msg_event(
                         area_id=area_id,
                         map_id=map_id,
                         brief_casual=brief_casual,
+                        bg_context=extra_data,
                     )
                 )
                 if conv_ok:
@@ -2107,6 +2099,7 @@ def process_group_player_msg_event(
             companion_name=companion_name,
             relationship_summary=relationship_summary,
             brief_casual=brief_casual,
+            bg_context=extra_data,
             allow_action=not brief_casual,
             thread_context=render_for_player_reply(
                 group_id, db
@@ -2258,6 +2251,7 @@ def process_group_player_msg_event(
                         event_id,
                         link_context=link_context,
                         items_info=items_info,
+                        bg_context=extra_data,
                     )
                 except Exception as e2:
                     logger.error(
@@ -2423,6 +2417,7 @@ def _try_second_bot_response(
     first_bot_guid, player_name,
     player_message, mode, event_id,
     link_context="", items_info=None,
+    bg_context=None,
 ):
     """Maybe generate a second bot response to a
     player message, for more natural group feel.
@@ -2514,6 +2509,7 @@ def _try_second_bot_response(
         bot2, bot2_traits, player_name,
         player_message, mode,
         chat_history=chat_hist,
+        bg_context=bg_context,
         members=members,
         link_context=link_context,
         item_context=bot2_item_context,
@@ -3442,6 +3438,8 @@ def build_idle_chatter_prompt(
         return append_json_instruction(
             prompt, allow_action,
             extra_field=THREAD_REPORT_FIELD,
+            include_thread=True,
+            thread_speaker_names=(bot['name'],),
             extra_rule=THREAD_REPORT_RULE,
         )
     return append_json_instruction(
@@ -3983,6 +3981,8 @@ def build_idle_conversation_prompt(
             msg_count,
             allow_action=allow_action,
             trailing_object=THREAD_REPORT_OBJECT,
+            include_thread=True,
+            thread_speaker_names=bot_names,
             extra_rule=THREAD_REPORT_RULE,
         )
     return append_conversation_json_instruction(

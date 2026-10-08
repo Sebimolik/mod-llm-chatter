@@ -86,6 +86,11 @@ from chatter_db import (
     get_creature_entry_column,
 )
 from talent_catalog import TALENT_CATALOG
+from chatter_structured import (
+    ResponseContract,
+    conversation_contract, render_structured_format, statement_contract,
+    structured_output_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,27 +105,47 @@ class PromptParts(str):
     messages.
     """
     def __new__(
-        cls, user_prompt: str, system_block: str
+        cls, user_prompt: str, system_block: str, *,
+        response_contract=None, structured_system_prompt=None,
+        contract_conflict=False,
     ):
         instance = super().__new__(
             cls, user_prompt + system_block
         )
         instance.user_prompt = user_prompt
         instance.system_prompt = system_block
+        instance.response_contract = response_contract
+        instance.structured_system_prompt = structured_system_prompt
+        instance.contract_conflict = contract_conflict
         return instance
+
+    def _metadata(self):
+        return dict(response_contract=self.response_contract,
+                    structured_system_prompt=self.structured_system_prompt,
+                    contract_conflict=self.contract_conflict)
 
     def __add__(self, other):
         if isinstance(other, PromptParts):
+            selected = self if self.system_prompt else other
+            metadata = selected._metadata()
+            metadata['contract_conflict'] = (
+                self.contract_conflict or other.contract_conflict
+                or any(part.response_contract is not None
+                       and part.response_contract != selected.response_contract
+                       for part in (self, other))
+            )
             return PromptParts(
                 self.user_prompt
                 + other.user_prompt,
                 self.system_prompt
-                or other.system_prompt
+                or other.system_prompt,
+                **metadata,
             )
         if isinstance(other, str):
             return PromptParts(
                 self.user_prompt + other,
-                self.system_prompt
+                self.system_prompt,
+                **self._metadata(),
             )
         return NotImplemented
 
@@ -128,12 +153,27 @@ class PromptParts(str):
         if isinstance(other, str):
             return PromptParts(
                 other + self.user_prompt,
-                self.system_prompt
+                self.system_prompt,
+                **self._metadata(),
             )
         return NotImplemented
 
     def __iadd__(self, other):
         return self.__add__(other)
+
+
+def _annotated_prompt(prompt, block, factory, semantic_rules, **options):
+    """Invalid metadata must not break legacy prompt construction.
+
+    Enabled dispatch rejects the explicit marker before sending a request.
+    """
+    try:
+        contract = factory(**options)
+        structured = render_structured_format(contract, semantic_rules)
+    except (ValueError, TypeError):
+        return PromptParts(prompt, block, contract_conflict=True)
+    return PromptParts(prompt, block, response_contract=contract,
+                       structured_system_prompt=structured)
 
 
 # N12 decomposition scaffold note:
@@ -942,10 +982,10 @@ def build_bot_state_context(extra_data, mode='roleplay'):
     """
     if not extra_data:
         return ""
-    pvp_ctx = build_pvp_enemy_context(extra_data, mode)
+    extra_context = build_pvp_enemy_context(extra_data, mode)
     state = extra_data.get('bot_state')
     if not state or not isinstance(state, dict):
-        return pvp_ctx
+        return extra_context
 
     from chatter_mode import is_roleplay
     roleplay = is_roleplay(mode)
@@ -1021,8 +1061,8 @@ def build_bot_state_context(extra_data, mode='roleplay'):
                 f"Character gameplay travel state: {travel_ctx}"
             )
 
-    if pvp_ctx:
-        parts.append(pvp_ctx)
+    if extra_context:
+        parts.append(extra_context)
 
     return ' '.join(parts)
 
@@ -2726,6 +2766,8 @@ def append_json_instruction(
     allow_narrator_message: bool = False,
     extra_field: str = '',
     extra_rule: str = '',
+    include_thread: bool = False,
+    thread_speaker_names=(),
 ) -> str:
     """Append structured JSON response instruction
     to a prompt.
@@ -2782,7 +2824,15 @@ def append_json_instruction(
             f"{lang_rule}"
             f"{lore_rule}"
         )
-        return PromptParts(prompt, block)
+        # Thread callers currently use extra_rule only for legacy report format.
+        return _annotated_prompt(
+            prompt, block, statement_contract,
+            narrator_rule
+            + ' Follow the Length instruction and character limit exactly.'
+            + lang_rule + (extra_rule if not include_thread else ''),
+            message_only=True, thread=include_thread,
+            thread_speaker_names=thread_speaker_names,
+        )
     # Apply ActionChance RNG: allow_action=True means
     # "eligible for action" — the RNG decides.
     # allow_action=False means "never include action"
@@ -2866,7 +2916,15 @@ def append_json_instruction(
         f"{lang_rule}"
         f"{lore_rule}"
     )
-    return PromptParts(prompt, block)
+    return _annotated_prompt(
+        prompt, block, statement_contract,
+        action_desc + emote_only_rule
+        + 'Follow the Length instruction and character limit exactly.'
+        + lang_rule + (extra_rule if not include_thread else ''),
+        emote=emote_available, action=allow_action,
+        emote_only=allow_emote_only, thread=include_thread,
+        thread_speaker_names=thread_speaker_names,
+    )
 
 
 def append_conversation_json_instruction(
@@ -2880,6 +2938,8 @@ def append_conversation_json_instruction(
     allow_narrator_messages: bool = False,
     trailing_object: str = '',
     extra_rule: str = '',
+    include_thread: bool = False,
+    thread_speaker_names=(),
 ) -> str:
     """Append conversation JSON array instruction.
 
@@ -2943,7 +3003,15 @@ def append_conversation_json_instruction(
             f"{lang_rule}"
             f"{lore_rule}"
         )
-        return PromptParts(prompt, block)
+        return _annotated_prompt(
+            prompt, block, conversation_contract,
+            narrator_rule
+            + 'Follow the Length instruction and character limit exactly.'
+            + lang_rule + (extra_rule if not include_thread else ''),
+            speaker_names=bot_names, message_count=msg_count,
+            message_only=True, thread=include_thread,
+            thread_speaker_names=thread_speaker_names,
+        )
 
     # When actions are enabled, every message MUST
     # include an action — strip_conversation_actions()
@@ -3057,7 +3125,16 @@ def append_conversation_json_instruction(
         f"{lang_rule}"
         f"{lore_rule}"
     )
-    return PromptParts(prompt, block)
+    return _annotated_prompt(
+        prompt, block, conversation_contract,
+        action_text + '\n' + addressee_rule + emote_only_rule
+        + 'Follow the Length instruction and character limit exactly.'
+        + lang_rule + (extra_rule if not include_thread else ''),
+        speaker_names=bot_names, message_count=msg_count, emote=emote_available,
+        action=bool(action_speakers), addressee_names=addressee_names or (),
+        emote_only=allow_emote_only, thread=include_thread,
+        thread_speaker_names=thread_speaker_names,
+    )
 
 
 def select_conversation_message_count(
@@ -3081,8 +3158,19 @@ def build_conversation_json_repair_prompt(
     prompt: str,
     bot_names: List[str],
     message_only: bool = False,
+    *, structured_output: bool = False,
 ) -> str:
     """Build the shared one-attempt conversation repair prompt."""
+    if structured_output:
+        contract = getattr(prompt, 'response_contract', None)
+        if contract is None or contract.kind != 'conversation':
+            raise ValueError('Structured repair requires conversation metadata')
+        return prompt + (
+            '\n\nYour previous output was invalid. Return ONLY the JSON '
+            'object required by the supplied schema, with exactly '
+            f'{contract.message_count} messages. Preserve the original '
+            'scene, selected speakers and response rules.'
+        )
     msg_count = extract_conversation_msg_count(prompt)
     repair_prompt = (
         "Your previous output was invalid JSON. "
@@ -3524,23 +3612,32 @@ def find_addressed_bot(
         f"If a turn also contains a substantive request, do not let its "
         f"social framing hide that request. Decide whether a reply is "
         f"required separately from how much it should say.\n"
-        f'- "requires_reply": false ONLY for throwaway filler '
-        f"that friends would naturally leave unanswered: bare "
-        f"laughter or reactions, stepping-away or status notes, "
-        f"bare acknowledgements, or a sign-off after the "
-        f"exchange has already wound down. Everything else is "
-        f"true: every question, request, instruction, warning, "
-        f"piece of news, greeting, and any statement that shares "
-        f"an opinion, feeling, enthusiasm, complaint or "
-        f"experience, because it invites others to respond. "
-        f"Questions always require a reply. Judge meaning and conversational context, not "
-        f"keywords, punctuation, or message length alone."
+        f'- "requires_reply": judge the whole exchange: would silence '
+        f"feel natural, or would it feel like ignoring the player? Set true "
+        f"when the player contributes to an ongoing exchange, responds to "
+        f"a bot's interest, or invites further engagement. This remains "
+        f"true even if a few words would be enough in reply. The absence "
+        f"of a question does not mean the conversation is finished. "
+        f"Questions always require a reply. Set false only when the turn "
+        f"clearly needs no further engagement and silence would naturally "
+        f"close or leave the exchange at rest. An acknowledgment can serve "
+        f"that purpose after an exchange is complete, but its conversational "
+        f"function depends on the recent history. Do not infer closure "
+        f"merely from a message being casual, brief or declarative. When "
+        f"uncertain, favor a reply. If uncertain only whether engagement "
+        f"is needed, prefer a short acknowledgment (brief_casual=true), "
+        f"unless the conversational purpose clearly calls for detail. "
+        f"Reply necessity and reply length remain separate decisions. "
+        f"Judge meaning and context, "
+        f"not keywords, punctuation, or message length alone."
     )
 
     try:
         result = quick_llm_analyze(
             client, config, prompt, max_tokens=80,
             label='find_addressed_bot',
+            response_contract=ResponseContract('analysis',
+                                               speaker_names=bot_names),
         )
     except Exception:
         logger.error(
@@ -3875,18 +3972,20 @@ def parse_extra_data(
     raw_data: str, event_id=None, event_type=None
 ) -> dict:
     """Parse extra_data JSON with repair attempts."""
+    from chatter_bg_delivery import normalize_bg_transport
+
     if not raw_data:
         return {}
 
     try:
-        return json.loads(raw_data)
+        return normalize_bg_transport(json.loads(raw_data), event_type)
     except json.JSONDecodeError:
         pass
 
     repaired = repair_json_string(raw_data)
     try:
         result = json.loads(repaired)
-        return result
+        return normalize_bg_transport(result, event_type)
     except json.JSONDecodeError:
         pass
     except Exception:
@@ -4472,6 +4571,14 @@ def build_talent_context(
                 f"{spec_personality}")
 
     return result
+
+
+def format_name_list(names) -> str:
+    """Join names naturally: "A", "A and B", "A, B and C"."""
+    names = [str(n).strip() for n in names or [] if str(n).strip()]
+    if len(names) <= 1:
+        return names[0] if names else ''
+    return ', '.join(names[:-1]) + ' and ' + names[-1]
 
 
 def format_weapon_list(weapons) -> str:

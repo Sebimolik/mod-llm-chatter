@@ -1794,6 +1794,7 @@ def _condense_low_value_memories(
                 use_quick_model=_memory_uses_quick_model(
                     config
                 ),
+                free_text=True,
                 metadata={
                     'bot_guid': bot_guid,
                     'player_guid': player_guid,
@@ -2453,6 +2454,7 @@ def _call_llm_for_memory(
             use_quick_model=_memory_uses_quick_model(
                 config
             ),
+            free_text=True,
         )
         if not response:
             return None, None, None
@@ -2587,6 +2589,7 @@ def _generate_shared_event_memory(
             use_quick_model=_memory_uses_quick_model(
                 config
             ),
+            free_text=True,
         )
         if not response:
             return None, None, None
@@ -3301,6 +3304,7 @@ def _maybe_update_relationship(
             use_quick_model=_memory_uses_quick_model(
                 config
             ),
+            free_text=True,
             metadata={
                 'bot_guid': bot_guid,
                 'player_guid': player_guid,

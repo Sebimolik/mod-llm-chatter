@@ -81,9 +81,47 @@ C++ server:
 7. Messages are written to `llm_chatter_messages` for normal C++
    delivery.
 
+Screenshot descriptions and atmosphere serve as background for personal
+reactions rather than a narrated inventory of the scene. A recognized
+visual time of day takes precedence over clock-derived prompt context.
+Roleplay conversations frame the observation as the speakers' surroundings.
+
 The agent runs on the host machine (not in Docker) and connects to
 MySQL directly. It is configured via the same `.conf` file and is
 disabled by default.
+
+An optional independent NPC proximity route uses the same capture:
+
+1. After the existing capture-cycle chance, the host rolls
+   `Screenshot.Proximity.Chance` and requests a ticket for the explicit
+   `Screenshot.BoundAccountId` in `llm_screenshot_proximity`.
+2. `LLMChatterScreenshot.cpp` polls that account on the world thread. It
+   validates the live real player and NPC availability through proximity
+   helpers, then retains a session/map/instance/position snapshot in memory.
+3. The host captures only if Party or the local ticket is eligible. It
+   publishes visual JSON using token/state/expiry compare-and-set guards.
+   Party dedup and insertion remain independent of local publication.
+4. C++ consumes once, revalidates the snapshot and selects compatible live
+   NPCs within `ProximityChatter.ScanRadius`. Existing proximity events,
+   entity cooldowns, zone fatigue and conversation pacing own the speech.
+5. `chatter_proximity.py` uses the visual background instead of a random
+   topic and ordinary clock/weather block for this route only. NPCs stay
+   in-world in every chatter mode. Delivery rechecks session, map, instance,
+   player displacement and each NPC's eligibility and scan radius.
+
+The mailbox has one row per bound account. Expired/consumed slots are reused;
+no global player scan is added. Disabled/unbound configurations do not poll.
+The schema is probed once per config load, with one diagnostic if missing.
+Restart or config reload discards transient snapshots and fails closed.
+`MaxAgeSeconds` covers preflight through server consumption; subsequent
+speech uses normal event expiry and live delivery checks. Pixel capture and
+the world tick are not atomic, so the snapshot bounds rather than eliminates
+the interval between observation and reaction.
+
+Ownership: `src/LLMChatterScreenshot.cpp/.h` owns server transport and
+freshness; `tools/screenshot_proximity.py` owns host mailbox operations;
+`tools/chatter_screenshot_context.py` owns shared visual-background guidance.
+Proximity retains NPC selection, prompts, speech pacing and delivery.
 
 ### Proximity chatter data flow
 
@@ -118,10 +156,16 @@ NPCs, and real players as they move through the world:
    and curated dungeon-lore grounding. NPC payloads also carry
    disposition, creature rank, creature type, and qualification reason.
 6. Messages are written to `llm_chatter_messages` with channel
-   `"say"` (for bots) or `"msay"` (for NPCs).
+   `"say"` (for bots) or `"msay"` (for NPCs). Ordinary, directed speech,
+   and emote conversations use `chatter_proximity_pacing.py` for bounded
+   length-aware gaps with subtle RNG (default 3-8 seconds). The first line
+   has no added wait. Bridge-owned `DynamicPacing.*` settings control this;
+   disabling them restores the event's fixed `line_delay_seconds`.
 7. C++ delivery dispatches bot messages via `CHAT_MSG_SAY` and NPC
    messages via `CHAT_MSG_MONSTER_SAY` (speech bubbles). Movement never
-   disqualifies a speaker. Only idle or random-wandering NPCs may rotate.
+   disqualifies a speaker. Only NPCs whose spawn never moves may rotate:
+   a facing spline replaces an NPC's wander or patrol movement and the core
+   generator may not resume it, so wanderers and patrollers speak unturned.
    A directed line uses its explicit addressee when present; otherwise
    the conversation sequence supplies the fallback. One facing lease is
    retained through the final line before the original orientation is
@@ -135,7 +179,10 @@ NPCs, and real players as they move through the world:
    ineligible cross-faction named bot falls back only to an already selected
    eligible NPC or bot; otherwise the direct route is suppressed. A living
    selected player, party bot, boss, or runtime-ineligible speaking NPC
-   suppresses random fallback; dead and non-speaking targets are ignored.
+   only suppresses fallback when the message names that selected target by
+   full name or a unique meaningful name token. An unrelated selection
+   permits ordinary nearby replies. Dead and
+   non-speaking targets are ignored.
    With no direct addressee, recent-scene and ordinary nearby fallback
    behavior remains available.
 9. A social emote directed at an eligible NPC has its own verbal-reaction
@@ -316,8 +363,8 @@ that playerbots are ready synchronously:
    or a real Guild message cancels the greeting.
 5. One high-priority `guild_login_greeting` event carries the current
    session, target player, delay metadata, and live bot candidates.
-6. `chatter_guild_login.py` normally selects one greeter and
-   occasionally two or three. One LLM request generates the whole
+6. `chatter_guild_login.py` selects one to four greeters, with
+   equal odds for each count when four candidates are available. One LLM request generates the whole
    sequence as short, distinct, message-only Guild lines.
 7. The first line has no extra bridge-side delay because the C++ pending
    timer already supplied the human pause. Additional greeters reuse
@@ -414,6 +461,12 @@ recent history, never an input-length threshold or phrase list. A terse
 invitation for news, advice, an experience, or an explanation can deserve a
 concrete answer. Acknowledgments and conversational closure remain brief.
 The existing `brief_casual` and `requires_reply` decisions stay separate.
+Reply necessity is judged from the whole exchange: silence is eligible only
+when the turn clearly needs no further engagement. If silence would feel
+like ignoring an ongoing contribution, or the intent is uncertain, the model
+is instructed to favor a short acknowledgment unless the purpose clearly
+calls for detail. A casual or
+declarative message does not by itself signal conversational closure.
 Channel length guidance and hard limits still apply; useful detail is
 permitted, never mandatory, and replies should not be padded.
 
@@ -656,14 +709,19 @@ model's thread report.
 All prompt builders return a `PromptParts` object (defined in
 `chatter_shared.py`). `PromptParts` subclasses `str` so it is
 backward-compatible with code that treats prompts as plain strings.
-It carries two extra attributes:
+It carries the legacy prompt parts and optional response metadata:
 
 - `.system_prompt` — persona, rules, format instructions
 - `.user_prompt` — event context, chat history, the actual task
+- `.response_contract` — immutable structural policy and semantic context
+- `.structured_system_prompt` — schema-compatible alternative instructions
+- `.contract_conflict` — metadata error rejected before enabled dispatch
 
 ### Flow
 
-1. Prompt builder calls `PromptParts(system_prompt, user_prompt)`.
+1. JSON prompt builders use the shared `append_*_json_instruction()` helpers,
+   which resolve existing RNG choices once and construct
+   `PromptParts(user_prompt, system_prompt)` with response metadata.
 2. `call_llm()` or `quick_llm_analyze()` in `chatter_llm.py`
    auto-detects `PromptParts` via `_split_prompt()`.
 3. Provider dispatch:
@@ -673,6 +731,8 @@ It carries two extra attributes:
    - **OpenAI / Google / OpenRouter / Ollama**: system role message +
      user role message; `llm_compat.py` selects the token field and
      optional parameters from a conservative model capability profile
+     resolved through one ordered model-rule table; parameter selection
+     and reasoning-token budgets consume the same resolved capabilities
    - **Modern OpenAI reasoning models**: use
      `max_completion_tokens`, coordinate temperature with reasoning
      effort, and apply `LLMChatter.OpenAI.ReasoningEffort` only when
@@ -690,8 +750,32 @@ It carries two extra attributes:
      OpenAI-compatible endpoint has no per-request context parameter;
      disabling thinking sends `reasoning_effort = none` and retains the
      `/no_think` prompt fallback
-4. If a plain string is passed instead of `PromptParts`, the entire
-   string is sent as a single user message (backward compatibility).
+4. With structured output off, a plain string is sent as a single user
+   message. With it on, a caller must provide an annotated or explicit
+   contract, or explicitly opt into free text. Missing/conflicting contracts
+   fail before dispatch; only farewell and identity generation opt into text.
+
+### Native response contracts
+
+`chatter_structured.py` owns the global flag reader, immutable contracts,
+stable JSON schemas, local validation and normalization. It has no SDK,
+database or delivery dependencies. `chatter_shared.py` owns prompt metadata
+and matching instructions without changing legacy prompt bytes or RNG.
+`chatter_llm.py` applies the contract after existing target resolution and
+validates complete responses before permissive parsers. `llm_compat.py`
+attaches provider-native envelopes and preserves the schema during existing
+bounded parameter retries. It does not infer structured support from model
+names or remove the schema after rejection.
+
+Conversation objects normalize to the existing array shape; thread feelings
+normalize to the existing known-speaker map. Channel handlers retain
+speaker/count policy, repair limits, queue/history and delivered-thread
+ownership. The host screenshot agent uses the same completion boundary and
+global flag for its existing vision routes. Startup/first-use target logs
+and bounded failure counters are diagnostic only; no capability cache or
+new provider/model resolver is introduced. See the
+[operator contract](mod-llm-chatter-documentation.md#native-structured-output)
+for configuration, dependencies and failure behavior.
 
 ### Token-Saving Gates
 
@@ -927,7 +1011,7 @@ Session 69 added two scheduling controls around that model:
 | `src/LLMChatterScript.cpp` | 17 | Registration coordinator only |
 | `src/LLMChatterShared.cpp` | ~2500 | Shared helpers: SQL/JSON escaping, canonical lookups, queue insertion, cooldowns, priorities/delays, delivery helpers, spawn-GUID creature lookup, NPC role descriptions, and the shared named-boss cache/classifier |
 | `src/LLMChatterShared.h` | 83 | Shared declarations still used across domains; `class Unit` forward-declared for `SendUnitTextEmote()`; currently also declares world/player registration |
-| `src/LLMChatterDelivery.cpp` | ~1000 | Outbound DB polling and channel dispatch, including instance-aware local revalidation for `say`/`msay` and safe boss `myell` delivery |
+| `src/LLMChatterDelivery.cpp` | ~1000 | Outbound DB polling and channel dispatch, including instance-aware local revalidation for `say`/`msay`, screenshot snapshot/scan-radius checks, and safe boss `myell` delivery |
 | `src/LLMChatterDelivery.h` | 4 | Narrow delivery extraction declaration used by `LLMChatterWorld.cpp` |
 | `src/LLMChatterAmbient.cpp` | 963 | Ambient world/event ownership: day/night transitions, holiday start/stop routing, weather state tracking, weather reactions, zone-level ambient chatter selection, ambient request queue writes |
 | `src/LLMChatterAmbient.h` | 24 | Narrow ambient declarations consumed by `LLMChatterWorld.cpp` |
@@ -949,7 +1033,8 @@ Session 69 added two scheduling controls around that model:
 | `src/LLMChatterGroup.h` | 18 | World-to-group cross-call surface plus group registration |
 | `src/LLMChatterPlayer.cpp` | 1105 | Player General-channel hooks, General cooldowns, subzone cooldowns, `EnsureBotInGeneralChannel()`, player registration |
 | `src/LLMChatterRaid.cpp` | 767 | Raid boss hooks (pull/kill/wipe), boss lookup table (80+ entries across Classic/TBC/WotLK), `IsDatabaseBound() override`, raid registration |
-| `src/LLMChatterProximity.cpp` | 2674 | Ordinary outdoor/instance proximity scans, curated NPC/playerbot eligibility and compatibility, selected/named `/say` routing, mixed bot-directed reaction chains, map/instance-aware scenes and cooldowns, and event payload construction |
+| `src/LLMChatterProximity.cpp` | ~3400 | Ordinary outdoor/instance proximity scans, curated NPC/playerbot eligibility and compatibility, selected/named `/say` routing, mixed bot-directed reaction chains, map/instance-aware scenes and cooldowns, screenshot NPC preflight/queue exports, and event payload construction |
+| `src/LLMChatterScreenshot.cpp/.h` | ~225 | Account-bound screenshot mailbox polling, live session/map/instance/position snapshots, consume-once dispatch and delivery freshness validation |
 | `src/LLMChatterProximity.h` | ~75 | Proximity scan and player-say hook declarations consumed by `LLMChatterWorld.cpp` and `LLMChatterGroupCombat.cpp`, plus the narrow fight onlooker helpers used by `LLMChatterProximityFight.cpp` |
 | `src/LLMChatterProximityFight.cpp/.h` | ~1090 | Duel and overworld PvP onlooker reactions: own `PlayerScript` (duel request/start/end, PvP kill), duel-instance lifecycle and moment selection, one reaction per moment (proximity speech for same-faction bots, emotes for opposite-faction bots), staggered emote steps, and delivery-time revalidation |
 | `src/LLMChatterBossDialogue.cpp/.h` | ~850 | Separate boss-only pre-aggro scanning, safe-band eligibility, selected/named `/say` routing, denylist, and boss-instance presence scheduling |
@@ -1023,6 +1108,7 @@ This asymmetry is known and acceptable in the shipped source state.
 | `tools/chatter_text.py` | Parsing, sanitization, anti-repetition, and chat length limiting. Never slice LLM chat output by hand; use `shorten_chat_message()` or `shorten_chat_question()` from this file. |
 | `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; `label=` param logs every call via `chatter_request_logger` |
 | `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup. Also owns `llm_group_vibe` persistence (`upsert_group_vibe()`, `get_group_vibe()`, `delete_group_vibe()` — all accept a caller-owned connection so the hot memory-write path never opens a second one; the delete is conditional on the observed `set_at` so a concurrent newer vibe survives) and drops the vibe row in `cleanup_stale_groups()` / `cleanup_all_session_data()` |
+| `tools/chatter_structured.py` | Global structured-output flag, immutable response contracts, stable schema generation, strict local validation and legacy-shape normalization. No SDK or delivery logic. |
 | `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; delegates cross-model parameter selection to `llm_compat.py`; `label=` param logs every call via `chatter_request_logger` |
 | `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup |
 | `tools/chatter_links.py` | WoW link parsing and prompt-side link enrichment for player messages |
@@ -1046,6 +1132,9 @@ This asymmetry is known and acceptable in the shipped source state.
 
 | File | Primary ownership |
 |---|---|
+| `src/LLMChatterScreenshot.cpp/.h` | World-thread preflight, mailbox consumption and snapshot lifetime; delegates NPC roster/speech to proximity |
+| `tools/screenshot_proximity.py` | Host account-slot reservation, preflight wait and token/state/expiry-guarded publication |
+| `tools/chatter_screenshot_context.py` | Shared scene-as-background guidance and NPC visual context; no speaker inference from pixels |
 | `tools/screenshot_agent.py` | Host-side capture agent (runs outside Docker). Captures WoW window via Win32 API, crops UI clutter (bottom 20%, sides 12%), sends JPEG to vision LLM (OpenAI, Anthropic, Google, or OpenRouter), receives structured JSON with environment description, atmosphere, and canonical tags. Queues `bot_group_screenshot_observation` events directly into `llm_chatter_events`. Configurable interval, chance, and vision provider/model |
 | `tools/chatter_screenshot_handler.py` | Bridge handler for `bot_group_screenshot_observation` events. Generates in-character bot comments using personality traits, zone/subzone context, and the vision description. Supports single statements via `run_single_reaction()` and multi-bot conversations via `append_conversation_json_instruction()` / `parse_conversation_response()`. Canonical tag dedup prevents repetitive observations |
 
@@ -1116,6 +1205,10 @@ instead of rendering it as a `/slash` command.
 - `AppendRaidContext()`
 - `GroupHasBots()`
 - `CanSpeakInGeneralChannel()`
+- `IsPlayerInChannel()` checks exact channel membership for General
+  eligibility and delivery. Core exposes no public membership accessor;
+  a read-only adapter accesses Player's protected joined-channel list
+  through a base-member pointer, without casting Player to a derived type.
 - `GetTextEmoteName()` — reverse emote ID-to-name lookup (170+ entries)
 - `SendUnitTextEmote(Unit*, uint32, const std::string&)` — consolidated
   emote packet helper; `SendBotTextEmote` overloads delegate to it
@@ -1257,10 +1350,10 @@ PvP reactions stay in `LLMChatterDuel.cpp` and `LLMChatterGroupPvP.cpp`.
 - selected/named player `/say` routing before scene fallback
 - directed social-emote verbal events and synchronized per-player/NPC or
   per-player/ungrouped-bot cooldowns
-- mounted real players and mounted playerbots remain eligible for directed
-  `/say`, emotes, and active-scene replies; mounting still suppresses
-  automatic and untargeted new-scene selection, and an untargeted `/say`
-  speaker that mounts after queueing is rejected again at delivery
+- mounted real players and mounted playerbots remain eligible for player
+  `/say` (including untargeted new scenes), emotes, and active-scene
+  replies, both at selection and delivery; mounted players also hear
+  automatic nearby scenes and mounted bots can participate
 - policy-scoped weighted selection with one universal two-joiner cap:
   zero to two NPC joiners for NPC-directed scenes, or zero to two compatible
   NPC/ungrouped-bot joiners when an ungrouped bot is addressed
@@ -1458,7 +1551,295 @@ duellist or a group bot that can see the duel.
 ### BG ownership
 
 `LLMChatterBG.cpp` owns battleground-specific hooks and BG queue
-helpers.
+helpers. `LLMChatterAB.cpp/.h` owns AB observation, classification,
+pending node changes, revisions, match-target caching and value snapshots.
+`LLMChatterABPending.h` owns the value-only bounded pending policy. The BG
+coordinator invokes AB batch evaluation on the speech polling cadence;
+legacy WSG/EY routing and chance/cooldown behavior remain in the coordinator.
+
+Map-specific polling, score detection and prompt context use
+`GetBgTypeID(true)`, including matches entered through Random Battleground.
+The payload's `bg_type_id` identifies the actual battleground; the separate
+`queue_type_id` preserves `GetBgTypeID()` for queue provenance. Both common
+context and arrival batches use this contract. Python lore lookups must use
+the actual type, not the queue type.
+
+AB observes all five nodes on each in-progress BG update before the speech
+polling gate. Per-node initialized state and one pending window are
+separate; chance/cooldown failure retains pending speech without
+freezing observation. The pending window retains its first previous state
+and latest result; more than one observed change degrades its label.
+First/invalid baselines, disabled chatter and non-progress match states
+clear or seed silently; destruction removes the tracker. Pre-start/end
+snapshots remain available without generating node reactions. EY retains
+its separate `lastNodeState` polling behavior.
+
+AB node events add `prev_state`, `state`, `transition`, `evidence` and
+`observation_gap_ms` (largest actual monotonic sample gap in the pending
+window). States use the core values: 0 neutral, 1/2 Alliance/Horde occupied,
+3/4 Alliance/Horde contested. Contested `new_owner` means claimant, not
+occupied owner. Recognized pairs are claim (neutral to contested), assault
+(opposing occupied to contested), counter_claim (opposing contested,
+never occupied), defence (opposing contested to occupied, previously
+captured) and capture (same-team contested to occupied). `_captured` is
+checked in the producer; unknown pairs use `state_update`.
+
+The source invariant is narrower than a world-tick claim: map updates run
+before the BG manager, but `Battleground::Update` gates to 1000ms and
+advances AB timers by exactly 1000ms per pass. Observation follows
+`PostUpdateImpl`. Several banner actions can alternate between samples,
+but a reset 60-second capture timer cannot expire in that one BG pass.
+Recognized pairs therefore support net team transitions, not an exhaustive
+action history or actor attribution. Ordinary spell cast time is not used
+as a timing bound. This relies on the current core ordering and timer
+semantics and must be rechecked if they change.
+
+One changed pair within `AB.TransitionMaxGapMs` uses `evidence=sampled`.
+Zero disables these labels. Long actual gaps, multiple pending changes or
+unknown pairs use `transition=state_update`, `evidence=ambiguous`. First
+baselines emit nothing. `chatter_bg_prompts.py` validates recognized
+pair/label shapes and renders team-relative observations. Legacy/ambiguous
+payloads render current state only; malformed explicit state becomes
+unknown. Legacy `claimer_name` is ignored for AB, including old Random
+rows identifiable by AB node name. These events use Party with an AB-only
+attempt budget, independent of the shared big-event cooldown.
+
+#### AB node batches
+
+At most one latest revision per node is pending. Each retains its first
+pending time, latest change time and baseline. An unsent return to baseline
+cancels an obsolete alarm. A revision already submitted to any audience
+cannot be cancelled that way because its older message may become visible;
+the reversal becomes a newer fact. Expiry is measured from the latest
+change. Disable, status changes and destruction reset pending work.
+
+At each eligible polling opportunity, select oldest-pending-first with
+rotating ties, capped by `AB.MaxNodesPerBatch`. Spend
+`AB.NodeBatchCooldownSec` even when the one `NodeEventChance` roll fails.
+No listeners or failed insertion retains the pending facts until expiry.
+Score/start cooldowns cannot consume this AB attempt budget.
+
+Eligible node listeners are deduplicated by BG team and group and
+must have a bot in the same BG raid. The first insertion attempt
+freezes that revision's eligible audience set. A new human in an existing
+group may hear a retry; a newly eligible group waits for new changes,
+rather than replaying older announcements. This bounds receipts to one
+live audience snapshot per each of five pending nodes. Successful audiences
+are skipped on retry; mixed failures retain only their outstanding receipts.
+
+One existing `bg_node_captured` event transports bounded `node_changes`
+and the current full snapshot. Each item has its own transition label;
+the transport category does not assert a capture for every item. The
+prompt renders only the referenced nodes as one reaction. Legacy single
+node payloads remain supported. The final guard checks every referenced
+live node/revision and rejects duplicate, empty or oversized batches;
+unrelated node changes do not invalidate a batch.
+
+Insertion uses existing `AppendChatterEvent` in one async transaction per
+audience. World-thread callbacks acknowledge only matching revisions on
+successful commit. Pending selection pauses while any transaction remains
+unacknowledged, so a slow DB cannot create duplicate insertion retries.
+Callbacks belong to the tracker; resetting it discards them, while old
+committed rows remain subject to match/status/token/age delivery checks.
+Insertion acknowledgement is not speech delivery. Once an audience's row
+is committed, later generation or delivery suppression is not retried.
+
+#### AB resource race and objective status
+
+`LLMChatterABScore.h` owns the value-only threshold, score-pending and
+status-clock policy. The AB owner observes scores every BG update, before
+speech polling or chance. Thresholds come from the verified match target:
+configured percentages are rounded up, deduplicated and restricted to
+positive values below target. The core warning is included only below
+target and wins a collision with a percentage. Invalid percentage lists
+use 30,60,90; reload, late enable and delayed target discovery seed current
+scores silently instead of replaying history.
+
+High-water scores record reached thresholds independently of speech.
+Only the newest crossing remains pending across both teams; when several
+cross in one observation the highest threshold wins. Pending score facts
+expire using `AB.PendingMaxAgeSec`. `AB.ScoreCooldownSec` budgets attempts,
+including chance failures, independently of node batches. All eligible
+team/group/subgroup milestone rows are appended to one atomic transaction;
+failure retains the pending revision and successful acknowledgement clears
+only that exact revision. Outstanding score and node callbacks do not gate
+each other's selection. Match-end/status/disable reset score work.
+
+AB score events include the full snapshot and are validated like other
+objective summaries. `chatter_ab.py` renders observed lead/trail, nonlinear
+income, contested/occupied bases and resources remaining against the
+verified target. The AB score prompt identifies percentage versus core
+warning thresholds, prohibits guaranteed winners and exact finish estimates,
+and does not use EY's fixed 1500-based urgency. EY retains its old behavior.
+
+At an existing idle opportunity, `TryABObjectiveStatus` may select a
+`bg_idle_chatter` row with `ab_objective_status=true`. It replaces the
+ordinary choice for that audience; it never adds a second row. Status
+chance failure spends the status interval but leaves ordinary idle chance
+available. A zero status interval disables the specialization. Pending,
+in-flight or recent node batches suppress status attempts, using the node
+cooldown as the recent window. Existing idle audience/speaker selection,
+Party filler gating and full-vector final validation remain in force.
+
+#### AB snapshot publication and consumption
+
+`ObserveABContext` runs on the world thread before arrival processing and
+speech polling, including pre-start updates. It publishes a complete,
+serialized value snapshot; partial/invalid node sets are not published.
+`AppendABContext(instanceId, json)` copies that value under a short mutex.
+Player/map hooks never access the mutable AB tracker or traverse AB nodes;
+the lock is released before formatting/DB operations. Destruction and
+feature disable clear both tracker and published value. Status changes
+seed a new observation baseline and clear pending reactions/estimates.
+
+Only objective producers attach the published snapshot; common
+`AppendBGContext`, arrival batches and player replies carry the shared
+match envelope without base facts. `ab_state` includes five nodes (`id`, `name`,
+`state`, nullable `owner`/`claimant`, `captured`, `revision`), occupied counts,
+core tick points/intervals, `max_score`, `max_score_verified` and
+`warning_score`. Revisions advance on observed state/captured changes and
+baseline initialization. They do not detect invisible change-and-return
+sequences; lifecycle tokens and final-send validation are separate work.
+
+The target is read from `BattlegroundAB::FillInitialWorldStates` on the
+first valid read and cached for that match. Invalid/missing positive target
+values keep the marked core fallback and retry next update. Config reload
+cannot replace the match's actual target with the current world setting.
+This constructs no sent packet and calls neither `Write()` nor a private API.
+
+Optional `contest_estimate` values are internal bounds in `bg_update_time`,
+not wall-clock countdowns. The lower remaining bound accounts for the BG
+advance on the observed transition and subsequent BG advances. The upper
+bound remains the full capture duration because an unseen same-state
+re-claim can reset the timer. Omit intervals containing expiry or wider than
+`AB.TimerEstimateMaxUncertaintySec`. Unknown baselines, ambiguous changes,
+large observation gaps, status/enable resets and occupied/neutral states
+have no estimate. These conservative bounds usually become unusable within
+a few updates. **No numerical timer wording is rendered.**
+
+`tools/chatter_ab.py` validates the bounded snapshot and renders factual
+base-control/income/verified-target context for idle/objective-status
+chatter. `QueueBGEvent` attaches `ab_state` only for `bg_node_captured`,
+`bg_node_contested`, `bg_idle_chatter` and `bg_score_milestone`;
+objective-status chatter uses the idle event with an `ab_objective_status`
+marker. The AB owner attaches the same published snapshot on its async
+node/score insertion paths. Node prompts
+expose only their referenced objective, not the full snapshot.
+Common BG context and arrival producers do not attach base snapshots.
+Arrival, combat/state callouts and player replies (single, conversation,
+and second speaker) never render them, even from legacy payloads. The
+Python transport boundary strips incidental `ab_state` without changing
+match identity, observation time or the original stored event.
+Invalid snapshots are omitted; invalid target metadata only omits the
+target. The renderer ignores all estimate numbers and does not forecast a
+winner. WSG/EY prompts ignore the AB field.
+
+#### Battleground final-delivery contract
+
+`LLMChatterBGDelivery.cpp/.h` owns transient match identities, explicit
+real-player recipients and the shared BG final-send guard. Lifecycle hooks
+create a process-unique token and erase it on destruction or disabled
+observation. An AB-enable change rotates the token on the next observation.
+Producers add `bg_match_token`, monotonic `bg_observed_ms`,
+`bg_recipient_guid` and `bg_map_id` to the existing actual type, instance,
+team, group, subgroup and roster context. Bot-subject events use the same
+eligible real listener for both the envelope and raid projection.
+`chatter_bg_delivery.py` normalizes `raid_group_id` into `group_id`;
+conflicting nonzero IDs are invalid. It never refreshes snapshots or times.
+
+Every message retains its originating `event_id`. Delivery reads the
+original event JSON through that link, including arrival and group replies.
+Before facing, action text, emote-only output or speech, the guard checks
+the token, age, actual map instance, both participants' BG teams, group and
+channel. Party also requires both participants in the recorded subgroup.
+Normal events require in-progress, arrival/start permit pre-start, and
+match-end requires WAIT_LEAVE. Failure finalizes the row with a `bg_*`
+drop reason rather than retrying or retargeting it.
+
+The age budget is chosen by content, not by map: match-end rows use
+`MatchEndMaxAgeSec`; AB rows carrying `ab_state` (node, idle/objective
+status, score) use `AB.FactualMaxAgeSec`; every other BG row, including
+incidental AB replies and callouts, uses `FactualMaxAgeSec`.
+
+AB snapshots include monotonic `observed_at_ms`. The AB owner validates all
+five live node states and captured bits, observed revisions, occupied
+counts, income and verified target against the original snapshot. Full
+snapshot consumers (idle/objective status and score milestones) check all five nodes because
+their prompts expose the complete vector. Node-event prompts omit that
+vector and expose only their referenced objective; `node_id` and
+`node_revision` bind its state to the live node. Unrelated node changes
+therefore do not suppress a node reaction. Score
+increments alone do not invalidate a line; supplied scores are labeled as
+observed snapshots. Observation and validation run on the world thread;
+other producers only copy published values under short mutexes. Changes
+that return to the same state entirely between observations remain a
+sampling limitation. Numerical timer speech remains disabled.
+
+#### AB banner actor attribution
+
+Node changes name a player only from verified banner interactions.
+`LLMChatterABActorPlayerScript::OnPlayerSpellCast` (capture-banner spell
+21651, AB only) snapshots the target banner's node state into a small
+`thread_local` ring keyed by the casting `Spell`, before `CheckCast(false)`.
+`LLMChatterABActorSpellScript::OnSpellCast` runs after `handle_immediate()`,
+where the open-lock effect has already called
+`BattlegroundAB::EventPlayerClickedOnFlag`, and re-reads the node. Only a
+change matching this caster's click (`ClickTransition`: claim, assault,
+counter-claim, defence) becomes a record. Rejected casts never reach the
+post hook, and spells in one map update run sequentially, so the change
+belongs to this caster. Cancelled casts clear their slot, and a reused
+`Spell` pointer replaces its old slot.
+
+Records are written on BG map threads into a per-instance, per-node
+summary under `_abActorMutex`: a click count plus the first record, so
+saturation can only become ambiguous. The world-thread observer swaps the
+summary out once per observation and calls `ResolveActor`
+(`LLMChatterABActor.h`): exactly one verified click whose kind and team
+match the observed transition names the actor. Zero clicks, two or more
+clicks (including a same-state change-and-return), an observation gap, or
+a mismatch name nobody. A verified claim, assault or counter-claim is
+carried until its own timed capture (`actor_role: flag_held`). A quiet
+unchanged observation keeps the carry; any other transition, gap or
+ambiguity clears it. Payload fields `actor_name`, `actor_is_real_player`
+and `actor_role` appear only on attributed node changes. Node prompts drop
+the `real_players` roster, so the model cannot guess a name from it.
+
+Incidental rows contain no base snapshot and retain match/audience/age
+checks without node dependencies. An old incidental row still containing
+`ab_state` is rejected as `bg_ab_context_unexpected`: its already-generated
+prose may mention old facts, so changing the renderer alone cannot make
+that queued prose safe. Drain or discard those rows at rollout.
+
+Old queued BG rows without the envelope fail closed, including WSG/EY
+rows. Ordinary Party, Raid and Guild rows without BG context bypass this
+guard even when their event map is a BG map. See
+the deployment notes in the module documentation for coordinated rollout.
+
+#### AB verification boundaries
+
+The standalone C++ harnesses `test_ab_pending.cpp`, `test_ab_score.cpp`
+and `test_ab_integration.cpp` include the production policy headers.
+The combined harness covers independent attempt budgets, simultaneous
+pending node/score work, out-of-order acknowledgements, replacement
+revisions, changed audience cohorts, expiry and lifecycle reseeding.
+It does not instantiate a battleground or execute transaction callbacks.
+Compile and execute these harnesses only as part of an explicitly
+authorized validation build, with assertions enabled.
+
+`test_arathi_integration.py` executes the actual AB handlers, BG-wide node
+and subgroup score/idle dispatch, prompt construction and single-reaction
+parsing through mocked
+LLM and DB boundaries. A blocked generation overlaps a newer match event
+and verifies that each inserted message retains its own event/group link.
+Insertion is not proof of delivery: the C++ guard must still reject the
+old match, changed subgroup or expired observation at send time.
+The existing delivery source checks are structural checks, not executed
+tests of game objects, observation clocks or final-send decisions.
+
+Live validation must exercise stalled observation versus advancing wall
+time, node changes after generation, subgroup moves, exit/requeue and
+disable/re-enable. Inspect both visible output and finalized drop reasons;
+queued or completed events alone do not establish audibility.
 
 ### Transport detection shape
 
@@ -1608,6 +1989,7 @@ source:
 | `.llmc memory` / `.llmc memoryclean` command behavior | `src/LLMChatterCommand.cpp` |
 | Memory/relationship/vibe schema changes | `data/sql/characters/updates/` (new dated file) **and** `data/sql/characters/base/00000000_llm_chatter_tables.sql` (mirror) |
 | Shared parsing/sanitization | `tools/chatter_text.py` |
+| Structured response contracts | `tools/chatter_structured.py` |
 | Provider/model calls | `tools/chatter_llm.py` |
 | Shared compatibility helpers | `tools/chatter_shared.py` |
 | Python event-to-handler ownership map | `tools/chatter_event_registry.py` |
@@ -1749,9 +2131,10 @@ See the Known Gaps below.
 BG-wide only:
 - match start / end
 - all flag events
+- all AB node transitions, including state-only updates
 
 Subgroup/party only:
-- kills, node chatter, score milestones, spell/state chatter,
+- kills, EY node chatter, score milestones, spell/state chatter,
   idle chatter, flag-carrier self-messages
 
 This reduces duplicate near-identical lines across party and raid.
@@ -1760,7 +2143,11 @@ Party chat in a BG raid only reaches the speaker's sub-group, so
 party-channel BG chatter is scoped to bots in the real player's
 sub-group (`GetRandomBotInGroup()`, `AppendRaidContext()`, and the
 Python `fire_subgroup_worker(speaker_guid=...)` guard). BG arrival
-batches only list bots in the player's sub-group.
+batches only list bots in the player's sub-group. Their Python handler
+selects explicit `(bot, channel)` entries: one BG-wide greeting plus a
+configurable second-greeting roll, independently of the Party count.
+Each channel samples without replacement; a bot may appear in both.
+Generation failures do not reassign later greetings to another channel.
 
 ## Database Tables
 
