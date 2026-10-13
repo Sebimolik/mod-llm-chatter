@@ -1,12 +1,13 @@
 """LLM call-layer helpers extracted from chatter_shared (N14)."""
 
+import fnmatch
 import logging
 import importlib.util
 import re
 from collections import OrderedDict
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, List, Optional, Tuple
 
 from chatter_constants import (
     DEFAULT_ANTHROPIC_MODEL,
@@ -19,6 +20,7 @@ from chatter_constants import (
 )
 from llm_compat import (
     build_chat_options,
+    create_anthropic_message,
     create_chat_completion,
     needs_reasoning_token_multiplier,
     structured_rejection_category,
@@ -207,7 +209,9 @@ def structured_completion(operation, kwargs, provider, model, contract,
         return operation(**attempt)
 
     if provider == 'anthropic':
-        response = observed_operation(**request)
+        response = create_anthropic_message(
+            observed_operation, request, model, active_logger or logger,
+        )
     else:
         response = create_chat_completion(
             observed_operation, request, provider, model,
@@ -245,20 +249,44 @@ def _build_chat_messages(sys_msg, user_content):
     return messages
 
 
-def _build_anthropic_request_kwargs(
-    model, max_tokens, temperature, sys_msg, user_msg
+def _anthropic_thinking(config):
+    """Return the configured Anthropic thinking option, or None."""
+    value = str(config.get(
+        'LLMChatter.Anthropic.Thinking', ''
+    )).strip().lower()
+    if value in ('disabled', 'off', 'none', '0'):
+        return {'type': 'disabled'}
+    if value == 'adaptive':
+        return {'type': 'adaptive'}
+    return None
+
+
+def build_anthropic_request(
+    model, config, max_tokens, user_content, sys_msg=None,
+    temperature=None,
 ):
-    """Build Anthropic SDK v1-compatible request arguments."""
+    """Build Anthropic SDK v1-compatible request arguments.
+
+    Shared by every Anthropic caller so the configured thinking mode
+    and output-budget multiplier apply uniformly. Pass the result to
+    llm_compat.create_anthropic_message for rejection recovery.
+    """
+    extra_body = {}
+    if temperature is not None:
+        extra_body["temperature"] = temperature
+    thinking = _anthropic_thinking(config)
+    if thinking:
+        extra_body["thinking"] = thinking
     kwargs = {
         "model": model,
-        "max_tokens": max_tokens,
+        "max_tokens": _effective_max_tokens(
+            'anthropic', model, config, max_tokens
+        ),
         "messages": [{
             "role": "user",
-            "content": user_msg,
+            "content": user_content,
         }],
-        "extra_body": {
-            "temperature": temperature,
-        },
+        "extra_body": extra_body,
     }
     if sys_msg:
         kwargs["system"] = sys_msg
@@ -407,6 +435,9 @@ def _effective_max_tokens(
     if provider == 'google':
         config_key = 'LLMChatter.Google.MaxTokensMultiplier'
         default_multiplier = 2
+    elif provider == 'anthropic':
+        config_key = 'LLMChatter.Anthropic.MaxTokensMultiplier'
+        default_multiplier = 1
     elif (
         provider == 'openai'
         and needs_reasoning_token_multiplier(
@@ -476,6 +507,16 @@ def build_compatible_chat_request(
     ):
         kwargs['reasoning_effort'] = 'none'
     return kwargs
+
+
+def extract_anthropic_text(response):
+    """Join an Anthropic response's text blocks, skipping thinking."""
+    blocks = getattr(response, 'content', None) or []
+    return ''.join(
+        block.text for block in blocks
+        if getattr(block, 'type', 'text') == 'text'
+        and isinstance(getattr(block, 'text', None), str)
+    ).strip()
 
 
 def _extract_chat_content(response, label=''):
@@ -758,8 +799,9 @@ def _call_target(client, prompt, config, provider, model, max_tokens,
             )
             operation = client.chat.completions.create
         else:
-            kwargs = _build_anthropic_request_kwargs(
-                model, max_tokens, temperature, sys_msg, user_msg,
+            kwargs = build_anthropic_request(
+                model, config, max_tokens, user_msg, sys_msg,
+                temperature=temperature,
             )
             operation = client.messages.create
 
@@ -783,8 +825,10 @@ def _call_target(client, prompt, config, provider, model, max_tokens,
             )
             result = _extract_chat_content(response, label)
         else:
-            response = operation(**kwargs)
-            result = response.content[0].text.strip()
+            response = create_anthropic_message(
+                operation, kwargs, model, logger,
+            )
+            result = extract_anthropic_text(response)
     except Exception as exc:
         category = None
         if enabled:
@@ -816,6 +860,41 @@ def _call_target(client, prompt, config, provider, model, max_tokens,
         except Exception:
             pass
     return result
+
+
+def label_routing(config: dict) -> Tuple[str, List[str]]:
+    """LLMChatter.LabelModel and its label patterns.
+
+    The labels are comma-separated fnmatch patterns (group_*,
+    reaction_*). Returns ('', []) when either key is empty, so
+    every call keeps LLMChatter.Model.
+    """
+    model = (config.get('LLMChatter.LabelModel') or '').strip()
+    patterns = [
+        pattern.strip()
+        for pattern in (
+            config.get('LLMChatter.LabelModel.Labels') or ''
+        ).split(',')
+        if pattern.strip()
+    ]
+    if not model or not patterns:
+        return '', []
+    return model, patterns
+
+
+def label_model(label: str, config: dict) -> Optional[str]:
+    """Model for a call whose label matches LLMChatter.LabelModel.Labels.
+
+    Returns None when the label matches nothing or the feature is
+    not configured, so the call keeps LLMChatter.Model.
+    """
+    model, patterns = label_routing(config)
+    if not label:
+        return None
+    for pattern in patterns:
+        if fnmatch.fnmatchcase(label, pattern):
+            return model
+    return None
 
 
 def call_llm(
@@ -857,7 +936,7 @@ def call_llm(
         default_model = DEFAULT_GOOGLE_MODEL
     elif provider == 'openrouter':
         default_model = DEFAULT_OPENROUTER_MODEL
-    model = config.get(
+    model = label_model(label, config) or config.get(
         'LLMChatter.Model', default_model
     )
     model = resolve_model(model)

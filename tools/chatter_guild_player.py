@@ -21,7 +21,9 @@ from chatter_guild import (
     _valid_guild_conversation,
 )
 from chatter_llm import call_llm
+from chatter_guild_profile import get_guild_profile, guild_identity_lines
 from chatter_mode import build_player_chat_guidance, is_roleplay
+from chatter_player_context import player_character_lines
 from chatter_prompts import (
     generate_conversation_length_sequence,
 )
@@ -450,8 +452,11 @@ def _shared_prompt_lines(
     callback_requested: bool,
     mode: str = 'roleplay',
     brief_casual: bool = False,
+    guild_context: Optional[List[str]] = None,
+    player_lines: Optional[List[str]] = None,
 ) -> List[str]:
     lines = [f"The guild is \"{guild_name}\"."]
+    lines.extend(guild_context or [])
     if is_roleplay(mode):
         lines.insert(
             0, "Write natural in-character World of Warcraft Guild Chat."
@@ -472,6 +477,7 @@ def _shared_prompt_lines(
     lines.extend(
         _guild_location_lines(participants, False, mode)
     )
+    lines.extend(player_lines or [])
     if session_context:
         lines.extend(["", session_context])
     lines.extend([
@@ -533,6 +539,8 @@ def _build_single_prompt(
     question_requested: bool,
     mode: str = 'roleplay',
     brief_casual: bool = False,
+    guild_context: Optional[List[str]] = None,
+    player_lines: Optional[List[str]] = None,
 ) -> str:
     lines = _shared_prompt_lines(
         [participant],
@@ -544,6 +552,8 @@ def _build_single_prompt(
         callback_requested,
         mode,
         brief_casual,
+        guild_context=guild_context,
+        player_lines=player_lines,
     )
     lines.append("")
     if brief_casual:
@@ -600,6 +610,8 @@ def _build_multi_prompt(
     question_requested: bool,
     config: Dict,
     brief_casual: bool = False,
+    guild_context: Optional[List[str]] = None,
+    player_lines: Optional[List[str]] = None,
 ) -> Tuple[str, List[Dict], int]:
     mode = get_chatter_mode(config)
     names = [
@@ -664,6 +676,8 @@ def _build_multi_prompt(
         callback_requested,
         mode,
         brief_casual,
+        guild_context=guild_context,
+        player_lines=player_lines,
     )
     lines.append("")
     if topology == 'multi_reply':
@@ -763,6 +777,8 @@ def _generate_single_reply(
     name_requested: bool,
     question_requested: bool,
     metadata: Dict,
+    guild_context: Optional[List[str]] = None,
+    player_lines: Optional[List[str]] = None,
 ) -> List[Dict]:
     brief_casual = bool(
         metadata.get('guild_brief_casual')
@@ -779,6 +795,8 @@ def _generate_single_reply(
         question_requested,
         get_chatter_mode(config),
         brief_casual=brief_casual,
+        guild_context=guild_context,
+        player_lines=player_lines,
     )
     response = call_llm(
         client,
@@ -867,6 +885,8 @@ def _generate_multi_reply(
     name_requested: bool,
     question_requested: bool,
     metadata: Dict,
+    guild_context: Optional[List[str]] = None,
+    player_lines: Optional[List[str]] = None,
 ) -> List[Dict]:
     brief_casual = bool(
         metadata.get('guild_brief_casual')
@@ -885,6 +905,8 @@ def _generate_multi_reply(
             question_requested,
             config,
             brief_casual=brief_casual,
+            guild_context=guild_context,
+            player_lines=player_lines,
         )
     )
     names = [
@@ -1387,6 +1409,13 @@ def process_guild_player_message_event(
         extra.get('guild_name') or 'the guild'
     )
     faction = str(extra.get('team') or '')
+    guild_context = guild_identity_lines(
+        get_guild_profile(db, extra.get('guild_id'))
+    )
+    metadata['guild_info_included'] = bool(guild_context)
+    player_lines = player_character_lines(
+        db, player_guid, player_name, get_chatter_mode(config),
+    )
 
     # The guild's conversation thread: replies see what the
     # guild was talking about (not for brief casual turns),
@@ -1417,6 +1446,8 @@ def process_guild_player_message_event(
             name_requested,
             question_requested,
             metadata,
+            guild_context=guild_context,
+            player_lines=player_lines,
         )
     else:
         messages = _generate_multi_reply(
@@ -1435,6 +1466,8 @@ def process_guild_player_message_event(
             name_requested,
             question_requested,
             metadata,
+            guild_context=guild_context,
+            player_lines=player_lines,
         )
 
     if not messages and len(responders) > 0:
@@ -1455,6 +1488,8 @@ def process_guild_player_message_event(
             name_requested,
             question_requested,
             metadata,
+            guild_context=guild_context,
+            player_lines=player_lines,
         )
 
     if (

@@ -14,12 +14,15 @@ from chatter_constants import (
     CLASS_NAMES,
     EMOTE_LIST,
     RACE_NAMES,
+    ALLIANCE_RACE_IDS,
+    HORDE_RACE_IDS,
     WEAPON_SUBCLASS_NAMES,
     ZONE_COORDINATES,
     ZONE_LEVELS,
 )
-from chatter_text import split_action_prefix
+from chatter_text import split_action_prefix, strip_emojis
 from spell_names import SPELL_DESCRIPTIONS, SPELL_NAMES
+from talent_data import TALENT_SPELLS, TALENT_TABS
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,43 @@ def get_creature_entry_column(db):
         logger.warning("get_creature_entry_column failed", exc_info=True)
         _creature_entry_col = 'id'
     return _creature_entry_col
+
+
+# Race names the worldserver wrote at startup, for races outside
+# RACE_NAMES (added through ChrRaces). Replaced, never mutated, by
+# load_race_names() so worker threads always read a whole dict.
+_server_race_names: Dict[int, str] = {}
+
+
+def load_race_names(db) -> None:
+    """Refresh the race names from llm_chatter_race_names.
+
+    Keeps the previous names when the table cannot be read (not
+    created yet, or the worldserver has not started).
+    """
+    global _server_race_names
+    try:
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT race_id, name FROM llm_chatter_race_names"
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception:
+        logger.debug("Could not read race names", exc_info=True)
+        return
+    _server_race_names = {
+        int(row['race_id']): row['name']
+        for row in rows if row.get('name')
+    }
+
+
+def get_race_name(race_id: int, default: str = "Unknown") -> str:
+    """Get human-readable race name from race ID."""
+    return (
+        RACE_NAMES.get(race_id)
+        or _server_race_names.get(race_id, default)
+    )
 
 
 def wait_for_database(
@@ -543,9 +583,7 @@ def query_zone_bot_gossip_targets(
             'class': CLASS_NAMES.get(
                 int(row.get('class') or 0), 'Adventurer'
             ),
-            'race': RACE_NAMES.get(
-                int(row.get('race') or 0), 'Unknown'
-            ),
+            'race': get_race_name(int(row.get('race') or 0)),
             'level': int(row.get('level') or 0),
             'zone_id': int(row.get('zone') or 0),
         })
@@ -656,8 +694,12 @@ def insert_chat_message(
     addressee_player_guid: int = None,
     addressee_bot_guid: int = None,
     addressee_npc_spawn_id: int = None,
+    held: bool = False,
 ):
     """Insert a message into llm_chatter_messages.
+
+    held=True stores the row with no deliver_at, so delivery never
+    picks it up until something releases it (sets deliver_at).
 
     Centralised helper replacing individual INSERT
     statements across the codebase. Handles the emote
@@ -716,6 +758,14 @@ def insert_chat_message(
     # spoken line. Doing it at the single insert chokepoint
     # covers every producer without touching each call site.
     message, action = split_action_prefix(message)
+    had_text = bool(message)
+    message = strip_emojis(message)
+    action = strip_emojis(action) or None
+    if had_text and not message:
+        logger.info(
+            "skipping emoji-only message from %s (%s)", bot_name, channel,
+        )
+        return
 
     cursor = db.cursor()
     cursor.execute("""
@@ -729,7 +779,8 @@ def insert_chat_message(
          addressee_npc_spawn_id)
         VALUES (
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0,
-            DATE_ADD(NOW(), INTERVAL %s SECOND),
+            CASE WHEN %s THEN NULL
+                 ELSE DATE_ADD(NOW(), INTERVAL %s SECOND) END,
             %s, %s, %s, %s, %s, %s
         )
     """, (
@@ -737,7 +788,7 @@ def insert_chat_message(
         bot_guid, bot_name, message,
         validate_emote(emote), action, npc_spawn_id,
         player_guid, channel, owner_subsystem,
-        int(final_delay),
+        1 if held else 0, int(final_delay),
         group_id, delivery_policy, delivery_reason,
         addressee_player_guid, addressee_bot_guid,
         addressee_npc_spawn_id,
@@ -859,16 +910,15 @@ def get_recent_zone_messages(
     if not zone_id:
         return []
     try:
-        if faction == 'Alliance':
-            faction_filter = (
-                'AND c.race IN (1, 3, 4, 7, 11)'
-            )
-        elif faction == 'Horde':
-            faction_filter = (
-                'AND c.race IN (2, 5, 6, 8, 10)'
-            )
-        else:
-            faction_filter = ''
+        race_ids = {
+            'Alliance': ALLIANCE_RACE_IDS,
+            'Horde': HORDE_RACE_IDS,
+        }.get(faction)
+        faction_filter = (
+            'AND c.race IN ('
+            + ', '.join(str(i) for i in race_ids) + ')'
+            if race_ids else ''
+        )
         # Faction-scoped anti-repetition context fails closed when
         # the speaking character can no longer be identified.
         character_join = (
@@ -1133,53 +1183,46 @@ def get_character_talents(
     if cached is not None:
         return cached
 
+    # acore_world.talent_dbc is empty by design (the core loads
+    # Talent.dbc from the client data), so talent spells are mapped
+    # through talent_data.json instead of a SQL join.
     try:
         cursor = db.cursor(dictionary=True)
         cursor.execute("""
-            SELECT
-                tt.Name_Lang_enUS AS tree_name,
-                s.Name_Lang_enUS AS talent_name,
-                CASE
-                    WHEN ct.spell = t.SpellRank_1 THEN 1
-                    WHEN ct.spell = t.SpellRank_2 THEN 2
-                    WHEN ct.spell = t.SpellRank_3 THEN 3
-                    WHEN ct.spell = t.SpellRank_4 THEN 4
-                    WHEN ct.spell = t.SpellRank_5 THEN 5
-                    ELSE 0
-                END AS points
-            FROM acore_characters.character_talent ct
-            JOIN acore_world.talent_dbc t
-                ON ct.spell IN (
-                    t.SpellRank_1, t.SpellRank_2,
-                    t.SpellRank_3, t.SpellRank_4,
-                    t.SpellRank_5
-                )
-            JOIN acore_world.talenttab_dbc tt
-                ON tt.ID = t.TabID
-            JOIN acore_world.spell_dbc s
-                ON s.ID = t.SpellRank_1
-            WHERE ct.guid = %s
-              AND (ct.specMask & (1 << %s)) <> 0
-            ORDER BY tt.OrderIndex, t.TierID,
-                     t.ColumnIndex
+            SELECT spell
+            FROM acore_characters.character_talent
+            WHERE guid = %s
+              AND (specMask & (1 << %s)) <> 0
         """, (char_guid, active_spec))
 
-        rows = cursor.fetchall()
-        if not rows:
+        learned: Dict[int, dict] = {}
+        for row in cursor.fetchall():
+            info = TALENT_SPELLS.get(int(row['spell'] or 0))
+            if not info:
+                continue
+            known = learned.get(info['talent_id'])
+            if not known or info['rank'] > known['rank']:
+                learned[info['talent_id']] = info
+        if not learned:
             _cache_put(
                 _talent_cache, cache_key, empty, 500
             )
             return empty
 
+        def _order(info):
+            tab = TALENT_TABS.get(info['tab_id']) or {}
+            return (tab.get('order', 99), info['tier'],
+                    info['column'])
+
         talents = []
         tree_totals: Dict[str, int] = {}
-        for row in rows:
-            tree = row['tree_name'] or 'Unknown'
-            name = row['talent_name'] or 'Unknown'
-            pts = int(row['points'] or 0)
+        for info in sorted(learned.values(), key=_order):
+            tree = (TALENT_TABS.get(info['tab_id']) or {}).get(
+                'name') or 'Unknown'
+            pts = info['rank']
             talents.append({
                 'tree_name': tree,
-                'talent_name': name,
+                'talent_name': info['name'] or 'Unknown',
                 'points': pts,
             })
             tree_totals[tree] = (
@@ -1760,8 +1803,12 @@ def cleanup_all_session_data(db):
         cursor.execute(
             "DELETE FROM llm_chatter_messages"
         )
+        # Finished meet greetings are the persisted cooldown for
+        # guild_meet_greeting (IsPersistedEventOnCooldown).
         cursor.execute(
-            "DELETE FROM llm_chatter_events"
+            "DELETE FROM llm_chatter_events "
+            "WHERE event_type <> 'guild_meet_greeting' "
+            "OR status IN ('pending', 'processing')"
         )
         db.commit()
         try:

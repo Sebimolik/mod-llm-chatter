@@ -89,7 +89,16 @@ CREATE TABLE IF NOT EXISTS `llm_chatter_events` (
         'bot_group_gear_change',
         'bot_group_mount_change',
         'bot_group_duel_start',
-        'bot_group_duel_end'
+        'bot_group_duel_end',
+        'guild_pvp_kill',
+        'guild_pvp_death',
+        'zone_pvp_death',
+        'guild_meet_greeting',
+        'guild_join_zone_announce',
+        'guild_npc_encounter',
+        'guild_member_join',
+        'guild_rank_change',
+        'guild_motd_comment'
     ) NOT NULL,
     `event_scope` ENUM('global', 'zone', 'player') NOT NULL DEFAULT 'zone',
     `zone_id` INT UNSIGNED DEFAULT NULL,
@@ -129,6 +138,7 @@ CREATE TABLE IF NOT EXISTS `llm_chatter_queue` (
     `bot_count` TINYINT UNSIGNED NOT NULL DEFAULT 1,
     `message_type` VARCHAR(16) DEFAULT NULL,
     `item_context` JSON DEFAULT NULL,
+    `audience_context` JSON DEFAULT NULL,
     `bot2_guid` INT UNSIGNED DEFAULT NULL,
     `bot2_name` VARCHAR(64) DEFAULT NULL,
     `bot2_class` VARCHAR(32) DEFAULT NULL,
@@ -425,4 +435,12 @@ CREATE TABLE IF NOT EXISTS `llm_screenshot_proximity` (
     `expires_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`account_id`),
     UNIQUE KEY `uq_request_token` (`request_token`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Race names as the worldserver knows them, rewritten at every startup.
+-- The bridge reads them for races outside the original ten (ChrRaces).
+CREATE TABLE IF NOT EXISTS `llm_chatter_race_names` (
+    `race_id` TINYINT UNSIGNED NOT NULL,
+    `name` VARCHAR(64) NOT NULL,
+    PRIMARY KEY (`race_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

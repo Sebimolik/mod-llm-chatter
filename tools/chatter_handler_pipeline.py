@@ -28,6 +28,7 @@ from chatter_db import (
     mark_event,
 )
 from chatter_party_gate import policy_for_reason
+from chatter_guild_profile import get_character_guild_name
 from chatter_group_state import (
     get_bot_mood_label,
     _mark_event,
@@ -285,6 +286,7 @@ def run_group_handler(
     bot['gear'] = build_gear_context(
         db, bot_guid, bot['class'], config,
     )
+    bot['guild_name'] = get_character_guild_name(db, bot_guid)
 
     try:
         # 9. Build context

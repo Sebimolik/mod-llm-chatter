@@ -20,13 +20,13 @@ from chatter_constants import (
     RP_GOSSIP_CREATIVE_TWISTS,
     RP_MESSAGE_CATEGORIES, RP_LENGTH_HINTS,
     PERSONALITY_SPICES, RP_PERSONALITY_SPICES,
-    CLASS_NAMES, RACE_NAMES, CLASS_ROLE_MAP,
+    CLASS_NAMES, CLASS_ROLE_MAP,
 )
 from chatter_shared import (
-    get_chatter_mode, build_race_class_context,
+    get_chatter_mode, get_race_name, build_race_class_context,
     build_race_class_context_parts,
     build_bot_identity,
-    get_zone_flavor, format_price,
+    get_zone_flavor, format_price, format_price_words,
     build_anti_repetition_context,
     append_json_instruction,
     append_conversation_json_instruction,
@@ -37,6 +37,7 @@ from chatter_shared import (
     append_speaker_gear,
 )
 from chatter_mode import (
+    RP_NO_PLAYER_SLANG,
     build_player_chat_guidance,
     build_player_prompt_header,
 )
@@ -53,6 +54,15 @@ from chatter_persona import (
 )
 
 logger = logging.getLogger(__name__)
+
+RP_TRADE_PRICE_RULES = (
+    "State the asking price conversationally in gold, silver or "
+    "copper coins, the way a person in the world would say it "
+    "(e.g. 'two gold and fifty silver coins for the lot')",
+    "Write every number as words, never digits: 'ten potions', "
+    "'forty silver', not '10' or '40s'",
+    "No trade shorthand (WTS, WTB, WTT, pst, /w, OBO, 2g, 50s)",
+)
 
 # Recency buffer so the same spice doesn't repeat
 # across consecutive calls.
@@ -103,6 +113,11 @@ def configure_prompt_flavor(config) -> None:
 # =============================================================================
 # PERSONALITY SPICE PICKER
 # =============================================================================
+
+def _guild_suffix(bot: dict) -> str:
+    guild_name = bot.get('guild_name', '')
+    return f' of the guild "{guild_name}"' if guild_name else ''
+
 def pick_personality_spices(
     config=None, mode='normal',
     spice_count_override=None,
@@ -454,6 +469,7 @@ def build_dynamic_guidelines(
             "text. Only use {quest:Name}, "
             "{item:Name}, or {spell:Name} "
             "placeholders when explicitly told to.",
+            RP_NO_PLAYER_SLANG,
         ]
     else:
         guidelines = [
@@ -582,6 +598,7 @@ def build_plain_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} "
@@ -735,6 +752,7 @@ def build_quest_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} Speak in-character about "
@@ -870,6 +888,7 @@ def build_loot_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} Speak in-character about "
@@ -1024,6 +1043,7 @@ def build_quest_reward_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} Speak in-character about "
@@ -1219,6 +1239,7 @@ def build_plain_conversation_prompt(
             cls = bot.get('class', '')
             parts.append(
                 f"{bot['name']} is a {race} {cls}"
+                f"{_guild_suffix(bot)}"
             )
             append_speaker_gear(parts, bot)
             if is_rp:
@@ -1464,6 +1485,7 @@ def build_gossip_statement_prompt(
             bot['name'], bot.get('race', ''),
             bot.get('class', ''), bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} Speak in-character in General "
@@ -1690,6 +1712,7 @@ def build_quest_conversation_prompt(
             parts.append(
                 f"{bot['name']} is a "
                 f"{bot['race']} {bot['class']}"
+                f"{_guild_suffix(bot)}"
             )
             append_speaker_gear(parts, bot)
 
@@ -1940,6 +1963,7 @@ def build_event_conversation_prompt(
             cls = bot.get('class', '')
             parts.append(
                 f"{bot['name']} is a {race} {cls}"
+                f"{_guild_suffix(bot)}"
             )
             append_speaker_gear(parts, bot)
             if is_rp:
@@ -2218,6 +2242,7 @@ def build_spell_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} "
@@ -2396,6 +2421,7 @@ def build_spell_conversation_prompt(
         parts.append(
             f"{bot['name']} is a "
             f"{bot['race']} {bot['class']}"
+            f"{_guild_suffix(bot)}"
         )
         append_speaker_gear(parts, bot)
         if is_rp:
@@ -2583,11 +2609,14 @@ def build_trade_statement_prompt(
             bot.get('class', ''),
             bot.get('gender', ''),
             gear=bot.get('gear', ''),
+            guild_name=bot.get('guild_name', ''),
         )
         parts.append(
             f"{identity} You want to "
             f"sell or trade an item you found. "
-            f"Speak in-character."
+            f"Speak in-character, the way a traveller "
+            f"or merchant in Azeroth would offer goods "
+            f"aloud, not like a player posting a trade ad."
         )
         rp_ctx = build_race_class_context(
             bot.get('race', ''), bot.get('class', '')
@@ -2617,7 +2646,7 @@ def build_trade_statement_prompt(
         f"{item_count} of this item and must not offer "
         "more than that quantity"
     )
-    vendor_price = format_price(
+    vendor_price = (format_price_words if is_rp else format_price)(
         item.get('sell_price', 0)
     )
     if vendor_price:
@@ -2625,7 +2654,7 @@ def build_trade_statement_prompt(
         # more for greens/blues
         parts.append(
             f"Vendor sell price: {vendor_price} "
-            f"(player price should be higher, "
+            f"(asking price should be higher, "
             f"roughly 2-5x vendor value)"
         )
     parts.append(
@@ -2666,21 +2695,27 @@ def build_trade_statement_prompt(
     guidelines = build_dynamic_guidelines(
         config=config, mode=mode
     )
-    guidelines.append(
-        "STRICT: Keep under 80 characters "
-        "(the link counts as ~15 chars)"
-    )
-    guidelines.append(
-        "Include a realistic price in gold/silver "
-        "(e.g. 2g, 50s, 1g20s)"
-    )
-    guidelines.append(
-        "Trade abbreviations encouraged: WTS, WTB, "
-        "WTT, pst, /w, OBO"
-    )
     if is_rp:
         guidelines.append(
+            "STRICT: Keep under 110 characters "
+            "(the link counts as ~15 chars)"
+        )
+        guidelines.extend(RP_TRADE_PRICE_RULES)
+        guidelines.append(
             "Stay in character but sound natural"
+        )
+    else:
+        guidelines.append(
+            "STRICT: Keep under 80 characters "
+            "(the link counts as ~15 chars)"
+        )
+        guidelines.append(
+            "Include a realistic price in gold/silver "
+            "(e.g. 2g, 50s, 1g20s)"
+        )
+        guidelines.append(
+            "Trade abbreviations encouraged: WTS, WTB, "
+            "WTT, pst, /w, OBO"
         )
     parts.append(
         "Guidelines: " + "; ".join(guidelines)
@@ -2763,6 +2798,7 @@ def build_trade_conversation_prompt(
             parts.append(
                 f"{bot['name']} is a "
                 f"{bot['race']} {bot['class']}"
+                f"{_guild_suffix(bot)}"
             )
             append_speaker_gear(parts, bot)
 
@@ -2782,13 +2818,13 @@ def build_trade_conversation_prompt(
         f"{item_count} of this item and nobody may "
         "offer more than that quantity"
     )
-    vendor_price = format_price(
+    vendor_price = (format_price_words if is_rp else format_price)(
         item.get('sell_price', 0)
     )
     if vendor_price:
         parts.append(
             f"Vendor sell price: {vendor_price} "
-            f"(player price should be higher, "
+            f"(asking price should be higher, "
             f"roughly 2-5x vendor value)"
         )
     parts.append(
@@ -2861,14 +2897,17 @@ def build_trade_conversation_prompt(
     guidelines.append(
         "Use item placeholder at least once"
     )
-    guidelines.append(
-        "Include realistic prices in gold/silver "
-        "(use vendor price as reference)"
-    )
-    guidelines.append(
-        "Trade abbreviations OK: WTS, WTB, WTT, "
-        "pst, OBO"
-    )
+    if is_rp:
+        guidelines.extend(RP_TRADE_PRICE_RULES)
+    else:
+        guidelines.append(
+            "Include realistic prices in gold/silver "
+            "(use vendor price as reference)"
+        )
+        guidelines.append(
+            "Trade abbreviations OK: WTS, WTB, WTT, "
+            "pst, OBO"
+        )
     guidelines.append(
         "Follow the length sequence above"
     )
@@ -2925,9 +2964,8 @@ def build_zone_intrusion_prompt(
         int(extra_data.get('defender_class', 0)),
         'adventurer'
     )
-    defender_race = RACE_NAMES.get(
-        int(extra_data.get('defender_race', 0)),
-        'Unknown'
+    defender_race = get_race_name(
+        int(extra_data.get('defender_race', 0))
     )
     defender_level = extra_data.get(
         'defender_level', '??'
@@ -2941,9 +2979,8 @@ def build_zone_intrusion_prompt(
         int(extra_data.get('intruder_class', 0)),
         'adventurer'
     )
-    intruder_race = RACE_NAMES.get(
-        int(extra_data.get('intruder_race', 0)),
-        'Unknown'
+    intruder_race = get_race_name(
+        int(extra_data.get('intruder_race', 0))
     )
     intruder_level = extra_data.get(
         'intruder_level', '??'

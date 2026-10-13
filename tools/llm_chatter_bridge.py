@@ -49,6 +49,7 @@ from chatter_db import (
     any_real_players_online,
     cleanup_stale_groups,
     cleanup_all_session_data,
+    load_race_names,
 )
 from chatter_shared import (
     format_location_label,
@@ -56,6 +57,7 @@ from chatter_shared import (
     get_chatter_mode,
     set_race_lore_chance,
     set_race_vocab_chance,
+    set_race_class_notes_enabled,
     set_action_chance,
     set_emote_chance,
     set_language,
@@ -66,6 +68,7 @@ from chatter_shared import (
     wait_for_database,
     stagger_if_needed,
 )
+from chatter_guild_profile import get_character_guild_name
 from chatter_events import (
     cleanup_expired_events,
     reset_stuck_processing_events,
@@ -416,7 +419,10 @@ def process_pending_requests(
                     else raw_race
                 ),
                 'level': request['bot1_level'],
-                'zone': request['bot1_zone']
+                'zone': request['bot1_zone'],
+                'guild_name': get_character_guild_name(
+                    db, request['bot1_guid']
+                ),
             }
             success = process_statement(
                 db, cursor, client,
@@ -461,6 +467,9 @@ def process_pending_requests(
                         f'{prefix}_level'
                     ],
                     'zone': zone,
+                    'guild_name': get_character_guild_name(
+                        db, request[f'{prefix}_guid']
+                    ),
                 }
 
             # Bot 1 (always present)
@@ -691,8 +700,14 @@ EVENT_LOG_OVERRIDES = {
     'bot_group_screenshot_observation': 'Screenshot vision',
     'bot_group_general_reaction': 'General-to-party relay',
     'player_general_msg': 'General chat event',
+    'guild_meet_greeting': 'Guild meet greeting',
+    'guild_join_zone_announce': 'Guild join announcement',
+    'guild_npc_encounter': 'Guild NPC encounter',
     'guild_player_message': 'Guild player turn',
     'guild_login_greeting': 'Guild login greeting',
+    'guild_member_join': 'Guild join greeting',
+    'guild_rank_change': 'Guild rank change',
+    'guild_motd_comment': 'Guild MOTD comment',
     'player_enters_zone': 'Zone intrusion',
     'bot_group_low_health': 'State callout',
     'bot_group_oom': 'State callout',
@@ -706,6 +721,9 @@ EVENT_LOG_OVERRIDES = {
     'bg_node_contested': 'BG event',
     'bg_node_captured': 'BG event',
     'bg_pvp_kill': 'BG event',
+    'guild_pvp_kill': 'Guild PvP kill',
+    'guild_pvp_death': 'Guild PvP death',
+    'zone_pvp_death': 'General PvP death',
     'bg_score_milestone': 'BG event',
     'bg_idle_chatter': 'BG event',
     'raid_boss_pull': 'Raid event',
@@ -1426,6 +1444,9 @@ def main():
     set_race_vocab_chance(int(config.get(
         'LLMChatter.RaceVocabChance', 15
     )))
+    set_race_class_notes_enabled(str(config.get(
+        'LLMChatter.RaceClassNotes.Enable', '1'
+    )) == '1')
     set_action_chance(int(config.get(
         'LLMChatter.ActionChance', 10
     )), mode=config.get(
@@ -2339,6 +2360,9 @@ def main():
                     # player went offline (runs
                     # regardless of UseEventSystem)
                     cleanup_stale_groups(db)
+                    # Race names the worldserver
+                    # wrote at its last startup
+                    load_race_names(db)
                     last_cleanup = current_time
 
                 # Daily orphaned-memory GC (deleted

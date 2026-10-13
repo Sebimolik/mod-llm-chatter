@@ -7,6 +7,7 @@
 #include "LLMChatterBossDialogue.h"
 #include "LLMChatterConfig.h"
 #include "LLMChatterGroup.h"
+#include "LLMChatterReplyHold.h"
 #include "LLMChatterShared.h"
 
 #include "CellImpl.h"
@@ -1197,16 +1198,8 @@ static std::string GetNPCRaceName(Creature const* cr)
     if (!extra || !extra->DisplayRaceID)
         return "";
     // ChrRaces also names non-playable races (goblins,
-    // ogres...) that GetRaceName() does not know.
-    ChrRacesEntry const* race =
-        sChrRacesStore.LookupEntry(extra->DisplayRaceID);
-    if (!race)
-        return "";
-    uint8 locale = sWorld->GetDefaultDbcLocale();
-    char const* name = race->name[locale];
-    if (!name || !*name)
-        name = race->name[LOCALE_enUS];
-    return name ? name : "";
+    // ogres...), and names every race in the DBC locale.
+    return GetChrRacesName(extra->DisplayRaceID);
 }
 
 // The faction the NPC belongs to (e.g. "Darnassus",
@@ -1775,7 +1768,8 @@ bool QueuePlayerEmoteProximityEvent(
     uint32 mirrorEmote,
     std::string const& interactionMode,
     bool addressedSpeaks,
-    bool isCustom = false)
+    bool isCustom = false,
+    uint32 replyHoldId = 0)
 {
     if (!player || speakers.empty())
         return false;
@@ -1809,6 +1803,8 @@ bool QueuePlayerEmoteProximityEvent(
         + JsonEscape(interactionMode) + "\""
         + ",\"custom_emote\":"
         + (isCustom ? "1" : "0");
+    if (replyHoldId)
+        extra += ReplyHoldJsonField(replyHoldId);
     if (!json.empty() && json.back() == '}')
         json.insert(json.size() - 1, extra);
 
@@ -3087,13 +3083,17 @@ bool HandleProximityPlayerbotEmote(
         return false;
     }
 
+    uint32 replyHoldId = addressedSpeaks ? NewReplyHoldId() : 0;
     // GetTextEmoteName(0) falls back to "wave", so a custom
     // emote must carry its typed text instead of an id lookup.
-    return QueuePlayerEmoteProximityEvent(
+    bool queued = QueuePlayerEmoteProximityEvent(
         player, *addressedIt, speakers, candidates,
         isCustom ? customText : GetTextEmoteName(textEmote),
         textEmote, mirrorEmote,
-        "player_inclusive", addressedSpeaks, isCustom);
+        "player_inclusive", addressedSpeaks, isCustom, replyHoldId);
+    if (queued && replyHoldId)
+        HoldBotForReply(bot, player, replyHoldId);
+    return queued;
 }
 
 bool HandleProximityPartyBotEmoteWitness(

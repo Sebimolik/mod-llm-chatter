@@ -17,10 +17,12 @@ import threading
 import time
 from typing import Optional, Dict, List, Tuple, Any
 
+from chatter_lore_data import RACE_CLASS_NOTES
 from chatter_constants import (
     ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
     ZONE_NAMES_ES, ZONE_NAMES_KO,
     CLASS_NAMES, RACE_NAMES,
+    ALLIANCE_RACE_IDS, HORDE_RACE_IDS,
     RACE_SPEECH_PROFILES, RACE_SPEECH_PROFILES_RU, RACE_SPEECH_PROFILES_FR,
     RACE_SPEECH_PROFILES_DE, RACE_SPEECH_PROFILES_ES,
     CLASS_SPEECH_MODIFIERS,
@@ -84,6 +86,7 @@ from chatter_db import (
     get_character_info_by_name,
     get_character_talents,
     get_creature_entry_column,
+    get_race_name,
 )
 from talent_catalog import TALENT_CATALOG
 from chatter_structured import (
@@ -543,22 +546,35 @@ def get_class_name(class_id: int) -> str:
     return CLASS_NAMES.get(class_id, "Adventurer")
 
 
-def get_race_name(race_id: int) -> str:
-    """Get human-readable race name from race ID."""
-    return RACE_NAMES.get(race_id, "Unknown")
-
-
 def get_race_faction(race_id) -> str:
     """Return the playable faction for a WotLK race ID."""
     try:
         race_id = int(race_id)
     except (TypeError, ValueError):
         return ""
-    if race_id in (1, 3, 4, 7, 11):
+    if race_id in ALLIANCE_RACE_IDS:
         return "Alliance"
-    if race_id in (2, 5, 6, 8, 10):
+    if race_id in HORDE_RACE_IDS:
         return "Horde"
     return ""
+
+
+def faction_war_line(
+    own_subject: str, own_team: str,
+    enemy_name: str, enemy_team: str,
+    own_verb: str = "fights",
+) -> str:
+    """PvP framing: who fights for which faction, and that the Horde and
+    the Alliance are hostile. Empty when a faction is unknown or equal."""
+    own_team = str(own_team or '').strip()
+    enemy_team = str(enemy_team or '').strip()
+    if not own_team or not enemy_team or own_team == enemy_team:
+        return ""
+    return (
+        f"{own_subject} {own_verb} for the {own_team}; {enemy_name} "
+        f"fights for the {enemy_team}. The Horde and the Alliance are "
+        "hostile factions, locked in a long, bitter war for survival."
+    )
 
 
 def get_gender_label(gender_id: int) -> str:
@@ -573,6 +589,7 @@ def build_bot_identity(
     gender: str = '',
     suffix: str = '.',
     gear: str = '',
+    guild_name: str = '',
 ) -> str:
     """Return an identity prefix for bot prompts.
 
@@ -588,9 +605,17 @@ def build_bot_identity(
         )
     else:
         identity = f"You are {bot_name}{suffix}"
+    identity += _guild_membership_sentence(guild_name)
 
     gear = (gear or '').strip()
     return f"{identity} {gear}" if gear else identity
+
+
+def _guild_membership_sentence(guild_name: str) -> str:
+    guild_name = (guild_name or '').strip()
+    if not guild_name:
+        return ''
+    return f" You are a member of the guild \"{guild_name}\"."
 
 
 def build_bot_identity_with_level(
@@ -600,6 +625,7 @@ def build_bot_identity_with_level(
     bot_level,
     gender: str = '',
     suffix: str = ' in World of Warcraft.',
+    guild_name: str = '',
 ) -> str:
     """Return a leveled identity prefix for bot prompts."""
     gender_prefix = f"{gender} " if gender else ""
@@ -607,6 +633,7 @@ def build_bot_identity_with_level(
         f"You are {bot_name}, a level "
         f"{bot_level} {gender_prefix}{bot_race} "
         f"{bot_class}{suffix}"
+        + _guild_membership_sentence(guild_name)
     )
 
 
@@ -617,6 +644,7 @@ def build_bot_identity_from_dict(
 ) -> str:
     """Build a standard identity line from a bot dict."""
     gender = bot.get('gender', '')
+    guild_name = bot.get('guild_name', '')
     if include_level:
         return build_bot_identity_with_level(
             bot['name'],
@@ -625,12 +653,14 @@ def build_bot_identity_from_dict(
             bot['level'],
             gender=gender,
             suffix=suffix,
+            guild_name=guild_name,
         )
     return build_bot_identity(
         bot['name'],
         bot['race'],
         bot['class'],
         gender=gender,
+        guild_name=guild_name,
     )
 
 
@@ -665,6 +695,8 @@ _race_lore_chance = 0.15
 # Module-level race vocabulary chance (set from config)
 _race_vocab_chance = 0.15
 
+_race_class_notes_enabled = True
+
 
 def set_race_lore_chance(chance_pct: int):
     """Set from config: LLMChatter.RaceLoreChance (0-100)."""
@@ -676,6 +708,33 @@ def set_race_vocab_chance(chance_pct: int):
     """Set from config: LLMChatter.RaceVocabChance (0-100)."""
     global _race_vocab_chance
     _race_vocab_chance = chance_pct / 100.0
+
+
+def set_race_class_notes_enabled(enabled: bool):
+    """Set from config: LLMChatter.RaceClassNotes.Enable."""
+    global _race_class_notes_enabled
+    _race_class_notes_enabled = bool(enabled)
+
+
+def race_class_note(
+    race: str, class_name: str,
+    class_style: str = None, actual_role: str = None,
+    subject: str = "Your",
+) -> str:
+    """Lore note for this race+class; priests split into Light/Shadow."""
+    if not _race_class_notes_enabled:
+        return ""
+    style = class_style or class_name
+    if style == 'Priest':
+        style = (
+            'Shadow Priest'
+            if actual_role and actual_role.endswith('dps')
+            else 'Light Priest'
+        )
+    note = RACE_CLASS_NOTES.get((race, style))
+    if not note:
+        return ""
+    return f"{subject} people and calling ({race} {style}): {note}"
 
 
 def build_race_class_context(
@@ -1668,6 +1727,121 @@ def format_price(copper: int) -> str:
     return " ".join(parts) if parts else ""
 
 
+_ONES = (
+    "zero one two three four five six seven eight nine ten eleven "
+    "twelve thirteen fourteen fifteen sixteen seventeen eighteen "
+    "nineteen"
+).split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+
+
+def number_to_words(n: int) -> str:
+    """Spell out a non-negative integer (up to 999,999) in English."""
+    n = int(n)
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        return _TENS[tens] + (f"-{_ONES[ones]}" if ones else "")
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        head = f"{_ONES[hundreds]} hundred"
+        return head + (f" and {number_to_words(rest)}" if rest else "")
+    if n < 1_000_000:
+        thousands, rest = divmod(n, 1000)
+        head = f"{number_to_words(thousands)} thousand"
+        if not rest:
+            return head
+        return head + (" and " if rest < 100 else " ") + number_to_words(rest)
+    return str(n)
+
+
+def _coins_in_words(gold: int, silver: int, copper: int) -> str:
+    parts = [f"{number_to_words(amount)} {metal}"
+             for amount, metal in ((gold, "gold"), (silver, "silver"),
+                                   (copper, "copper")) if amount]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def format_price_words(copper: int) -> str:
+    """Copper amount as spoken coins, e.g. 'one gold and twenty silver coins'."""
+    if not copper or copper <= 0:
+        return ""
+    words = _coins_in_words(
+        copper // 10000, (copper % 10000) // 100, copper % 100)
+    return f"{words} coins"
+
+
+_WOW_LINK_RE = re.compile(r'\|c[0-9A-Fa-f]{8}\|H[^|]*\|h\[[^\]]*\]\|h\|r')
+_COIN_RE = re.compile(
+    r'(?<![\w.])(?<!\d,)(\d+)\s?(g|gold|s|silver|c|copper)(?![A-Za-z])'
+    r'(?:\s*(\d+)\s?(s|silver|c|copper)(?![A-Za-z]))?'
+    r'(?:\s*(\d+)\s?(c|copper)(?![A-Za-z]))?',
+    re.IGNORECASE,
+)
+# Digits joined by a comma ("12,5", "1,500.50") are left as written.
+_DIGITS_RE = re.compile(r'(?<![\w.])(?<!\d,)\d{1,6}(?![\w.]|,\d)')
+# "1,500" must reach _COIN_RE and _DIGITS_RE as one number, or each
+# would rewrite its digit groups separately ("one,five hundred"). It may
+# be followed by a coin suffix ("1,500g20s") but not by more digits or a
+# decimal part.
+_GROUPED_RE = re.compile(
+    r'(?<![\w.,])\d{1,3}(?:,\d{3})+(?![\d,.]?\d)'
+    r'(?=(?:g|gold|s|silver|c|copper)(?![A-Za-z])|\W|$)',
+    re.IGNORECASE,
+)
+
+
+def _coin_match_words(match) -> str:
+    amounts = {'g': 0, 's': 0, 'c': 0}
+    for amount, unit in ((match.group(1), match.group(2)),
+                         (match.group(3), match.group(4)),
+                         (match.group(5), match.group(6))):
+        if amount and unit:
+            amounts[unit[0].lower()] = int(amount)
+    return _coins_in_words(amounts['g'], amounts['s'], amounts['c'])
+
+
+def spell_out_numbers(text: str) -> str:
+    """Write prices ('1g20s', '50 silver') and other numbers in words,
+    leaving WoW link markup untouched."""
+    if not text:
+        return text
+    pieces = []
+    last = 0
+    for link in _WOW_LINK_RE.finditer(text):
+        pieces.append(_spell_plain(text[last:link.start()]))
+        pieces.append(link.group(0))
+        last = link.end()
+    pieces.append(_spell_plain(text[last:]))
+    return "".join(pieces)
+
+
+def spell_out_trade_numbers(text: str) -> str:
+    """spell_out_numbers() for English chat only. It writes English
+    words, so other languages keep the model's own wording (the trade
+    prompt already asks for numbers in words)."""
+    if _language:
+        return text
+    return spell_out_numbers(text)
+
+
+def _ungroup(match) -> str:
+    # number_to_words() stops at 999,999; larger amounts keep their commas.
+    plain = match.group(0).replace(',', '')
+    return plain if int(plain) < 1_000_000 else match.group(0)
+
+
+def _spell_plain(text: str) -> str:
+    text = _GROUPED_RE.sub(_ungroup, text)
+    text = _COIN_RE.sub(_coin_match_words, text)
+    return _DIGITS_RE.sub(lambda m: number_to_words(int(m.group(0))), text)
+
+
 def format_quest_link(
     quest_id: int, quest_level: int, quest_name: str
 ) -> str:
@@ -2611,6 +2785,9 @@ DEFAULT_BRIEF_CASUAL_TIER = 'short'
 _BRIEF_CASUAL_TIER_ORDER = ('tiny', 'short', 'relaxed')
 
 
+_FIRST_SENTENCE = re.compile(r'^(.+?[.!?])(?=\s|$)', re.S)
+
+
 def _brief_casual_limits(
     tier: Optional[str],
 ) -> Tuple[int, int, int]:
@@ -2728,19 +2905,25 @@ def bound_brief_casual_response(
     fallback_emote: Optional[str] = None,
     tier: Optional[str] = None,
 ) -> Tuple[str, Optional[str]]:
-    """Bound a usable brief response instead of discarding it."""
+    """Keep a usable brief response instead of discarding it.
+
+    A reply that runs over its length band is never cut mid-sentence:
+    its first complete sentence is kept when that fits the band,
+    otherwise the reply is delivered whole (only the chat limit applies).
+    """
     if brief_casual_response_fits(message, emote, tier):
         return message, emote
-    _, hi, chars = _brief_casual_limits(tier)
     source = (
         str(message or '').strip()
         or str(fallback_message or '').strip()
     )
-    first_words = ' '.join(source.split()[:hi])
-    return (
-        shorten_chat_message(first_words, chars),
-        emote or fallback_emote,
-    )
+    emote = emote or fallback_emote
+    match = _FIRST_SENTENCE.match(source)
+    if match:
+        first = match.group(1).strip()
+        if brief_casual_response_fits(first, None, tier):
+            return first, emote
+    return shorten_chat_message(source), emote
 
 
 def build_brief_casual_repair_prompt(
@@ -3222,7 +3405,19 @@ def calculate_dynamic_delay(
         # Player is waiting — fast reply.  The LLM
         # already took several seconds ("thinking"),
         # so keep the typing simulation short.
-        return random.uniform(4.0, 8.0)
+        try:
+            low = int(config.get(
+                'LLMChatter.ResponsiveDelayMin', 4000
+            )) / 1000.0
+            high = int(config.get(
+                'LLMChatter.ResponsiveDelayMax', 8000
+            )) / 1000.0
+        except (ValueError, TypeError):
+            low, high = 4.0, 8.0
+        low, high = max(0.0, low), max(0.0, high)
+        if high < low:
+            low, high = high, low
+        return random.uniform(low, high)
 
     # Ambient/idle — full simulation
     reading_time = (

@@ -3,6 +3,7 @@
  */
 
 #include "LLMChatterAmbient.h"
+#include "LLMChatterAudience.h"
 #include "LLMChatterBossDialogue.h"
 #include "LLMChatterConfig.h"
 #include "LLMChatterScreenshot.h"
@@ -14,6 +15,7 @@
 #include "LLMChatterProximity.h"
 #include "LLMChatterProximityFight.h"
 #include "LLMChatterShared.h"
+#include "LLMChatterThemedAudience.h"
 
 #include "DatabaseEnv.h"
 #include "Group.h"
@@ -328,6 +330,8 @@ public:
             "DELETE FROM llm_guild_session_history");
         CharacterDatabase.Execute(
             "DELETE FROM llm_guild_chat_sessions");
+
+        SaveRaceNames();
 
         LoadTransportCache();
 
@@ -851,7 +855,10 @@ private:
                 R"("participants":{},)"
                 R"("guildmates":"{}",)"
                 R"("team":"{}",)"
-                R"("zone_id":{}}})",
+                R"("zone_id":{},)"
+                R"("weather":"{}",)"
+                // Online real members, so rumors rotate between readers.
+                R"("audience":{}}})",
                 guildId,
                 JsonEscape(guildName),
                 JsonEscape(speaker->GetName()),
@@ -861,7 +868,11 @@ private:
                 participantsJson,
                 JsonEscape(mates),
                 teamName,
-                speaker->GetZoneId());
+                speaker->GetZoneId(),
+                JsonEscape(GetZoneWeatherName(
+                    speaker->GetZoneId())),
+                BuildAudienceListJson(
+                    CollectRealGuildMembers(guildId, 10)));
 
             std::string cooldownKey =
                 "guild_idle_"

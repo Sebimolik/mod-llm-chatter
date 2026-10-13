@@ -2364,10 +2364,11 @@ def _call_llm_for_memory(
         memory_type, "a shared moment"
     )
 
-    prompt = (
-        f"{build_bot_identity(bot_name, bot_race, bot_class, bot_gender).rstrip('.')}"
-        f" in World of Warcraft.\n"
+    identity = build_bot_identity(
+        bot_name, bot_race, bot_class, bot_gender,
+        suffix=' in World of Warcraft.',
     )
+    prompt = f"{identity}\n"
     if player_name:
         prompt += (
             f"Player companion: {player_name}"
@@ -3750,6 +3751,24 @@ def purge_orphaned_memories(db):
 # ============================================================
 # MEMORY RETRIEVAL
 # ============================================================
+
+def memory_recall_count(config, idle=False):
+    """How many memories one prompt retrieves.
+
+    LLMChatter.Memory.RecallCount covers greetings, replies to the
+    player and bot questions; IdleRecallCount covers idle chatter.
+    Clamped to 1-10.
+    """
+    key, default = (
+        ('LLMChatter.Memory.IdleRecallCount', 2) if idle
+        else ('LLMChatter.Memory.RecallCount', 3)
+    )
+    try:
+        count = int(config.get(key, default))
+    except (TypeError, ValueError):
+        count = default
+    return max(1, min(10, count))
+
 
 def _select_within_token_budget(
     candidates, count, max_tokens,
