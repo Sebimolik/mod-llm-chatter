@@ -1214,7 +1214,7 @@ static std::string GetNPCFactionName(Creature const* cr)
         sFactionStore.LookupEntry(factionTemplate->faction);
     if (!faction)
         return "";
-    uint8 locale = sWorld->GetDefaultDbcLocale();
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
     char const* name = faction->name[locale];
     if (!name || !*name)
         name = faction->name[LOCALE_enUS];
@@ -1295,20 +1295,6 @@ std::string BuildParticipantsJson(
     }
     json += "]";
     return json;
-}
-
-std::string GetAreaNameForLocale(uint32 areaId)
-{
-    AreaTableEntry const* area =
-        sAreaTableStore.LookupEntry(areaId);
-    if (!area)
-        return "";
-
-    uint8 locale = sWorld->GetDefaultDbcLocale();
-    char const* name = area->area_name[locale];
-    if (!name || !*name)
-        name = area->area_name[LOCALE_enUS];
-    return name ? name : "";
 }
 
 // Scale `chance` down by the anchor's recent proximity

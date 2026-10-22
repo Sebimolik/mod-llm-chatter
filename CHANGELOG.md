@@ -1,5 +1,124 @@
 # Changelog
 
+### 2026-10-22 - Bots Remember You Now
+
+Your bot companions have real memories. They notice the moments you share —
+boss kills, level-ups, a big quest finished as a group, a wipe that went
+badly, a new mount, a new title — and bring them up later the way a friend
+would.
+
+* **They compare notes on you**: group with more than one of your own bots and
+  they'll sometimes talk about you to each other.
+* **Some moments matter more than others**, and the small ones fade first —
+  routine banter thins out over the following weeks, while the genuinely big
+  things stay put indefinitely.
+* **Memories get tidied, not thrown away**: rather than deleting the oldest
+  entry whenever a bot runs out of room — which would leave you with nothing
+  but last week — a bot folds a handful of its *least* memorable entries into
+  one short note that keeps the gist, quietly and a few at a time. Important
+  memories are never eligible, the single most meaningful memory a bot has of
+  you is protected outright, and a note can only be folded down so many times,
+  so it can't drift away from what actually happened.
+* **Bots build up a feeling about you**: alongside the specific memories, each
+  bot keeps one short, evolving sense of how it *feels* about you — warmth,
+  wariness, running jokes, whatever your history together has actually earned.
+  It colours how a bot talks to you rather than being something it recites.
+* **A group's mood lingers**: after something significant the party stays in
+  that mood instead of snapping back to neutral the moment the fight ends —
+  still buzzing after a great kill, a bit rattled after a rough wipe. A bot
+  won't just sound rattled, it'll say what rattled it. The mood survives a
+  server restart and fades on its own after about ten minutes.
+* **Curious what a bot remembers?** `.llmc memory <botname>` tells you, with
+  that bot's feeling about you at the top.
+* **Optional: run it on a cheap model.** None of this text is ever shown to you
+  word-for-word — it's stored and reworded by your main model before it reaches
+  chat. So if you point `LLMChatter.QuickAnalyze.Model` at the cheapest model
+  your provider offers, all the memory bookkeeping moves there and costs you
+  almost nothing. Nothing moves until you name that model — until then every
+  call stays on your main model. See [Tuning Bot Memory](#tuning-bot-memory).
+
+### 2026-10-19 - Non-English Chatter Crash Fix
+
+* **No more worldserver crash with a non-English `LLMChatter.Language`**:
+  with enUS server DBCs (as mod-playerbots requires) and a language such
+  as `DE`, the first General-channel message aborted the worldserver
+  (`channelName.length() > 0`), and the undelivered message crashed it
+  again on every restart (#83). General channel names now always follow
+  the worldserver's DBC locale, as the core's own channels do, so bots
+  join and speak in the same General channel as players while still
+  chatting in the configured language. A General message whose channel
+  cannot be resolved is dropped as `general_channel_unresolved` instead of
+  crashing or retrying forever.
+* **Zone names for nearby-object chatter**: zone and subzone names now
+  fall back to English when the server DBCs have no entry in the chatter
+  language, instead of reaching the prompt empty.
+
+### 2026-10-18 - Any OpenAI-Compatible Server
+
+* **Use any server that speaks the OpenAI API**: the new
+  `openai_compatible` provider works with local llama.cpp, vLLM, LM Studio
+  or Ollama's `/v1` endpoint, and with hosted services that offer the same
+  API. Set `LLMChatter.OpenAICompatible.BaseUrl`, the model ID your server
+  lists, and a key only if it needs one. Unlike pointing the OpenRouter
+  settings at another host, it sends no OpenRouter headers or reasoning
+  options. It also works for `LabelModel` and as a separate
+  `QuickAnalyze.Provider`. A missing URL or model stops the bridge with a
+  clear message instead of quietly using another provider.
+* **New settings**: `LLMChatter.OpenAICompatible.BaseUrl` and
+  `LLMChatter.OpenAICompatible.ApiKey`.
+
+### 2026-10-18 - OpenRouter Structured Output Fix
+
+* **Structured output now works with non-reasoning OpenRouter models**:
+  with `LLMChatter.OpenRouter.ReasoningEffort = none`, models such as
+  GPT-4o-mini, Llama 3.1 8B, Mistral Nemo or Qwen3 instruct answered every
+  structured request with "No endpoints found that can handle the requested
+  parameters", so those bots stayed silent. The bridge now retries once
+  without the reasoning setting, keeping the JSON schema, and remembers it
+  for that model. A real reasoning effort is never dropped; the log now
+  says which setting to change instead.
+
+### 2026-10-17 - Startup Config Listing
+
+* **The bridge shows the settings it loaded**: at startup it now lists every
+  setting from the active config, grouped under the config file's own section
+  headings with the values lined up, so you can confirm a value without
+  opening the file. API keys and the database password show only as set or empty,
+  which keeps the log safe to share.
+
+### 2026-10-16 - Localization, Battleground, and Prompt Fixes
+
+* **Female characters are addressed as female**: in languages that inflect
+  verbs and adjectives for gender, bots fell back to masculine forms no matter
+  who they were talking to or about. They now match the character's actual
+  gender, and past-tense verbs about themselves get the same treatment.
+* **Official names instead of invented ones**: boss names, creature names, NPC
+  titles and quest names are now looked up in the client's own localized data
+  before they reach the prompt, and a bot with no localized name in hand keeps
+  the English one instead of sounding it out. No more coining "Дурнхольд"
+  where the game says "Дарнхольд".
+* **Localized world flavor**: zone, dungeon and battleground flavor text is now
+  written in Russian, French, German and Spanish instead of being fed to the
+  model in English.
+* **The bridge no longer idles at full CPU**: with nobody online it kept
+  re-opening database connections and polling flat out, burning a core for
+  nothing. It now waits between polls and only does the work it has work for.
+* **Two bridges can't fight over the same server**: starting a second bridge by
+  hand while one was already running doubled every reply and every database
+  write. The second one now notices and refuses to start.
+* **Names with no id in the event follow the chatter language too**: spell,
+  achievement, title, race and faction names are carried as text rather than
+  as an id, so the bridge has nothing to look them up by. They are now
+  resolved against `LLMChatter.Language` in C++ as the event is built, which
+  is the only resolution those names get. A renamed pet keeps the name its
+  owner gave it rather than being replaced by its species.
+* **New settings**: `LLMChatter.RuntimeDir` chooses where the bridge keeps its
+  single-instance lock (empty auto-detects, which matters because the Docker
+  setup mounts the tools directory read-only), and
+  `LLMChatter.Bridge.ActivePollIntervalSeconds` sets how quickly the bridge
+  picks up work while players are online, with the slower
+  `PollIntervalSeconds` applying only once the server is idle.
+
 ### 2026-10-11 - Clang Build Fix for Arathi Basin Chatter
 
 * **Build fix**: `LLMChatterAB.cpp` failed to compile on Clang before 16
@@ -1035,74 +1154,6 @@
 * **Regression coverage**: Focused tests protect both Anthropic request
   paths from future SDK argument regressions.
 
-### 2026-08-22 - Bots Remember You Now
-
-Your bot companions have real memories. They notice the moments you share —
-boss kills, level-ups, a big quest finished as a group, a wipe that went
-badly, a new mount, a new title — and bring them up later the way a friend
-would.
-
-* **They compare notes on you**: group with more than one of your own bots and
-  they'll sometimes talk about you to each other.
-* **Some moments matter more than others**, and the small ones fade first —
-  routine banter thins out over the following weeks, while the genuinely big
-  things stay put indefinitely.
-* **Memories get tidied, not thrown away**: rather than deleting the oldest
-  entry whenever a bot runs out of room — which would leave you with nothing
-  but last week — a bot folds a handful of its *least* memorable entries into
-  one short note that keeps the gist, quietly and a few at a time. Important
-  memories are never eligible, the single most meaningful memory a bot has of
-  you is protected outright, and a note can only be folded down so many times,
-  so it can't drift away from what actually happened.
-* **Bots build up a feeling about you**: alongside the specific memories, each
-  bot keeps one short, evolving sense of how it *feels* about you — warmth,
-  wariness, running jokes, whatever your history together has actually earned.
-  It colours how a bot talks to you rather than being something it recites.
-* **A group's mood lingers**: after something significant the party stays in
-  that mood instead of snapping back to neutral the moment the fight ends —
-  still buzzing after a great kill, a bit rattled after a rough wipe. A bot
-  won't just sound rattled, it'll say what rattled it. The mood survives a
-  server restart and fades on its own after about ten minutes.
-* **Curious what a bot remembers?** `.llmc memory <botname>` tells you, with
-  that bot's feeling about you at the top.
-* **Optional: run it on a cheap model.** None of this text is ever shown to you
-  word-for-word — it's stored and reworded by your main model before it reaches
-  chat. So if you point `LLMChatter.QuickAnalyze.Model` at the cheapest model
-  your provider offers, all the memory bookkeeping moves there and costs you
-  almost nothing. Nothing moves until you name that model — until then every
-  call stays on your main model. See [Tuning Bot Memory](#tuning-bot-memory).
-
-### 2026-08-22 - Localization, Battleground, and Prompt Fixes
-
-* **Female characters are addressed as female**: in languages that inflect
-  verbs and adjectives for gender, bots fell back to masculine forms no matter
-  who they were talking to or about. They now match the character's actual
-  gender, and past-tense verbs about themselves get the same treatment.
-* **Official names instead of invented ones**: boss names, creature names, NPC
-  titles and quest names are now looked up in the client's own localized data
-  before they reach the prompt, and a bot with no localized name in hand keeps
-  the English one instead of sounding it out. No more coining "Дурнхольд"
-  where the game says "Дарнхольд".
-* **Localized world flavor**: zone, dungeon and battleground flavor text is now
-  written in Russian, French, German and Spanish instead of being fed to the
-  model in English.
-* **Flag carriers speak up again**: a bot that picked up or dropped the flag in
-  a battleground was meant to call it out, and had been silently failing to.
-  It does now.
-* **Creative twists are suggestions again**: the random "creative twist" line
-  was handed to the model as an instruction rather than an option, which forced
-  unrelated imagery into lines that didn't want it and produced some strained
-  similes. It's now offered as optional flavor, to use only where it fits.
-* **The startup health check probes more reliably**: its provider test call
-  capped the reply at five tokens, tight enough that a model opening with any
-  preamble could come back empty and get the working endpoint marked down. It
-  now allows room for a real answer.
-* **The bridge no longer idles at full CPU**: with nobody online it kept
-  re-opening database connections and polling flat out, burning a core for
-  nothing. It now waits between polls and only does the work it has work for.
-* **Two bridges can't fight over the same server**: starting a second bridge by
-  hand while one was already running doubled every reply and every database
-  write. The second one now notices and refuses to start.
 ### 2026-08-31 - Bots Notice Custom Emotes
 
 * **`/e` and `/me` now reach the bots**: previously only the ~244 named

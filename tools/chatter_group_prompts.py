@@ -1164,7 +1164,6 @@ def build_loot_reaction_prompt(
         f"and do not inflect or translate the token "
         f"itself. Phrase the sentence so the token "
         f"reads naturally as-is.\n"
-        f"- Reflect your personality traits\n"
         "- Let your personality show in how you say it, "
         f"without naming your traits\n"
         f"- Don't repeat jokes or themes "

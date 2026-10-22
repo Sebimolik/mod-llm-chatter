@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <ctime>
 #include <map>
 #include <memory>
@@ -1540,7 +1541,7 @@ std::string GetChrRacesName(uint32 raceId)
     ChrRacesEntry const* race = sChrRacesStore.LookupEntry(raceId);
     if (!race)
         return "";
-    uint8 locale = sWorld->GetDefaultDbcLocale();
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
     char const* name = race->name[locale];
     if (!name || !*name)
         name = race->name[LOCALE_enUS];
@@ -1601,7 +1602,7 @@ std::string GetZoneName(uint32 zoneId)
     if (AreaTableEntry const* area =
             sAreaTableStore.LookupEntry(zoneId))
     {
-        uint8 locale = sWorld->GetDefaultDbcLocale();
+        uint8 locale = sLLMChatterConfig->GetModuleLocale();
         char const* n = area->area_name[locale];
         std::string zoneName = n ? n : "";
         if (zoneName.empty())
@@ -1616,12 +1617,57 @@ std::string GetZoneName(uint32 zoneId)
     return "Unknown Zone";
 }
 
+std::string GetAreaNameForLocale(uint32 areaId)
+{
+    AreaTableEntry const* area =
+        sAreaTableStore.LookupEntry(areaId);
+    if (!area)
+        return "";
+
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
+    char const* name = area->area_name[locale];
+    if (!name || !*name)
+        name = area->area_name[LOCALE_enUS];
+    return name ? name : "";
+}
+
+// The exact name the core gives a zone's General channel. This is
+// the one deliberate exception to the module-locale rule: the core
+// builds channel names from the worldserver DBC locale, so resolving
+// them in LLMChatter.Language would point bots at a channel no player
+// is in -- or, with enUS-only DBCs, at an empty name. Returns "" when
+// no name can be resolved; callers must not join or speak then.
+std::string GetGeneralChannelName(uint32 zoneId)
+{
+    AreaTableEntry const* area =
+        sAreaTableStore.LookupEntry(zoneId);
+    ChatChannelsEntry const* chEntry =
+        sChatChannelsStore.LookupEntry(
+            ChatChannelId::GENERAL);
+    if (!area || !chEntry)
+        return "";
+
+    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    char const* zoneName = area->area_name[locale];
+    if (!zoneName || !*zoneName)
+        zoneName = area->area_name[LOCALE_enUS];
+    char const* pattern = chEntry->pattern[locale];
+    if (!pattern || !*pattern)
+        pattern = chEntry->pattern[LOCALE_enUS];
+    if (!zoneName || !*zoneName || !pattern || !*pattern)
+        return "";
+
+    char nameBuf[100];
+    std::snprintf(nameBuf, sizeof(nameBuf), pattern, zoneName);
+    return nameBuf;
+}
+
 // ---------------------------------------------------------------------
 // Locale-aware name/text lookups.
 //
-// All of these key off sWorld->GetDefaultDbcLocale() -- the same
-// server-wide "DBC locale" mechanism GetZoneName() above already uses
-// -- and gracefully fall back to the English-default value (the field
+// All of these key off the module's own locale
+// (sLLMChatterConfig->GetModuleLocale(), i.e. LLMChatter.Language)
+// rather than the server-wide DBC locale, and gracefully fall back to the English-default value (the field
 // already baked into the in-memory template/DBC row) whenever no
 // locale-specific row exists. None of them can throw or crash on a
 // missing locale entry; a missing/null lookup simply falls through to
@@ -1633,8 +1679,29 @@ std::string GetLocalizedCreatureName(Creature* creature)
     if (!creature)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    // A pet carries its own name, which may be one the player
+    // chose. GetNameForLocaleIdx() resolves
+    // creature_template_locale from the entry, so it would answer
+    // with the species instead -- "Cat" for "Fluffy".
+    if (creature->IsPet())
+        return creature->GetName();
+
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     return creature->GetNameForLocaleIdx(locale);
+}
+
+uint32 GetChatterNameEntry(Creature* creature)
+{
+    if (!creature)
+        return 0;
+
+    // The bridge re-resolves a name from this entry, which for a
+    // pet would replace the name above with its species. Reporting
+    // no entry keeps the name that was sent.
+    if (creature->IsPet())
+        return 0;
+
+    return creature->GetEntry();
 }
 
 std::string GetLocalizedCreatureSubName(Creature* creature)
@@ -1647,7 +1714,7 @@ std::string GetLocalizedCreatureSubName(Creature* creature)
     if (!tmpl)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     if (locale != LOCALE_enUS)
     {
         if (CreatureLocale const* cl =
@@ -1668,7 +1735,7 @@ std::string GetLocalizedGameObjectName(GameObject* go)
     if (!go)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     return go->GetNameForLocaleIdx(locale);
 }
 
@@ -1688,7 +1755,7 @@ std::string GetLocalizedItemName(ItemTemplate const* tmpl)
     if (!tmpl)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     if (locale != LOCALE_enUS)
     {
         if (ItemLocale const* il =
@@ -1708,7 +1775,7 @@ std::string GetLocalizedQuestTitle(Quest const* quest)
     if (!quest)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     if (locale != LOCALE_enUS)
     {
         if (QuestLocale const* ql =
@@ -1729,7 +1796,7 @@ std::string GetLocalizedQuestDetails(Quest const* quest)
     if (!quest)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     if (locale != LOCALE_enUS)
     {
         if (QuestLocale const* ql =
@@ -1750,7 +1817,7 @@ std::string GetLocalizedQuestObjectives(Quest const* quest)
     if (!quest)
         return "";
 
-    LocaleConstant locale = sWorld->GetDefaultDbcLocale();
+    LocaleConstant locale = sLLMChatterConfig->GetModuleLocale();
     if (locale != LOCALE_enUS)
     {
         if (QuestLocale const* ql =
@@ -1771,7 +1838,7 @@ std::string GetLocalizedSpellName(SpellInfo const* spellInfo)
     if (!spellInfo)
         return "";
 
-    uint8 locale = sWorld->GetDefaultDbcLocale();
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
     char const* name = spellInfo->SpellName[locale];
     if (name && name[0] != '\0')
         return name;
@@ -1785,7 +1852,7 @@ std::string GetLocalizedAchievementName(AchievementEntry const* achievement)
     if (!achievement)
         return "";
 
-    uint8 locale = sWorld->GetDefaultDbcLocale();
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
     char const* name = achievement->name[locale];
     if (name && name[0] != '\0')
         return name;
@@ -1800,7 +1867,7 @@ std::string GetLocalizedTitleName(
     if (!title)
         return "";
 
-    uint8 locale = sWorld->GetDefaultDbcLocale();
+    uint8 locale = sLLMChatterConfig->GetModuleLocale();
     char const* const* names =
         (gender == GENDER_FEMALE)
             ? title->nameFemale
@@ -1967,21 +2034,9 @@ bool CanSpeakInGeneralChannel(Player* bot)
     // they would never be in any General channel.
     EnsureBotInGeneralChannel(bot);
 
-    uint32 zoneId = bot->GetZoneId();
-    AreaTableEntry const* area =
-        sAreaTableStore.LookupEntry(zoneId);
-    if (!area)
-        return false;
-
-    char const* zn =
-        area->area_name[sWorld->GetDefaultDbcLocale()];
-    std::string zoneName = zn ? zn : "";
-    if (zoneName.empty())
-    {
-        zn = area->area_name[LOCALE_enUS];
-        zoneName = zn ? zn : "";
-    }
-    if (zoneName.empty())
+    std::string channelName =
+        GetGeneralChannelName(bot->GetZoneId());
+    if (channelName.empty())
         return false;
 
     ChannelMgr* cMgr =
@@ -1997,8 +2052,7 @@ bool CanSpeakInGeneralChannel(Player* bot)
         if (channel->GetChannelId()
             != ChatChannelId::GENERAL)
             continue;
-        if (channel->GetName().find(zoneName)
-            == std::string::npos)
+        if (channel->GetName() != channelName)
             continue;
 
         if (IsPlayerInChannel(bot, channel))

@@ -22,8 +22,125 @@ Shared utilities belong in the dedicated shared layer
 `chatter_constants.py` for Python). Each file should have one clear
 ownership domain.
 
+Bulk data follows the same rule. Per-language tables are not logic and
+do not belong in `chatter_constants.py`: they live in `tools/locales/`,
+one module per locale, behind the registry described under *Locale
+ownership* below. `chatter_constants.py` keeps the English defaults and
+the game constants.
+
 Keeping files focused allows AI agents to work on a single file without
 loading the entire module into context.
+
+## Locale Ownership
+
+Two different settings decide language, and they are not the same thing:
+
+- **`LLMChatter.Language`** — the module's own setting, read by both the
+  bridge and (since the locale work) the C++ side via
+  `sLLMChatterConfig->GetModuleLocale()`. This is what decides the
+  language bots speak and the language names appear in.
+- **`sWorld->GetDefaultDbcLocale()`** — the worldserver's client locale.
+  It reflects the server's clients, not this module, and the two can
+  disagree: an English worldserver may be configured for Russian
+  chatter.
+
+**Rule: anything that reaches a prompt resolves through
+`LLMChatter.Language`.** Names resolved against the worldserver locale
+would contradict the configured chatter language on any server where the
+two differ.
+
+There is exactly one deliberate exception: General channel names.
+The core creates them in the worldserver's locale, so
+`GetGeneralChannelName()` builds them with `GetDefaultDbcLocale()`,
+falling back to enUS for the zone name and the channel pattern.
+Joining (`EnsureBotInGeneralChannel()`), the speak gate
+(`CanSpeakInGeneralChannel()`) and General delivery all go through it.
+Resolving the name in the module language would match no channel at
+all, and with enUS-only server DBCs it would yield an empty name. An
+empty result means no join and no speech; delivery drops the row as
+`general_channel_unresolved`.
+
+A server that loads several DBC locales still names each session's
+General channel in that session's locale, so players can be split
+across differently named channels. That is core behaviour; bots join
+the default-locale channel.
+
+### Where a name is resolved
+
+Two layers can localize, and they are ordered deliberately:
+
+1. **Bridge, from a stable id.** Where the event payload carries an id
+   (creature, item, quest, zone, subzone), the bridge resolves the name
+   itself from `*_locale` tables using `LLMChatter.Language`. This is
+   authoritative.
+2. **C++, at event-build time.** Names the payload carries as text are
+   resolved in C++ using the module locale. For spell and achievement
+   names there is no id in the payload, so this is the only resolution
+   that happens and it has to be right.
+
+Where both apply, the bridge value wins and the C++ text is the
+fallback — which is why the C++ side resolves in the module locale too,
+so the fallback agrees with the primary path rather than contradicting
+it.
+
+### Fallback chain
+
+Each step applies only when the previous one produced nothing:
+
+1. the table for the configured locale, when that locale has one;
+2. the English default (`chatter_constants.py`, or the base DBC/template
+   row);
+3. the text already in hand.
+
+Falling back is per lookup, not per language: a locale with partial
+coverage uses its own entries where they exist and English elsewhere. A
+missing locale row is never an error.
+
+### Supported languages
+
+`LLMChatter.Language` takes the two-letter codes in
+`_LANGUAGE_LABELS` (`chatter_shared.py`): `DE`, `ES`, `FR`, `GB`, `KO`,
+`PT`, `RU`, `US`. `GB` and `US` are both English.
+
+Coverage differs by dataset, and the registry is the source of truth —
+`locales.available("ZONE_FLAVOR")` answers it directly. At present
+`ruRU`, `frFR`, `deDE` and `esES` carry the flavor datasets, `koKR`
+carries zone names only, and `PT` has no DBC locale in 3.3.5a, so it
+resolves as English rather than being rejected.
+
+Adding a language means adding a module under `tools/locales/`, listing
+it in that package's registry, and adding its code to
+`_LANGUAGE_LABELS` and to `ResolveModuleLocale()` in
+`LLMChatterConfig.cpp`. No accessor changes.
+
+## Bridge Single-Instance Lock
+
+Two bridges against one database would double every reply, so the bridge
+takes an advisory whole-file lock at startup and exits if another holds
+it.
+
+- **Where.** A writable runtime directory, chosen in order:
+  `LLMChatter.RuntimeDir`, `$LLM_CHATTER_RUNTIME_DIR`,
+  `$XDG_RUNTIME_DIR`, `$TMPDIR`, then the system temp directory. It is
+  deliberately **not** next to the script: the documented Docker setup
+  mounts the tools directory read-only (`…/tools:/app:ro`), so a lock
+  written there would stop the bridge starting at all.
+- **Naming.** Keyed by a hash of the resolved config path, so two
+  bridges on different configs run side by side while two launches of
+  the same config collide.
+- **Mechanism.** An OS file lock (`fcntl` on Unix, `msvcrt` on Windows)
+  behind `_lock_file_exclusive()` / `_unlock_file()`. Never import
+  either module directly — `fcntl` is Unix-only and importing it
+  unconditionally breaks a native Windows launch during import.
+  Acquisition is atomic, so a race between two starting bridges cannot
+  let both through, and the kernel drops the lock when the holder dies,
+  so a crash cannot strand one.
+- **Release keeps the file.** `_release_lock()` unlocks and closes the
+  handle and leaves the pathname in place. Unlinking it reopens a
+  handoff race: another bridge locks the still-open file, and once the
+  name is gone a third creates a fresh file at the same path and locks
+  that, so two run believing they hold the only lock. The cost of
+  keeping it is one small file per configured bridge.
 
 ## Repository Boundaries
 
@@ -737,7 +854,8 @@ It carries the legacy prompt parts and optional response metadata:
      the correction for that model until the process restarts.
      `extract_anthropic_text()` joins text blocks only, because models
      that think by default can return `thinking` blocks first
-   - **OpenAI / Google / OpenRouter / Ollama**: system role message +
+   - **OpenAI / Google / OpenRouter / Ollama / openai_compatible**:
+     system role message +
      user role message; `llm_compat.py` selects the token field and
      optional parameters from a conservative model capability profile
      resolved through one ordered model-rule table; parameter selection
@@ -755,6 +873,12 @@ It carries the legacy prompt parts and optional response metadata:
      opt-in `reasoning` object to normal and quick-analysis requests;
      `_effective_max_tokens()` applies its multiplier only while an
      effort other than `none` is enabled
+   - **openai_compatible**: a generic server; the client gets only the
+     base URL and key from `openai_compatible_client_kwargs()`, requests
+     carry no vendor options, and `resolve_model(..., provider)` keeps the
+     model ID verbatim. `openai_compatible_target_error()` is the single
+     "configured?" rule shared by bridge startup, the health check and the
+     lazy QuickAnalyze client, which raises instead of falling back
    - **Ollama**: context size is owned by the Ollama server because its
      OpenAI-compatible endpoint has no per-request context parameter;
      disabling thinking sends `reasoning_effort = none` and retains the
@@ -1137,7 +1261,7 @@ This asymmetry is known and acceptable in the shipped source state.
 | `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; `label=` param logs every call via `chatter_request_logger` |
 | `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup. Also owns `llm_group_vibe` persistence (`upsert_group_vibe()`, `get_group_vibe()`, `delete_group_vibe()` — all accept a caller-owned connection so the hot memory-write path never opens a second one; the delete is conditional on the observed `set_at` so a concurrent newer vibe survives) and drops the vibe row in `cleanup_stale_groups()` / `cleanup_all_session_data()` |
 | `tools/chatter_structured.py` | Global structured-output flag, immutable response contracts, stable schema generation, strict local validation and legacy-shape normalization. No SDK or delivery logic. |
-| `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, and Ollama; `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; delegates cross-model parameter selection to `llm_compat.py`; `label=` param logs every call via `chatter_request_logger` |
+| `tools/chatter_llm.py` | Provider/model calls for Anthropic, OpenAI, Google Gemini, OpenRouter, Ollama, and generic OpenAI-compatible servers (`openai_compatible_client_kwargs()`, `openai_compatible_target_error()`); `get_llm_client()` shared client factory; `_split_prompt()`, `_build_chat_messages()`, `_ollama_user_msg()`, `_apply_google_options()`, `_apply_openrouter_options()`, `_openrouter_headers()` for system/user prompt separation and provider tuning; delegates cross-model parameter selection to `llm_compat.py`; `label=` param logs every call via `chatter_request_logger` |
 | `tools/chatter_db.py` | DB access, inserts, zone/cache queries, `any_real_players_online()`, stale-group cleanup, and global group/Guild session cleanup. Owns `get_race_name()`: `RACE_NAMES`, then the races the worldserver wrote to `llm_chatter_race_names` (`load_race_names()`) |
 | `tools/chatter_links.py` | WoW link parsing and prompt-side link enrichment for player messages |
 | `tools/chatter_prompts.py` | Ambient/event prompt builders; session-vibe rendering (`build_session_vibe_line()` — fully localized, names the cause from `llm_group_vibe.source_type` — plus `get_vibe_mood_word()`, `get_vibe_source_phrase()`, `get_vibe_mood_pool()`) |
@@ -1232,6 +1356,10 @@ instead of rendering it as a `/slash` command.
 - `EscapeString()`
 - `JsonEscape()`
 - `GetZoneName()`
+- `GetAreaNameForLocale()` — zone or subzone name in the module locale,
+  enUS fallback, empty when absent
+- `GetGeneralChannelName()` — exact General channel name for a zone
+  (worldserver locale; see Locale Ownership)
 - `GetChatterClassName()`
 - `GetChrRacesName()`
 - `GetRaceName()`

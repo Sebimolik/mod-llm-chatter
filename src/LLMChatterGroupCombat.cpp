@@ -266,7 +266,7 @@ void HandleGroupCreatureKillImpl(
         reactor->GetGUID().GetCounter();
     std::string botName = reactor->GetName();
     std::string creatureName = GetLocalizedCreatureName(killed);
-    uint32 creatureEntry = killed->GetEntry();
+    uint32 creatureEntry = GetChatterNameEntry(killed);
 
     std::string extraData = "{"
         + BuildBotIdentityFields(reactor) + ","
@@ -335,6 +335,8 @@ void HandleGroupPlayerKilledByCreatureImpl(
     // path above. Name the owner so the prompt doesn't
     // treat a pet called "Cat" as the enemy player
     // ("Wulobe's Cat", "Majir's Searing Totem").
+    // The creature half of the name is localized; the
+    // owner is a player, whose name is not.
     std::string killerName =
         killer ? GetLocalizedCreatureName(killer) : "";
     if (killer)
@@ -349,7 +351,7 @@ void HandleGroupPlayerKilledByCreatureImpl(
     QueueGroupDeathOrWipe(
         killed, group,
         killerName,
-        killer ? killer->GetEntry() : 0,
+        GetChatterNameEntry(killer),
         nullptr);
 }
 
@@ -853,7 +855,7 @@ void HandleGroupPlayerEnterCombatImpl(
             JsonEscape(creatureName) + "\","
         "\"creature_entry\":" +
             std::to_string(
-                creature->GetEntry()) + ","
+                GetChatterNameEntry(creature)) + ","
         "\"is_boss\":" +
             std::string(
                 isBoss ? "1" : "0") + ","
@@ -3082,7 +3084,7 @@ void HandleGroupPlayerUpdateZoneImpl(
         if (areaEntry)
         {
             uint8 loc =
-                sWorld->GetDefaultDbcLocale();
+                sLLMChatterConfig->GetModuleLocale();
             char const* n =
                 areaEntry->area_name[loc];
             areaName = n ? n : "";

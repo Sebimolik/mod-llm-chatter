@@ -17,36 +17,20 @@ import threading
 import time
 from typing import Optional, Dict, List, Tuple, Any
 
+from locales import dataset as locale_dataset
 from chatter_lore_data import RACE_CLASS_NOTES
 from chatter_constants import (
-    ZONE_LEVELS, ZONE_NAMES, ZONE_NAMES_RU, ZONE_NAMES_FR, ZONE_NAMES_DE,
-    ZONE_NAMES_ES, ZONE_NAMES_KO,
-    CLASS_NAMES, RACE_NAMES,
+    ZONE_LEVELS, ZONE_NAMES,
+    CLASS_NAMES,
     ALLIANCE_RACE_IDS, HORDE_RACE_IDS,
-    RACE_SPEECH_PROFILES, RACE_SPEECH_PROFILES_RU, RACE_SPEECH_PROFILES_FR,
-    RACE_SPEECH_PROFILES_DE, RACE_SPEECH_PROFILES_ES,
+    RACE_SPEECH_PROFILES,
     CLASS_SPEECH_MODIFIERS,
     CLASS_ROLE_MAP, ROLE_COMBAT_PERSPECTIVES,
-    ZONE_FLAVOR, ZONE_FLAVOR_RU, ZONE_FLAVOR_FR, ZONE_FLAVOR_DE, ZONE_FLAVOR_ES,
-    DUNGEON_FLAVOR, DUNGEON_FLAVOR_RU, DUNGEON_FLAVOR_FR, DUNGEON_FLAVOR_DE,
-    DUNGEON_FLAVOR_ES,
-    BG_LORE, BG_LORE_RU, BG_LORE_FR, BG_LORE_DE, BG_LORE_ES,
-    VIBE_SOURCE_PHRASES, VIBE_SOURCE_PHRASES_RU, VIBE_SOURCE_PHRASES_FR,
-    VIBE_SOURCE_PHRASES_DE, VIBE_SOURCE_PHRASES_ES, VIBE_SOURCE_PHRASES_PT,
-    VIBE_SOURCE_PHRASES_KO,
-    VIBE_MOOD_WORDS_RU, VIBE_MOOD_WORDS_FR, VIBE_MOOD_WORDS_DE,
-    VIBE_MOOD_WORDS_ES, VIBE_MOOD_WORDS_PT, VIBE_MOOD_WORDS_KO,
-    VIBE_LINE_TEMPLATES, VIBE_LINE_TEMPLATES_RU,
-    VIBE_LINE_TEMPLATES_FR, VIBE_LINE_TEMPLATES_DE,
-    VIBE_LINE_TEMPLATES_ES, VIBE_LINE_TEMPLATES_PT,
-    VIBE_LINE_TEMPLATES_KO,
-    BOT_MOOD_LINE_TEMPLATES, BOT_MOOD_LINE_TEMPLATES_RU,
-    BOT_MOOD_LINE_TEMPLATES_FR, BOT_MOOD_LINE_TEMPLATES_DE,
-    BOT_MOOD_LINE_TEMPLATES_ES, BOT_MOOD_LINE_TEMPLATES_PT,
-    BOT_MOOD_LINE_TEMPLATES_KO,
-    BOT_MOOD_WORDS_RU, BOT_MOOD_WORDS_FR, BOT_MOOD_WORDS_DE,
-    BOT_MOOD_WORDS_ES, BOT_MOOD_WORDS_PT, BOT_MOOD_WORDS_KO,
-    ZONE_FLAVOR, DUNGEON_FLAVOR, OPEN_AIR_INSTANCES,
+    ZONE_FLAVOR,
+    DUNGEON_FLAVOR, OPEN_AIR_INSTANCES,
+    BG_LORE,
+    VIBE_SOURCE_PHRASES, VIBE_LINE_TEMPLATES,
+    BOT_MOOD_LINE_TEMPLATES,
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
@@ -420,13 +404,7 @@ def estimate_tokens(text: str) -> int:
 #     this is the first koKR zone-name data. Every zone
 #     outside those 8 falls back to English via
 #     get_zone_name(), same as the other locales.
-_ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
-    "ruRU": ZONE_NAMES_RU,
-    "frFR": ZONE_NAMES_FR,
-    "deDE": ZONE_NAMES_DE,
-    "esES": ZONE_NAMES_ES,
-    "koKR": ZONE_NAMES_KO,
-}
+_ZONE_NAME_LOCALE_MAPS: Dict[str, Dict[int, str]] = locale_dataset("ZONE_NAMES")
 
 
 def _load_subzone_names_ru() -> Dict[int, str]:
@@ -1291,9 +1269,8 @@ def build_group_travel_metadata(bots):
 # =============================================================================
 # CONFIG & DATABASE
 # =============================================================================
-def parse_config(config_path: str) -> dict:
-    """Parse the WoW-style config file."""
-    config = {}
+def _read_config_text(config_path: str) -> str:
+    """Read and decode the config file, exiting on a read failure."""
     # Read raw bytes so we can decode explicitly. A genuine file-access
     # error (missing/unreadable) is fatal and logged; encoding is handled
     # separately below so a decodable-but-non-UTF-8 file is never treated
@@ -1320,13 +1297,17 @@ def parse_config(config_path: str) -> dict:
     #      keep parsing the way plain open() used to read them. Use
     #      errors='replace' so this fallback can never itself raise.
     try:
-        text = raw.decode('utf-8-sig')
+        return raw.decode('utf-8-sig')
     except UnicodeDecodeError:
-        text = raw.decode(
+        return raw.decode(
             locale.getpreferredencoding(False), errors='replace'
         )
 
-    for line in text.splitlines():
+
+def parse_config(config_path: str) -> dict:
+    """Parse the WoW-style config file."""
+    config = {}
+    for line in _read_config_text(config_path).splitlines():
         line = line.strip()
         if not line or line.startswith('#'):
             continue
@@ -1334,6 +1315,88 @@ def parse_config(config_path: str) -> dict:
             key, value = line.split('=', 1)
             config[key.strip()] = value.strip()
     return config
+
+
+# A section banner is a full '#' rule followed by '# TITLE [TAG]'.
+_SECTION_RULE_RE = re.compile(r'^#{20,}\s*$')
+_SECTION_TAG_RE = re.compile(r'\s*[\[(].*$')
+
+
+def parse_config_sections(config_path: str) -> dict:
+    """Map each config key to the title of the file section holding it.
+
+    Titles come from the file's own '#####' banners, with the
+    [BOTH]/[BRIDGE]/[SERVER] tags and '(only needed if ...)' notes
+    dropped. Keys above the first banner are left out.
+    """
+    sections = {}
+    current = ''
+    after_rule = False
+    for line in _read_config_text(config_path).splitlines():
+        stripped = line.strip()
+        if _SECTION_RULE_RE.match(stripped):
+            after_rule = True
+            continue
+        is_title_line = after_rule and stripped.startswith('#')
+        after_rule = False
+        if is_title_line:
+            title = _SECTION_TAG_RE.sub('', stripped.lstrip('#')).strip()
+            if title:
+                current = title.upper()
+                continue
+        if stripped and not stripped.startswith('#') and '=' in stripped:
+            key = stripped.split('=', 1)[0].strip()
+            if current:
+                sections[key] = current
+    return sections
+
+
+# Key-name suffixes whose values must never reach a log.
+_SECRET_KEY_SUFFIXES = ('apikey', 'password', 'secret')
+_CONFIG_KEY_PREFIX = 'LLMChatter.'
+_CONFIG_LOG_KEY_WIDTH = 48
+_CONFIG_LOG_RULE_WIDTH = 60
+
+
+def format_config_for_log(config: dict, sections: dict = None) -> list:
+    """Return the config as readable log lines, grouped by file section.
+
+    Each group gets a '-- TITLE (N) ---' header and a blank line before
+    it; keys keep their file order, drop the 'LLMChatter.' prefix and
+    have their values aligned. Keys with no known section go under
+    OTHER. Secrets (API keys, passwords) are shown only as set or
+    empty, so the startup log can be shared when asking for help.
+    Internal keys the bridge adds at runtime (``__name__``) are skipped.
+    """
+    sections = sections or {}
+    groups = {}
+    for key, value in config.items():
+        if key.startswith('__'):
+            continue
+        if key.lower().endswith(_SECRET_KEY_SUFFIXES):
+            value = '<set, hidden>' if str(value).strip() else '<empty>'
+        elif not str(value).strip():
+            value = '<empty>'
+        groups.setdefault(sections.get(key, 'OTHER'), []).append(
+            (key, value)
+        )
+
+    lines = []
+    for title, items in groups.items():
+        header = f"-- {title} ({len(items)}) "
+        lines.append('')
+        lines.append(header.ljust(_CONFIG_LOG_RULE_WIDTH, '-'))
+        names = [
+            k[len(_CONFIG_KEY_PREFIX):]
+            if k.startswith(_CONFIG_KEY_PREFIX) else k
+            for k, _ in items
+        ]
+        width = min(
+            max(len(n) for n in names), _CONFIG_LOG_KEY_WIDTH
+        )
+        for name, (_, value) in zip(names, items):
+            lines.append(f"  {name.ljust(width)}  {value}")
+    return lines
 
 
 # =============================================================================
@@ -1353,12 +1416,7 @@ def get_zone_level_range(
 # ZONE_FLAVOR_RU dict so far; any other locale (or zone_id
 # missing from the localized map) falls back to the English
 # ZONE_FLAVOR via get_zone_flavor() below.
-_ZONE_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
-    "ruRU": ZONE_FLAVOR_RU,
-    "frFR": ZONE_FLAVOR_FR,
-    "deDE": ZONE_FLAVOR_DE,
-    "esES": ZONE_FLAVOR_ES,
-}
+_ZONE_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = locale_dataset("ZONE_FLAVOR")
 
 
 # Locale-keyed race speech profile maps, mirroring
@@ -1367,12 +1425,7 @@ _ZONE_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
 # race missing from the localized map) falls back to the
 # static English RACE_SPEECH_PROFILES via
 # get_race_speech_profile() below.
-_RACE_SPEECH_LOCALE_MAPS: Dict[str, Dict[str, Dict]] = {
-    "ruRU": RACE_SPEECH_PROFILES_RU,
-    "frFR": RACE_SPEECH_PROFILES_FR,
-    "deDE": RACE_SPEECH_PROFILES_DE,
-    "esES": RACE_SPEECH_PROFILES_ES,
-}
+_RACE_SPEECH_LOCALE_MAPS: Dict[str, Dict[str, Dict]] = locale_dataset("RACE_SPEECH_PROFILES")
 
 
 def get_race_speech_profile(race: str) -> Optional[Dict]:
@@ -1416,12 +1469,7 @@ def get_zone_flavor(zone_id: int) -> Optional[str]:
 # DUNGEON_FLAVOR_RU dict so far; any other locale (or map_id
 # missing from the localized map) falls back to the static
 # English DUNGEON_FLAVOR via get_dungeon_flavor() below.
-_DUNGEON_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = {
-    "ruRU": DUNGEON_FLAVOR_RU,
-    "frFR": DUNGEON_FLAVOR_FR,
-    "deDE": DUNGEON_FLAVOR_DE,
-    "esES": DUNGEON_FLAVOR_ES,
-}
+_DUNGEON_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = locale_dataset("DUNGEON_FLAVOR")
 
 
 def get_dungeon_flavor(map_id: int) -> Optional[str]:
@@ -1446,12 +1494,7 @@ def get_dungeon_flavor(map_id: int) -> Optional[str]:
 # BG_LORE_RU dict so far; any other locale (or bg_type_id missing
 # from the localized map) falls back to the static English BG_LORE
 # entry via get_bg_lore() below.
-_BG_LORE_LOCALE_MAPS: Dict[str, Dict[int, Dict]] = {
-    "ruRU": BG_LORE_RU,
-    "frFR": BG_LORE_FR,
-    "deDE": BG_LORE_DE,
-    "esES": BG_LORE_ES,
-}
+_BG_LORE_LOCALE_MAPS: Dict[str, Dict[int, Dict]] = locale_dataset("BG_LORE")
 
 
 def get_bg_lore(bg_type_id: int) -> Dict:
@@ -1471,6 +1514,7 @@ def get_bg_lore(bg_type_id: int) -> Dict:
         if localized_map and bg_type_id in localized_map:
             return localized_map[bg_type_id]
     return BG_LORE.get(bg_type_id, {})
+
 def instance_has_sky(map_id: int = 0, map_name: str = '') -> bool:
     """True when an instance is fought under the open sky, so time
     of day, season and weather belong in its prompts. Raid events
@@ -2145,23 +2189,11 @@ def get_language_locale_code() -> Optional[str]:
 # Portuguese and Korean, whose flavor-text coverage is otherwise
 # partial. A locale (or key) missing from a map falls back to the
 # English constant via the accessors below.
-_VIBE_SOURCE_PHRASE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
-    "ruRU": VIBE_SOURCE_PHRASES_RU,
-    "frFR": VIBE_SOURCE_PHRASES_FR,
-    "deDE": VIBE_SOURCE_PHRASES_DE,
-    "esES": VIBE_SOURCE_PHRASES_ES,
-    "ptBR": VIBE_SOURCE_PHRASES_PT,
-    "koKR": VIBE_SOURCE_PHRASES_KO,
-}
+_VIBE_SOURCE_PHRASE_LOCALE_MAPS: Dict[str, Dict[str, str]] = locale_dataset(
+    "VIBE_SOURCE_PHRASES")
 
-_VIBE_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
-    "ruRU": VIBE_MOOD_WORDS_RU,
-    "frFR": VIBE_MOOD_WORDS_FR,
-    "deDE": VIBE_MOOD_WORDS_DE,
-    "esES": VIBE_MOOD_WORDS_ES,
-    "ptBR": VIBE_MOOD_WORDS_PT,
-    "koKR": VIBE_MOOD_WORDS_KO,
-}
+_VIBE_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = locale_dataset(
+    "VIBE_MOOD_WORDS")
 
 # Portuguese is deliberately absent from _LANGUAGE_LOCALE_CODES:
 # 3.3.5a has no ptBR rows in *_template_locale (ptBR shipped with
@@ -2188,32 +2220,14 @@ def _get_vibe_text_locale_code() -> Optional[str]:
     )
 
 
-_VIBE_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
-    "ruRU": VIBE_LINE_TEMPLATES_RU,
-    "frFR": VIBE_LINE_TEMPLATES_FR,
-    "deDE": VIBE_LINE_TEMPLATES_DE,
-    "esES": VIBE_LINE_TEMPLATES_ES,
-    "ptBR": VIBE_LINE_TEMPLATES_PT,
-    "koKR": VIBE_LINE_TEMPLATES_KO,
-}
+_VIBE_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = locale_dataset(
+    "VIBE_LINE_TEMPLATES")
 
-_BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
-    "ruRU": BOT_MOOD_LINE_TEMPLATES_RU,
-    "frFR": BOT_MOOD_LINE_TEMPLATES_FR,
-    "deDE": BOT_MOOD_LINE_TEMPLATES_DE,
-    "esES": BOT_MOOD_LINE_TEMPLATES_ES,
-    "ptBR": BOT_MOOD_LINE_TEMPLATES_PT,
-    "koKR": BOT_MOOD_LINE_TEMPLATES_KO,
-}
+_BOT_MOOD_LINE_TEMPLATE_LOCALE_MAPS: Dict[str, Dict[str, str]] = locale_dataset(
+    "BOT_MOOD_LINE_TEMPLATES")
 
-_BOT_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = {
-    "ruRU": BOT_MOOD_WORDS_RU,
-    "frFR": BOT_MOOD_WORDS_FR,
-    "deDE": BOT_MOOD_WORDS_DE,
-    "esES": BOT_MOOD_WORDS_ES,
-    "ptBR": BOT_MOOD_WORDS_PT,
-    "koKR": BOT_MOOD_WORDS_KO,
-}
+_BOT_MOOD_WORD_LOCALE_MAPS: Dict[str, Dict[str, str]] = locale_dataset(
+    "BOT_MOOD_WORDS")
 
 
 def get_vibe_line_templates() -> Dict[str, str]:

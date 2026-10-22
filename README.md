@@ -96,7 +96,7 @@ This module requires a working AzerothCore server with mod-playerbots. If you do
 | AzerothCore | [Playerbot branch](https://github.com/mod-playerbots/azerothcore-wotlk/tree/Playerbot) (WotLK 3.3.5a) |
 | mod-playerbots | [liyunfan1223/mod-playerbots](https://github.com/mod-playerbots/mod-playerbots) |
 | Python | 3.10+ |
-| LLM Provider | Anthropic, OpenAI, Google Gemini, OpenRouter, or Ollama |
+| LLM Provider | Anthropic, OpenAI, Google Gemini, OpenRouter, Ollama, or any OpenAI-compatible server |
 
 Install the Python bridge dependencies from `tools/requirements.txt`.
 Anthropic deployments use the supported 1.x SDK; installing provider
@@ -130,7 +130,8 @@ OpenRouter. See the config header for more provider guidance.
 
 Configuration uses unquoted `Key = value` lines. Copy model IDs exactly:
 direct-provider IDs look like `gpt-5.6-luna`, OpenRouter IDs use
-`vendor/model`, and Ollama IDs use the name and tag shown by `ollama list`.
+`vendor/model`, Ollama IDs use the name and tag shown by `ollama list`,
+and OpenAI-compatible IDs are sent exactly as your server lists them.
 Leave an optional value empty after `=`. Keep comments on separate lines;
 the chatter parser treats an inline comment as part of the value.
 
@@ -141,6 +142,7 @@ the chatter parser treats an inline comment as part of the value.
 | Google | `google` | Exact Gemini API model ID | `LLMChatter.Google.ApiKey` |
 | OpenRouter | `openrouter` | A `vendor/model` slug | `LLMChatter.OpenRouter.ApiKey` |
 | Ollama | `ollama` | A name/tag from `ollama list` | None |
+| Any OpenAI-compatible server | `openai_compatible` | The ID your server lists (required) | `LLMChatter.OpenAICompatible.ApiKey`, only if the server needs one |
 
 Ready-to-copy examples (replace only the placeholder key):
 
@@ -171,13 +173,27 @@ LLMChatter.OpenRouter.ApiKey = sk-or-v1-xxxxx
 LLMChatter.Provider = ollama
 LLMChatter.Model = qwen3:8b
 LLMChatter.Ollama.BaseUrl = http://host.docker.internal:11434
+
+# Any OpenAI-compatible server (llama.cpp, vLLM, LM Studio, ...) from a
+# Docker bridge; replace the model with an ID your server lists
+LLMChatter.Provider = openai_compatible
+LLMChatter.Model = your-model-id
+LLMChatter.OpenAICompatible.BaseUrl = http://host.docker.internal:8080/v1
+LLMChatter.OpenAICompatible.ApiKey =
 ```
+
+`openai_compatible` sends only the base URL, key and standard Chat
+Completions fields, with no vendor-specific headers or options. Use it for
+any compatible server instead of pointing the OpenRouter settings at
+another host.
 
 Use only one provider recipe at a time. Existing credentials for inactive
 providers can remain in the file. Restart `ac-llm-chatter-bridge` after a
 provider or model change. The bridge chooses compatible token, temperature,
 and reasoning parameters automatically, then caches any explicit
-unsupported-parameter correction for the rest of that process.
+unsupported-parameter correction for the rest of that process. With
+structured output on, an OpenRouter `ReasoningEffort = none` that no endpoint
+of the model accepts alongside the JSON schema is dropped the same way.
 
 ### Structured Output: Recommended for Reliable Responses
 
@@ -486,10 +502,10 @@ AiPlayerbot.RandomBotSayWithoutMaster = 0
 **1. Configure**
 
 Copy `modules/mod-llm-chatter/conf/mod_llm_chatter.conf.dist` to `env/dist/etc/modules/` and rename it to `mod_llm_chatter.conf`. Open it in a text editor and set at minimum:
-- `LLMChatter.Provider`,  choose `anthropic`, `openai`, `google`, `openrouter`, or `ollama`
+- `LLMChatter.Provider`,  choose `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `openai_compatible`
 - `LLMChatter.Model`, using the exact ID format shown in
   [Provider and Model Setup](#provider-and-model-setup)
-- the matching provider API key, for example `LLMChatter.OpenRouter.ApiKey` when using OpenRouter (not needed for Ollama)
+- the matching provider API key, for example `LLMChatter.OpenRouter.ApiKey` when using OpenRouter (not needed for Ollama; for `openai_compatible` set `LLMChatter.OpenAICompatible.BaseUrl`, and a key only if your server needs one)
 
 **2. Add bridge to docker-compose.override.yml**
 ```yaml
@@ -559,10 +575,10 @@ docker compose --profile dev up -d
 **2. Configure**
 
 Copy `conf/mod_llm_chatter.conf.dist` to your server's config directory (typically `etc/modules/`) and rename it to `mod_llm_chatter.conf`. Open it in a text editor and set at minimum:
-- `LLMChatter.Provider`,  choose `anthropic`, `openai`, `google`, `openrouter`, or `ollama`
+- `LLMChatter.Provider`,  choose `anthropic`, `openai`, `google`, `openrouter`, `ollama`, or `openai_compatible`
 - `LLMChatter.Model`, using the exact ID format shown in
   [Provider and Model Setup](#provider-and-model-setup)
-- the matching provider API key, for example `LLMChatter.OpenRouter.ApiKey` when using OpenRouter (not needed for Ollama)
+- the matching provider API key, for example `LLMChatter.OpenRouter.ApiKey` when using OpenRouter (not needed for Ollama; for `openai_compatible` set `LLMChatter.OpenAICompatible.BaseUrl`, and a key only if your server needs one)
 
 **3. Initialize character tables**
 
@@ -972,6 +988,13 @@ report. Just look at the bridge's startup output:
 A copy of the report is also saved to
 `modules/mod-llm-chatter/logs/healthcheck.log`, so you can open it
 like a normal text file.
+
+Just before the report, the bridge also lists every setting it
+loaded from your config, grouped under the same section headings as
+the config file and with the values lined up, so you can check a value
+without opening the file. API keys and the database password
+are shown only as `<set, hidden>` or `<empty>`, so the output is safe
+to paste when asking for help.
 
 If something is misconfigured, the report names the problem in plain
 language and tells you how to fix it. It checks:

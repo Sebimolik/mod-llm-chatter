@@ -33,7 +33,6 @@
 
 #include <algorithm>
 #include <ctime>
-#include <cstdio>
 #include <map>
 #include <mutex>
 #include <random>
@@ -46,36 +45,10 @@ void EnsureBotInGeneralChannel(
     if (!bot || !bot->IsInWorld())
         return;
 
-    uint32 zoneId = bot->GetZoneId();
-    AreaTableEntry const* area =
-        sAreaTableStore.LookupEntry(zoneId);
-    if (!area)
+    std::string newChanName =
+        GetGeneralChannelName(bot->GetZoneId());
+    if (newChanName.empty())
         return;
-
-    uint8 locale = sWorld->GetDefaultDbcLocale();
-    char const* n = area->area_name[locale];
-    std::string zoneName = n ? n : "";
-    if (zoneName.empty())
-    {
-        n = area->area_name[LOCALE_enUS];
-        zoneName = n ? n : "";
-    }
-    if (zoneName.empty())
-        return;
-
-    ChatChannelsEntry const* chEntry =
-        sChatChannelsStore.LookupEntry(
-            ChatChannelId::GENERAL);
-    if (!chEntry)
-        return;
-
-    char nameBuf[100];
-    std::snprintf(
-        nameBuf,
-        sizeof(nameBuf),
-        chEntry->pattern[locale],
-        zoneName.c_str());
-    std::string newChanName(nameBuf);
 
     ChannelMgr* cMgr =
         ChannelMgr::forTeam(bot->GetTeamId());
@@ -1427,7 +1400,7 @@ public:
         if (areaEntry)
         {
             uint8 loc =
-                sWorld->GetDefaultDbcLocale();
+                sLLMChatterConfig->GetModuleLocale();
             char const* n =
                 areaEntry->area_name[loc];
             areaName = n ? n : "";
@@ -1465,7 +1438,7 @@ public:
         if (zoneEntry)
         {
             uint8 loc =
-                sWorld->GetDefaultDbcLocale();
+                sLLMChatterConfig->GetModuleLocale();
             char const* n =
                 zoneEntry->area_name[loc];
             zoneName = n ? n : "";

@@ -137,7 +137,20 @@ does not process all of them inline in one thread.
   - idle group chatter checks
   - bot-question checks
   - pre-cache refills
-- sleeps for `LLMChatter.Bridge.PollIntervalSeconds` between iterations
+- sleeps between iterations, at a cadence that depends on whether
+  anything is happening:
+  - **`LLMChatter.Bridge.ActivePollIntervalSeconds`** (default `0.2`)
+    while players are online or background work is still in flight —
+    direct player chat is picked up on this interval, so it stays well
+    under a second
+  - **`LLMChatter.Bridge.PollIntervalSeconds`** once the server is
+    genuinely idle
+
+  Both halves matter. A fixed fast poll keeps the bridge busy on an
+  empty server; the slower interval applied unconditionally adds itself
+  to every direct player reply. `_poll_delay()` makes that choice, and
+  the timer-style jobs above self-rate-limit on their own intervals
+  regardless of which one applies.
 
 So the bridge is:
 
@@ -281,6 +294,36 @@ priority currently influences claim order more than final speak order.
 
 ---
 
+## 2c. Language and Localization
+
+`LLMChatter.Language` decides what language bots speak and what language
+names appear in. It is the module's own setting and is **not** the
+worldserver's DBC locale — an English worldserver can serve Russian
+chatter, and the two then disagree.
+
+Everything that reaches a prompt resolves through the module setting:
+the bridge does it from stable ids where the payload carries one
+(creature, item, quest, zone, subzone), and C++ does it at event-build
+time for names carried as text. Spell and achievement names have no id
+in the payload, so the C++ resolution is the only one that happens for
+those.
+
+What the model receives is therefore consistent regardless of the
+server's own locale. Where a translation is missing the English text is
+used for that lookup alone, so partial coverage degrades entry by entry
+rather than dropping a whole language.
+
+Prompt flavor text is localized too, not just the output language. Zone,
+dungeon and battleground flavor, and race speech profiles, are written
+per language rather than fed to the model in English with an
+instruction to reply in another — that produces stilted translation
+instead of native phrasing.
+
+The per-language tables live in `tools/locales/`, one module per locale,
+with a registry in that package. `chatter_constants.py` keeps the
+English defaults. Coverage is not uniform: ask the registry
+(`locales.available("BG_LORE")`) rather than assuming.
+
 ## 3. C++ File Ownership
 
 ### `src/LLMChatterScript.cpp`
@@ -303,6 +346,10 @@ registries instead of a single long conditional block.
 - `EscapeString()`
 - `JsonEscape()`
 - `GetZoneName()`
+- `GetAreaNameForLocale()` — zone or subzone name in the module locale,
+  enUS fallback, empty when absent
+- `GetGeneralChannelName()` — exact General channel name for a zone,
+  built in the worldserver DBC locale like the core's own channels
 - `GetChatterClassName()`
 - `GetChrRacesName()` — any race in `ChrRaces`, playable or not, in the
   server DBC locale with enUS as fallback (also names humanoid NPCs)
@@ -632,6 +679,7 @@ Supported providers:
 - Google Gemini
 - OpenRouter
 - Ollama
+- Any OpenAI-compatible server (`openai_compatible`)
 
 `LLMChatter.LabelModel` sends calls whose label matches
 `LLMChatter.LabelModel.Labels` (comma-separated fnmatch patterns over
@@ -646,7 +694,8 @@ probe for `LabelModel` as for `LLMChatter.Model`, reported as its own
 
 Changing models normally requires only the provider and model ID. The
 bridge resolves a conservative capability profile for OpenAI-compatible
-targets, including direct OpenAI, Google, OpenRouter, and Ollama. Known
+targets, including direct OpenAI, Google, OpenRouter, Ollama, and
+`openai_compatible`. Known
 sampling models receive `temperature`; known reasoning models receive
 their supported token-limit shape and configured reasoning effort;
 unrecognized direct OpenAI models start without optional parameters.
@@ -753,6 +802,22 @@ not reduce reasoning-token usage or cost. The multiplier is ignored
 when the effort is empty or `none`. OpenRouter effort values are passed
 through without client-side validation because support varies by model.
 
+Structured output asks OpenRouter to use only endpoints that accept every
+requested parameter (`provider.require_parameters`). For a model whose
+endpoints cannot take `reasoning` together with the JSON schema, OpenRouter
+answers HTTP 404 with the routing step "Filter by Parameters". When the
+effort is `none`, which only asks hybrid models not to think, the bridge
+retries that request without the reasoning object, keeps the schema and the
+routing requirement, and after a successful retry remembers this for that
+model's structured requests until restart. Free-text requests keep sending
+`none`. The output budget is not raised for the retry: on a hybrid model
+whose schema-capable endpoint then thinks by default, expect more latency
+and token use, or an empty reply if reasoning exhausts the budget; raise
+`LLMChatter.MaxTokens` or pick a non-hybrid model if that happens. Any
+other effort is the user's explicit choice and is never
+dropped: the call fails and the bridge logs, once per model, that
+`OpenRouter.ReasoningEffort` or the model should change.
+
 ```ini
 LLMChatter.Provider = ollama
 LLMChatter.Model = qwen3:4b
@@ -763,6 +828,28 @@ Ollama context size must be configured on the Ollama server with
 OpenAI-compatible endpoint does not accept it per request. Verify the loaded
 context with `ollama ps`. `Ollama.DisableThinking = 1` sends
 `reasoning_effort = none` and retains `/no_think` as a model fallback.
+
+```ini
+LLMChatter.Provider = openai_compatible
+LLMChatter.Model = your-model-id
+LLMChatter.OpenAICompatible.BaseUrl = http://host.docker.internal:8080/v1
+LLMChatter.OpenAICompatible.ApiKey =
+```
+
+`openai_compatible` covers any server implementing the OpenAI Chat
+Completions API, local or hosted. It sends only the base URL, the API key
+(a placeholder when the key is empty, for servers that need none) and the
+standard request fields; no OpenRouter attribution headers, reasoning
+options or provider-routing fields are added. There are no defaults: the
+bridge refuses to start when `OpenAICompatible.BaseUrl` or
+`LLMChatter.Model` is empty, and the model ID is sent verbatim without
+alias mapping. Structured output sends a plain `json_schema`
+`response_format`, so enable it only when the server supports that.
+`LabelModel` works on this provider like any other. Setting
+`LLMChatter.QuickAnalyze.Provider = openai_compatible` while the main
+provider differs requires `LLMChatter.QuickAnalyze.Model` as well; a
+missing URL or model stops the bridge at startup and the health check
+reports it, instead of silently analysing on the main provider.
 
 ### System prompt support
 
@@ -5113,7 +5200,10 @@ Enable only if **all configured JSON targets** support the required schema
 format. There is no model allowlist or automatic capability detection. A
 model name alone does not establish support: the serving endpoint, deployed
 version and routing also matter. Existing provider/model defaults, reasoning
-settings and output budgets are unchanged.
+settings and output budgets are unchanged, with one exception: an OpenRouter
+`ReasoningEffort = none` that no endpoint accepts alongside the schema is
+dropped for that model's structured requests (see the OpenRouter notes in
+Supported Providers).
 
 | Route | Native format used |
 |---|---|

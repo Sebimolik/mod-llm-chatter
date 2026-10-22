@@ -73,7 +73,6 @@ from chatter_mode import (
     build_player_identity,
 )
 from chatter_constants import (
-    PERSONALITY_TRAITS,
     ALLIANCE_RACE_IDS, HORDE_RACE_IDS,
     LENGTH_HINTS, RP_LENGTH_HINTS,
 )
