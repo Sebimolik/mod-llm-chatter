@@ -1776,9 +1776,10 @@ LLMChatter.GroupChatter.ConversationBias = 50
 #       A newly-generated bot memory whose LLM-assigned
 #       importance_score is >= this value sets the group's
 #       ambient "session vibe" (see VibeDurationSeconds).
-#       Idle chatter tone selection is then biased toward
-#       that vibe instead of a fully random roll. Range 1-10
-#       (matches importance_score).
+#       The party's prompts then state that shared mood, so
+#       bots speak in the wake of what just happened. Each
+#       bot's own mood still comes from its own events.
+#       Range 1-10 (matches importance_score).
 #       Default: 5
 #       [BRIDGE]
 #
@@ -1787,13 +1788,23 @@ LLMChatter.GroupChatter.VibeImportanceThreshold = 5
 #
 #   LLMChatter.GroupChatter.VibeDurationSeconds
 #       How long (in seconds) a session vibe set via
-#       VibeImportanceThreshold stays active before idle
-#       chatter tone selection reverts to a fully random
-#       roll. Lazily checked on read, not a timer.
+#       VibeImportanceThreshold stays active before prompts
+#       stop mentioning it. Lazily checked on read, not a
+#       timer.
 #       Default: 600
 #       [BRIDGE]
 #
 LLMChatter.GroupChatter.VibeDurationSeconds = 600
+#   LLMChatter.GroupChatter.IdleBossContextChance
+#       Chance (0-100) that an idle party chatter prompt in a
+#       dungeon or raid also lists that instance's bosses (up
+#       to 6, picked at random). It does not change how often
+#       bots talk, and the dungeon itself is always in the
+#       prompt. Lower = fewer boss mentions. 0 = never,
+#       100 = every idle prompt.
+#       Default: 40
+#
+LLMChatter.GroupChatter.IdleBossContextChance = 40
 
 #
 #   LLMChatter.GroupChatter.IdleCooldown
@@ -3696,6 +3707,22 @@ LLMChatter.Bridge.MaxConcurrent = 5
 #
 LLMChatter.Bridge.InterSystemStaggerMin = 3
 LLMChatter.Bridge.InterSystemStaggerMax = 6
+
+#
+#   LLMChatter.Bridge.GroupSetupGraceSeconds
+#   LLMChatter.Bridge.GroupSetupRetrySeconds
+#       A group event (dungeon entry, combat, idle chatter...)
+#       can arrive before the bridge has set up the group's
+#       bots, most often right after a Dungeon Finder group
+#       forms. An event younger than GroupSetupGraceSeconds
+#       is retried every GroupSetupRetrySeconds until the
+#       group is ready; an older one is dropped, as for a
+#       group that has disbanded. GroupSetupGraceSeconds = 0
+#       disables the retry; RetrySeconds is at least 1.
+#       Default: GraceSeconds = 30, RetrySeconds = 3
+#
+LLMChatter.Bridge.GroupSetupGraceSeconds = 30
+LLMChatter.Bridge.GroupSetupRetrySeconds = 3
 
 #
 #   LLMChatter.MessageDelayMin

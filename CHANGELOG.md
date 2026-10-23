@@ -36,6 +36,41 @@ would.
   your provider offers, all the memory bookkeeping moves there and costs you
   almost nothing. Nothing moves until you name that model — until then every
   call stays on your main model. See [Tuning Bot Memory](#tuning-bot-memory).
+### 2026-10-22 - Less Repetitive Boss Talk in Idle Chatter
+
+* **Boss names join only some idle party prompts**: in dungeons and
+  raids every idle party prompt used to list the same first six bosses
+  in alphabetical order, which invited bots to name-drop them again and
+  again. Now each idle prompt includes the list only on a roll, as a
+  random pick of up to six bosses, so large instances such as Blackrock
+  Depths show different bosses over time. The dungeon itself is always
+  in the prompt, and dungeon-entry and spell-reaction lines are
+  unchanged.
+* **New setting**: `LLMChatter.GroupChatter.IdleBossContextChance`
+  (default 40, quieter preset 25). It does not change how often bots
+  talk.
+
+### 2026-10-22 - Dungeon Finder Entry Lines Fix
+
+* **Dungeon entry lines no longer go missing in new groups**: when a
+  Dungeon Finder group formed, the dungeon-entry reaction could reach
+  the bridge before the group's bots were set up and was dropped as if
+  the group had disbanded; the 5-minute entry cooldown then also hid
+  the line on re-entry. A group event that arrives during setup is now
+  retried for a short while instead. Events for groups that are really
+  gone are still dropped, now with a log line.
+* **New settings**: `LLMChatter.Bridge.GroupSetupGraceSeconds`
+  (default 30, 0 turns the retry off) and
+  `LLMChatter.Bridge.GroupSetupRetrySeconds` (default 3).
+
+### 2026-10-22 - Dungeon Boss Names Fix
+
+* **Bots know the dungeon's bosses again**: since 2026-09-09 the boss
+  lookup failed with a MySQL error (1250) in every dungeon and raid, so
+  group chatter, spell reactions and dungeon-entry lines never got the
+  boss names. The query is fixed, and bots once more mention bosses such
+  as Edwin VanCleef or King Gordok when the group is inside (#82, thanks
+  Vezajin).
 
 ### 2026-10-19 - Non-English Chatter Crash Fix
 
