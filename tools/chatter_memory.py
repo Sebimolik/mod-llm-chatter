@@ -40,6 +40,10 @@ from chatter_text import (
     parse_single_response,
 )
 from chatter_llm import call_llm, get_llm_client
+from chatter_member_gender import (
+    get_character_genders,
+    get_genders_by_guid,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2108,6 +2112,18 @@ def _execute_generate_memory(
                     player_guid,
                 )
 
+        # Memories are stored and replayed, so the player's
+        # pronouns must be right from the start.
+        player_gender = ''
+        if player_guid:
+            player_gender = get_genders_by_guid(
+                conn, [player_guid]
+            ).get(int(player_guid), '')
+        elif player_name:
+            player_gender = get_character_genders(
+                conn, [player_name]
+            ).get(player_name, '')
+
         # Pick mood and expression style
         moods = MEMORY_MOODS.get(
             memory_type,
@@ -2370,13 +2386,11 @@ def _call_llm_for_memory(
     )
     prompt = f"{identity}\n"
     if player_name:
+        gender_note = (
+            f" ({player_gender})" if player_gender else ""
+        )
         prompt += (
-            f"Player companion: {player_name}"
-            + (
-                f" (gender: {player_gender})"
-                if player_gender else ""
-            )
-            + "\n"
+            f"Player companion: {player_name}{gender_note}\n"
         )
     if location:
         prompt += f"Location: {location}\n"

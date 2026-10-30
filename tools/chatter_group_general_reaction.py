@@ -24,6 +24,7 @@ from chatter_group_state import (
     get_group_player_name,
 )
 from chatter_guild_profile import get_character_guild_name, guild_suffix
+from chatter_member_gender import with_party_genders
 from chatter_mode import (
     build_player_chat_guidance,
     build_player_prompt_header_from_dict,
@@ -457,6 +458,17 @@ def _location_context(db, group_id: int) -> Dict:
     }
 
 
+def _out_of_earshot_rule(source_name: str) -> str:
+    """The General author is in another channel and never hears the
+    party, so the party talks about them, not to them."""
+    return (
+        f"{source_name} is not in your party and cannot hear party "
+        f"chat. Talk about what {source_name} said, never to "
+        f"{source_name}: do not answer, greet or question them, and "
+        f"refer to {source_name} in the third person.\n"
+    )
+
+
 def _build_statement_prompt(
     bot: Dict,
     source_bot: Dict,
@@ -497,6 +509,7 @@ def _build_statement_prompt(
 
     source_desc = source_bot.get('name') or 'the bot'
     source_bits = [
+        source_bot.get('gender', ''),
         source_bot.get('race', ''),
         source_bot.get('class', ''),
     ]
@@ -518,7 +531,8 @@ def _build_statement_prompt(
         "General reply.\n"
         f"HARD RULE: The message text must mention "
         f"{source_bot['name']} by name.\n"
-        "HARD LIMIT: Never exceed 150 characters total.\n"
+        + _out_of_earshot_rule(source_bot['name'])
+        + "HARD LIMIT: Never exceed 150 characters total.\n"
     )
     if is_rp:
         prompt += (
@@ -544,6 +558,8 @@ def _build_conversation_prompt(
 ) -> str:
     is_rp = (mode == 'roleplay')
     names = [b['name'] for b in bots]
+    source_gender = source_bot.get('gender', '')
+    source_tag = f" ({source_gender})" if source_gender else ""
     prompt = (
         "Generate a short party chat exchange between "
         f"{len(bots)} grouped bots reacting to something "
@@ -552,13 +568,15 @@ def _build_conversation_prompt(
     if not is_rp:
         prompt += build_player_chat_guidance(mode, 'party') + "\n"
     prompt += (
-        f"\nA bot named {source_bot['name']} just said "
+        f"\nA bot named {source_bot['name']}{source_tag} just said "
         f"in General chat:\n\"{source_message}\"\n"
     )
     prompt += (
         f"\nThe first party line must mention "
         f"{source_bot['name']} by name. This is private "
         "party chat, not another General reply.\n"
+        + _out_of_earshot_rule(source_bot['name'])
+        + "The party members discuss those words among themselves.\n"
         "HARD LIMIT: Never exceed 150 characters in any message.\n"
     )
     if is_rp and loc.get('dungeon_flavor'):
@@ -606,6 +624,8 @@ def _build_conversation_prompt(
         f"- {names[0]} speaks first and mentions "
         f"{source_bot['name']} by name\n"
         "- Later speakers build on that party reaction\n"
+        f"- Nobody addresses {source_bot['name']}; the lines are "
+        "spoken to each other and the party\n"
         "- Each bot speaks exactly once\n"
         f"- {player_name} is listening in the party\n"
     )
@@ -635,6 +655,9 @@ def _insert_statement(
     prompt = _build_statement_prompt(
         bot, source_bot, source_message,
         player_name, chat_hist, mode, loc,
+    )
+    prompt = with_party_genders(
+        prompt, db, group_id, bot['name'],
     )
     response = call_llm(
         client, prompt, config,
@@ -697,8 +720,11 @@ def _insert_conversation(
         bots, source_bot, source_message,
         player_name, chat_hist, mode, loc,
     )
+    prompt = with_party_genders(
+        prompt, db, group_id,
+    )
     max_tokens = int(config.get(
-        'LLMChatter.MaxTokens', 200,
+        'LLMChatter.MaxTokens', 350,
     ))
     response = call_llm(
         client, prompt, config,

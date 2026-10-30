@@ -2959,7 +2959,8 @@ static void DispatchPlayerEmote(
                         : 0u,
                     GetLocalizedCreatureSubName(
                         cachedTargetCreature),
-                    nearbyAliveBots, customText);
+                    nearbyAliveBots, customText, nullptr,
+                    GetUnitGenderLabel(cachedTargetCreature));
             break;
         case EMOTE_TGT_EXT_PLAYER:
         case EMOTE_TGT_NONE:

@@ -49,6 +49,7 @@ from chatter_shared import (
     strip_conversation_actions,
 )
 from chatter_guild_profile import get_character_guild_name
+from chatter_member_gender import with_party_genders
 from chatter_mode import (
     build_player_chat_guidance,
     build_player_prompt_header,
@@ -152,7 +153,10 @@ def handle_screenshot_observation(db, client, config, event):
                 subzone_name = sz_name
             sz_lore = get_subzone_lore(zone_id, area_id)
             if sz_lore:
-                zone_flavor = sz_lore
+                zone_flavor = (
+                    f"{zone_flavor}\nCurrent subzone: {sz_lore}"
+                    if zone_flavor else sz_lore
+                )
     dungeon_flav = get_dungeon_flavor(map_id)
     if dungeon_flav:
         zone_flavor = dungeon_flav
@@ -399,6 +403,9 @@ def _screenshot_single(
             )
     prompt = append_json_instruction(
         prompt, allow_action=roleplay)
+    prompt = with_party_genders(
+        prompt, db, group_id, bot_name,
+    )
 
     result = run_single_reaction(
         db, client, config,
@@ -579,6 +586,9 @@ def _screenshot_conversation(
     prompt = append_conversation_json_instruction(
         prompt, bot_names, num_bots,
         allow_action=roleplay,
+    )
+    prompt = with_party_genders(
+        prompt, db, group_id, '',
     )
 
     max_tokens = min(80 * num_bots, 400)

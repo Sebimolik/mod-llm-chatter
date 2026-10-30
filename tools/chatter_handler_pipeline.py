@@ -29,6 +29,7 @@ from chatter_db import (
 )
 from chatter_party_gate import policy_for_reason
 from chatter_guild_profile import get_character_guild_name
+from chatter_member_gender import party_gender_line
 from chatter_group_state import (
     get_bot_mood_label,
     _mark_event,
@@ -364,6 +365,14 @@ def run_group_handler(
             prompt += (
                 f"\n{format_backstory_block(backstory, mode)}"
             )
+
+        # 10c. Genders of the party, so event subjects
+        # (looter, leveler, the dead) get matching pronouns.
+        gender_line = party_gender_line(
+            db, group_id, bot_name,
+        )
+        if gender_line:
+            prompt += f"\n{gender_line}"
 
         # 11. Mood injection: the bot's real event
         # mood, shared with guild and General.

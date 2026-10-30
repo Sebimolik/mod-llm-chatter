@@ -11,12 +11,12 @@ from chatter_constants import (
     PROXIMITY_CHAT_TOPICS,
     PROXIMITY_PLAYER_CHAT_TOPICS,
     PROXIMITY_PLAYER_WEATHER_TOPICS,
-    PROXIMITY_WEATHER_TOPICS,
     REACTION_TONES,
 )
 from chatter_proximity_pacing import proximity_line_delays
 from chatter_db import insert_chat_message
 from chatter_llm import call_llm
+from chatter_location_topics import roll_location_topic
 from chatter_guild_profile import (
     get_character_guild_name,
     same_guild_note,
@@ -45,7 +45,15 @@ from chatter_shared import (
     strip_conversation_actions,
 )
 from chatter_player_context import player_character_lines
-from chatter_prompts import build_environmental_context_lines
+from chatter_member_gender import (
+    format_gender_line,
+    get_character_genders,
+    get_genders_by_guid,
+)
+from chatter_prompts import (
+    build_environmental_context_lines,
+    roll_event_location_chance,
+)
 from chatter_mode import (
     build_npc_chat_guidance,
     build_player_chat_guidance,
@@ -61,6 +69,36 @@ from chatter_text import (
 )
 
 logger = logging.getLogger(__name__)
+
+# nearby_names mix NPCs with bots. Older payloads carry no genders, so
+# prompts ask for names instead of pronouns; newer ones add
+# nearby_genders for the unambiguous entries with a known gender.
+_NEARBY_GENDER_RULE = (
+    "Use their names rather than guessing anyone's gender."
+)
+_NEARBY_UNSTATED_RULE = (
+    "For anyone whose gender is not stated, use their name rather "
+    "than guessing."
+)
+
+
+def _nearby_gender_text(extra: Dict, names) -> str:
+    """Pronoun guidance for the listed nearby people."""
+    genders = extra.get('nearby_genders')
+    if not isinstance(genders, dict):
+        return _NEARBY_GENDER_RULE
+    names = [str(n) for n in names or () if n]
+    known = {
+        name: genders.get(name) for name in names
+        if genders.get(name) in ('female', 'male')
+    }
+    parts = []
+    line = format_gender_line(known)
+    if line:
+        parts.append(line)
+    if any(name not in known for name in names):
+        parts.append(_NEARBY_UNSTATED_RULE)
+    return ' '.join(parts)
 
 _DEFAULT_EMOTE_TONES = [
     "briefly",
@@ -215,8 +253,9 @@ def _describe_speaker(
         parts = [speaker.get('name', 'NPC'), role]
         if sub_name:
             parts.append(sub_name)
+        # Older payloads send the literal "unknown"; never render it.
         gender = speaker.get('gender') or ''
-        if gender:
+        if gender in ('female', 'male'):
             parts.append(f"gender: {gender}")
         race = speaker.get('race') or ''
         if race:
@@ -315,14 +354,12 @@ def _apply_speaker_action_policy(
             line['action'] = None
 
 
-_OUTDOOR_ONLY_TOPICS = frozenset(
-    PROXIMITY_WEATHER_TOPICS + PROXIMITY_PLAYER_WEATHER_TOPICS
-)
+_OUTDOOR_ONLY_TOPICS = frozenset(PROXIMITY_PLAYER_WEATHER_TOPICS)
 
 
 def _pick_topic(pool, extra: Optional[Dict]) -> str:
-    """Random topic from pool; sky and weather topics are left
-    out inside instances, where no weather context exists."""
+    """Random topic from pool; the normal-mode weather topic is
+    left out inside instances, where no weather context exists."""
     if extra and build_instance_context(extra)['is_instance']:
         indoor = [t for t in pool if t not in _OUTDOOR_ONLY_TOPICS]
         if indoor:
@@ -330,21 +367,36 @@ def _pick_topic(pool, extra: Optional[Dict]) -> str:
     return random.choice(pool)
 
 
+class _PlaceSubject(str):
+    """A topic tied to the scene's place. The topic only names the
+    place, so the scene always carries its zone and subzone
+    descriptions, skipping the LocationContext.EventChance roll."""
+
+
+def _in_world_topic(extra: Optional[Dict]) -> str:
+    """Topic for an in-world speaker (an NPC, or a roleplay
+    playerbot): one tied to this place at LocationTopics.Chance
+    (a _PlaceSubject), else the universal pool."""
+    location = (
+        roll_location_topic(extra.get('zone_id'), extra.get('map_id'))
+        if extra else None
+    )
+    if location is not None:
+        return _PlaceSubject(location.subject_line())
+    return _pick_topic(PROXIMITY_CHAT_TOPICS, extra)
+
+
 def _playerbot_topic(
     config: Optional[Dict], extra: Optional[Dict] = None,
 ) -> str:
-    mode = get_chatter_mode(config or {})
-    pool = (
-        PROXIMITY_CHAT_TOPICS
-        if is_roleplay(mode)
-        else PROXIMITY_PLAYER_CHAT_TOPICS
-    )
-    return _pick_topic(pool, extra)
+    if is_roleplay(get_chatter_mode(config or {})):
+        return _in_world_topic(extra)
+    return _pick_topic(PROXIMITY_PLAYER_CHAT_TOPICS, extra)
 
 
-def _describe_fighter(fighter: Dict) -> str:
-    """Name plus race/class/level; never labels anyone
-    as a bot."""
+def _describe_fighter(fighter: Dict, gender: str = '') -> str:
+    """Name plus race/class/level (and gender when known);
+    never labels anyone as a bot."""
     name = str(fighter.get('name') or '').strip()
     try:
         race = get_race_name(int(fighter.get('race', 0)))
@@ -353,17 +405,22 @@ def _describe_fighter(fighter: Dict) -> str:
     except (TypeError, ValueError):
         race, cls, level = '', '', 0
     desc = ' '.join(p for p in (
-        f"level {level}" if level else '', race, cls,
+        f"level {level}" if level else '', gender, race, cls,
     ) if p)
     return f"{name} ({desc})" if desc else name
 
 
-def _fight_topic(extra: Dict, mode: str) -> Optional[str]:
+def _fight_topic(
+    extra: Dict, mode: str, db=None, neutral: bool = False,
+) -> Optional[str]:
     """Topic seed for a nearby duel or open-world fight.
 
     C++ only includes fighters every speaker can perceive,
-    so an unseen fighter is never named. Returns None when
-    the event is not a fight scene.
+    so an unseen fighter is never named. Fighters are always
+    player characters, so their genders are looked up by
+    name. neutral (any NPC speaker) keeps the wording
+    in-world. Returns None when the event is not a fight
+    scene.
     """
     scene = extra.get('fight_scene')
     if not isinstance(scene, dict):
@@ -373,7 +430,13 @@ def _fight_topic(extra: Dict, mode: str) -> Optional[str]:
         f for f in (scene.get('fighters') or [])
         if isinstance(f, dict) and f.get('name')
     ]
-    names = [_describe_fighter(f) for f in fighters]
+    genders = get_character_genders(
+        db, [f.get('name') for f in fighters],
+    )
+    names = [
+        _describe_fighter(f, genders.get(f.get('name'), ''))
+        for f in fighters
+    ]
     who = ' and '.join(names) if names else 'two fighters'
     player = next(
         (f.get('name') for f in fighters
@@ -443,8 +506,16 @@ def _fight_topic(extra: Dict, mode: str) -> Optional[str]:
         )
 
     lines = [situation, tone]
+    # Duel results and kills print bare names, so every moment
+    # states the visible fighters' genders.
+    gender_line = format_gender_line(genders)
+    if gender_line:
+        lines.append(gender_line)
     if player:
         lines.append(
+            f"{player} is taking part; you may address them "
+            f"by name."
+            if neutral else
             f"{player} is the real player taking part; you "
             f"may address them by name."
         )
@@ -569,13 +640,30 @@ def _environment_lines(db, extra: Dict, is_instance: bool) -> List[str]:
     return build_environmental_context_lines(weather)
 
 
+def _extend_new(lines: List[str], new: List[str]) -> None:
+    """Append lines not already present (shared player description)."""
+    for line in new:
+        if line not in lines:
+            lines.append(line)
+
+
 def _location_lines(
     extra: Dict,
     mode: str,
     speakers: List[Dict],
     db=None,
+    place_topic: bool = False,
 ) -> List[str]:
-    lines = build_location_prompt_lines(extra)
+    # The place description is world lore, so it goes to scenes with
+    # an in-world speaker: any NPC, or playerbots in roleplay mode. It
+    # is long, so like the party events only at LocationContext.EventChance,
+    # unless the scene's topic is tied to the place (place_topic).
+    lines = build_location_prompt_lines(
+        extra,
+        describe=any(
+            _speaker_is_roleplay(speaker, mode) for speaker in speakers
+        ) and (place_topic or roll_event_location_chance()),
+    )
     context = build_instance_context(extra)
     observation = extra.get('screenshot_observation')
     if isinstance(observation, dict):
@@ -583,9 +671,17 @@ def _location_lines(
         lines.extend(screenshot_context_lines(observation))
     else:
         lines.extend(_environment_lines(db, extra, context['is_instance']))
-    player_line = _player_context_line(db, extra)
-    if player_line:
-        lines.append(player_line)
+    if any(speaker.get('is_npc') for speaker in speakers):
+        # NPC voice rules: the neutral in-world description, never
+        # "the player".
+        _extend_new(lines, player_character_lines(
+            db, extra.get('player_guid'), extra.get('player_name', ''),
+            mode, neutral=True,
+        ))
+    else:
+        player_line = _player_context_line(db, extra)
+        if player_line:
+            lines.append(player_line)
     has_normal_playerbot = (
         not is_roleplay(mode)
         and any(
@@ -671,10 +767,15 @@ def _parse_brief_single_with_retry(
     label: str,
     metadata: Dict,
 ) -> Dict:
-    """Parse a single response and repair one oversized brief turn."""
+    """Parse a single response and repair one oversized brief turn.
+
+    If the repair still runs long, the reply is delivered whole rather
+    than dropped: the player addressed this speaker and is waiting.
+    """
     parsed = parse_single_response(response or '')
     if not brief_casual:
         return parsed
+    first = parsed
 
     rendered = cleanup_message(
         str(parsed.get('message') or ''),
@@ -700,11 +801,21 @@ def _parse_brief_single_with_retry(
         str(parsed.get('message') or ''),
         action=parsed.get('action'),
     )
-    if not brief_casual_response_fits(
+    if brief_casual_response_fits(
         rendered, parsed.get('emote')
     ):
+        return parsed
+    if not parsed.get('message') and not parsed.get('emote'):
+        parsed = first
+    message, emote = _whole_reply(
+        str(parsed.get('message') or ''),
+        parsed.get('emote'),
+        str(first.get('message') or ''),
+        first.get('emote'),
+    )
+    if not message and not emote:
         return {}
-    return parsed
+    return {**parsed, 'message': message, 'emote': emote}
 
 
 def _brief_conversation_fits(messages: List[Dict]) -> bool:
@@ -718,6 +829,38 @@ def _brief_conversation_fits(messages: List[Dict]) -> bool:
         )
         for message in messages
     )
+
+
+def _whole_reply(
+    message: str,
+    emote: Optional[str] = None,
+    fallback_message: str = '',
+    fallback_emote: Optional[str] = None,
+):
+    """An over-long brief reply, delivered whole.
+
+    The length band only steers the prompt; nothing is cut down to a
+    first sentence. Only the client chat limit applies, through
+    shorten_chat_message().
+    """
+    source = (
+        str(message or '').strip()
+        or str(fallback_message or '').strip()
+    )
+    return shorten_chat_message(source), emote or fallback_emote
+
+
+def _whole_brief_conversation(messages: List[Dict]) -> List[Dict]:
+    """Deliver each line of an over-long brief exchange whole instead
+    of dropping the whole reply to the player."""
+    delivered = []
+    for line in messages or []:
+        message, emote = _whole_reply(
+            str(line.get('message') or ''), line.get('emote'),
+        )
+        if message or emote:
+            delivered.append({**line, 'message': message, 'emote': emote})
+    return delivered
 
 
 def _set_line_addressee(
@@ -800,6 +943,24 @@ def _emote_addressed_participant(
         ),
         {},
     )
+
+
+def _addressed_gender_line(db, extra: Dict) -> str:
+    """Gender of the silent character an emote was aimed at: a bot by
+    its guid, an NPC by the gender C++ sent (dropped when unknown)."""
+    addressed = extra.get('addressed_participant')
+    if not isinstance(addressed, dict) or not addressed.get('name'):
+        return ''
+    name = str(addressed['name'])
+    if addressed.get('is_npc'):
+        gender = str(addressed.get('gender') or '')
+    else:
+        try:
+            guid = int(addressed.get('bot_guid', 0) or 0)
+        except (TypeError, ValueError):
+            guid = 0
+        gender = get_genders_by_guid(db, [guid]).get(guid, '')
+    return format_gender_line({name: gender})
 
 
 def _single_prompt(
@@ -888,9 +1049,10 @@ def _single_prompt(
     ])
     lines.extend(_location_lines(
         extra, mode, [speaker], db=db,
+        place_topic=isinstance(topic, _PlaceSubject),
     ))
     if player_message or player_addressed:
-        lines.extend(_player_lines(db, extra, mode, [speaker]))
+        _extend_new(lines, _player_lines(db, extra, mode, [speaker]))
     disposition_guidance = _npc_disposition_guidance(
         speaker
     )
@@ -953,15 +1115,14 @@ def _single_prompt(
                 "strangers and enemies to you; you share no past "
                 "with them. Keep the topic among your own kind, or "
                 "aim a wary, mocking or threatening remark at them. "
-                "Use their names rather than guessing anyone's gender."
+                + _nearby_gender_text(extra, nearby_names)
             )
         else:
             lines.append(
                 f"Nearby people you may address by name: {names}. "
                 "They are standing here with you right now: speak "
                 "to them, never about them as absent, missing or "
-                "elsewhere. Use their names rather than guessing "
-                "anyone's gender."
+                "elsewhere. " + _nearby_gender_text(extra, nearby_names)
             )
 
     # Use global EmoteChance / ActionChance gates
@@ -988,16 +1149,20 @@ def _conversation_prompt(
         speaker.get('is_npc')
         for speaker in participants
     )
-    fight_topic = _fight_topic(extra, mode)
+    place_topic = False
+    fight_topic = _fight_topic(extra, mode, db=db, neutral=has_npc)
     if isinstance(extra.get('screenshot_observation'), dict):
         topic = None
     elif fight_topic:
         topic = fight_topic
     elif is_roleplay(mode) or not has_playerbot:
-        topic = _pick_topic(PROXIMITY_CHAT_TOPICS, extra)
+        topic = _in_world_topic(extra)
+        place_topic = isinstance(topic, _PlaceSubject)
     else:
+        npc_topic = _in_world_topic(extra)
+        place_topic = isinstance(npc_topic, _PlaceSubject)
         topic = (
-            "NPC angle: " + _pick_topic(PROXIMITY_CHAT_TOPICS, extra)
+            "NPC angle: " + npc_topic
             + "; playerbot angle: "
             + _pick_topic(PROXIMITY_PLAYER_CHAT_TOPICS, extra)
         )
@@ -1080,10 +1245,10 @@ def _conversation_prompt(
         db, extra, participants, third_person=True
     ))
     lines.extend(_location_lines(
-        extra, mode, participants, db=db,
+        extra, mode, participants, db=db, place_topic=place_topic,
     ))
     if player_addressed and player_name:
-        lines.extend(_player_lines(db, extra, mode, participants))
+        _extend_new(lines, _player_lines(db, extra, mode, participants))
     lines.extend(_mixed_voice_guidance(mode))
 
     addressable = list(nearby_names)
@@ -1093,7 +1258,8 @@ def _conversation_prompt(
         lines.append(
             "Also nearby: "
             + ", ".join(addressable[:5])
-            + ". A speaker may address one of them."
+            + ". A speaker may address one of them. "
+            + _nearby_gender_text(extra, nearby_names)
         )
 
     lines.append("Speakers:")
@@ -1130,9 +1296,12 @@ def _generate_single_line(
     if isinstance(extra.get('screenshot_observation'), dict):
         topic = ''
     else:
-        topic = topic or _fight_topic(extra, get_chatter_mode(config or {}))
+        topic = topic or _fight_topic(
+            extra, get_chatter_mode(config or {}), db=db,
+            neutral=bool(speaker.get('is_npc')),
+        )
         topic = topic or (
-            _pick_topic(PROXIMITY_CHAT_TOPICS, extra)
+            _in_world_topic(extra)
             if speaker.get('is_npc')
             else _playerbot_topic(config, extra)
         )
@@ -1364,6 +1533,11 @@ def handle_proximity_reply(db, client, config, event):
             'responder_qualification', ''
         ),
     }
+    # Newer payloads carry the responder's own gender; bots fall back
+    # to their guid lookup when it is missing.
+    responder_gender = str(extra.get('responder_gender') or '')
+    if responder_gender in ('female', 'male'):
+        responder['gender'] = responder_gender
     if (
         not responder['bot_guid']
         and not responder['npc_spawn_id']
@@ -1660,7 +1834,7 @@ def _player_say_single_prompt(
     if speech_guidance:
         lines.append(speech_guidance)
 
-    lines.extend(_player_lines(db, extra, mode, [speaker]))
+    _extend_new(lines, _player_lines(db, extra, mode, [speaker]))
     addressed = extra.get('addressed_name', '')
     if addressed:
         lines.append(
@@ -1687,7 +1861,8 @@ def _player_say_single_prompt(
         lines.append(
             "Reply to the player. Other nearby people may be mentioned "
             "but not addressed: "
-            + ", ".join(nearby_names[:5]) + "."
+            + ", ".join(nearby_names[:5]) + ". "
+            + _nearby_gender_text(extra, nearby_names)
         )
 
     return append_json_instruction(
@@ -1746,7 +1921,7 @@ def _player_say_conversation_prompt(
     ))
     lines.extend(_mixed_voice_guidance(mode))
 
-    lines.extend(_player_lines(db, extra, mode, participants))
+    _extend_new(lines, _player_lines(db, extra, mode, participants))
     addressed = extra.get('addressed_name', '')
     if addressed:
         lines.append(
@@ -1800,7 +1975,8 @@ def _player_say_conversation_prompt(
         lines.append(
             "Also nearby: "
             + ", ".join(nearby_names[:5])
-            + ". They may be mentioned but are not participants."
+            + ". They may be mentioned but are not participants. "
+            + _nearby_gender_text(extra, nearby_names)
         )
 
     lines.append("Speakers:")
@@ -1884,7 +2060,7 @@ def _player_emote_single_prompt(
         speech_guidance = _npc_speech_capability_guidance(speaker)
         if speech_guidance:
             lines.append(speech_guidance)
-    lines.extend(_player_lines(db, extra, mode, [speaker]))
+    _extend_new(lines, _player_lines(db, extra, mode, [speaker]))
     lines.extend([
         f"The player ({player_name}) "
         f"{_describe_player_emote(extra, player_emote, addressed)}.",
@@ -1904,6 +2080,9 @@ def _player_emote_single_prompt(
             f"{addressed} remains silent and is not the speaker. "
             "Do not invent dialogue or actions for them.",
         ])
+        addressed_gender = _addressed_gender_line(db, extra)
+        if addressed_gender:
+            lines.append(addressed_gender)
     mirror_emote = str(extra.get('mirror_emote', '')).strip()
     if mirror_emote:
         mirror_subject = (
@@ -1969,7 +2148,7 @@ def _player_emote_conversation_prompt(
     ))
     lines.extend(_location_lines(extra, mode, participants, db=db))
     lines.extend(_mixed_voice_guidance(mode))
-    lines.extend(_player_lines(db, extra, mode, participants))
+    _extend_new(lines, _player_lines(db, extra, mode, participants))
     lines.extend([
         f"The player ({player_name}) "
         f"{_describe_player_emote(extra, player_emote, addressed)}.",
@@ -1989,6 +2168,9 @@ def _player_emote_conversation_prompt(
             "The listed speakers witnessed the gesture and may comment "
             "on that same action.",
         ])
+        addressed_gender = _addressed_gender_line(db, extra)
+        if addressed_gender:
+            lines.append(addressed_gender)
     mirror_emote = str(extra.get('mirror_emote', '')).strip()
     if mirror_emote:
         lines.append(
@@ -2325,7 +2507,7 @@ def handle_proximity_player_conversation(
             allow_emote_only=True,
         )
         if not _brief_conversation_fits(parsed):
-            parsed = []
+            parsed = _whole_brief_conversation(parsed)
     line_delay = max(0, int(
         extra.get('line_delay_seconds', 4) or 4
     ))

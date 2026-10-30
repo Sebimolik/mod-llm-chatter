@@ -437,6 +437,28 @@ def _unit_class_name(unit_class: int) -> str:
     }.get(int(unit_class or 0), '')
 
 
+# Gender of a creature template from its models (world DB), or NULL.
+# Conservative: every model needs creature_model_info metadata, none may
+# have a DisplayID_Other_Gender alternate (the core can swap a spawn to it
+# at random), and all models must agree on male (0) or female (1);
+# GENDER_NONE (2), mixed or missing models stay unknown.
+NPC_MODEL_GENDER_SQL = """(
+    SELECT CASE
+        WHEN COUNT(*) > 0
+         AND COUNT(cmi.DisplayID) = COUNT(*)
+         AND SUM(CASE WHEN cmi.DisplayID_Other_Gender <> 0
+                      THEN 1 ELSE 0 END) = 0
+         AND COUNT(DISTINCT cmi.Gender) = 1
+         AND MIN(cmi.Gender) IN (0, 1)
+        THEN MIN(cmi.Gender)
+    END
+    FROM creature_template_model ctm
+    LEFT JOIN creature_model_info cmi
+        ON cmi.DisplayID = ctm.CreatureDisplayID
+    WHERE ctm.CreatureID = ct.entry
+)"""
+
+
 def query_zone_npcs(
     config: dict, zone_id: int, limit: int = 40
 ) -> List[dict]:
@@ -446,6 +468,10 @@ def query_zone_npcs(
     """
     if not zone_id:
         return []
+
+    # Deferred: chatter_member_gender imports chatter_shared, which
+    # imports chatter_db.
+    from chatter_member_gender import gender_from_id
 
     try:
         db = get_db_connection(config, 'acore_world')
@@ -492,7 +518,8 @@ def query_zone_npcs(
                     ct.entry, ct.name, ct.subname,
                     ctl.Title AS subname_locale,
                     ct.npcflag, ct.type, ct.unit_class,
-                    ct.minlevel, ct.maxlevel
+                    ct.minlevel, ct.maxlevel,
+                    {NPC_MODEL_GENDER_SQL} AS model_gender
                 FROM creature c
                 JOIN creature_template ct ON c.{entry_col} = ct.entry
                 LEFT JOIN creature_template_locale ctl
@@ -537,6 +564,7 @@ def query_zone_npcs(
                 ),
                 'minlevel': int(row.get('minlevel') or 0),
                 'maxlevel': int(row.get('maxlevel') or 0),
+                'gender': gender_from_id(row.get('model_gender')),
             })
         return results
 
@@ -552,6 +580,9 @@ def query_zone_bot_gossip_targets(
     cursor, zone_id: int, exclude_guids=None, limit: int = 30
 ) -> List[dict]:
     """Return online random bots in a zone for gossip targets."""
+    # Local import: chatter_shared imports chatter_db at load time.
+    from chatter_shared import get_gender_label
+
     if not zone_id:
         return []
 
@@ -561,7 +592,7 @@ def query_zone_bot_gossip_targets(
     cursor.execute("""
         SELECT DISTINCT
             c.guid, c.name, c.class, c.race,
-            c.level, c.zone
+            c.level, c.zone, c.gender
         FROM characters c
         JOIN acore_auth.account a
             ON c.account = a.id
@@ -586,6 +617,10 @@ def query_zone_bot_gossip_targets(
             'race': get_race_name(int(row.get('race') or 0)),
             'level': int(row.get('level') or 0),
             'zone_id': int(row.get('zone') or 0),
+            'gender': (
+                get_gender_label(int(row['gender']))
+                if row.get('gender') is not None else ''
+            ),
         })
     return targets
 
@@ -1147,6 +1182,33 @@ def is_player_online(
         return True  # assume online on error
 
 
+def get_character_location(db, char_name: str) -> tuple:
+    """(zone, map) of a character, or (0, 0).
+
+    Not cached: the worldserver writes a real player's zone and map
+    to characters as soon as they change zone, and callers compare
+    them with where the bots are right now.
+    """
+    if not char_name:
+        return (0, 0)
+    try:
+        cursor = db.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT zone, map FROM characters "
+            "WHERE name = %s LIMIT 1",
+            (char_name,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return (
+                int(row.get('zone') or 0),
+                int(row.get('map') or 0),
+            )
+    except Exception:
+        pass
+    return (0, 0)
+
+
 def get_character_talents(
     db, char_guid: int
 ) -> dict:
@@ -1598,6 +1660,7 @@ def get_zone_bot_candidates(
                 c.class as bot1_class,
                 c.race as bot1_race,
                 c.level as bot1_level,
+                c.gender as bot1_gender,
                 c.zone as zone_id
             FROM characters c
             JOIN acore_auth.account a
@@ -1630,6 +1693,7 @@ def get_zone_bot_candidates(
                 c.class as bot1_class,
                 c.race as bot1_race,
                 c.level as bot1_level,
+                c.gender as bot1_gender,
                 c.zone as zone_id
             FROM characters c
             JOIN acore_auth.account a
@@ -1676,6 +1740,7 @@ def get_bots_by_guid(cursor, guid_list):
             c.class as bot1_class,
             c.race as bot1_race,
             c.level as bot1_level,
+            c.gender as bot1_gender,
             c.zone as zone_id
         FROM characters c
         JOIN acore_auth.account a

@@ -864,6 +864,9 @@ docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
 docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
   modules/mod-llm-chatter/data/sql/characters/updates/20261010_race_names.sql
 
+docker exec -i ac-database mysql -uroot -ppassword acore_characters < \
+  modules/mod-llm-chatter/data/sql/characters/updates/20261022_loot_roll_comments.sql
+
 # Non-Docker
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20260320_bot_memory_system.sql
@@ -957,6 +960,9 @@ mysql -uroot -ppassword acore_characters < \
 
 mysql -uroot -ppassword acore_characters < \
   data/sql/characters/updates/20261010_race_names.sql
+
+mysql -uroot -ppassword acore_characters < \
+  data/sql/characters/updates/20261022_loot_roll_comments.sql
 ```
 
 Migrations are idempotent — safe to run on an already

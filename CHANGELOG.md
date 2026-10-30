@@ -36,6 +36,241 @@ would.
   your provider offers, all the memory bookkeeping moves there and costs you
   almost nothing. Nothing moves until you name that model — until then every
   call stays on your main model. See [Tuning Bot Memory](#tuning-bot-memory).
+### 2026-10-28 - Settings Behave the Same With or Without Every Key
+
+* **Missing keys now mean the shipped defaults**: when a setting was absent
+  from a config, the module used its own built-in value, which often
+  differed from the template (for example `MaxTokens` 200 instead of 350,
+  `BotSpeakerCooldownSeconds` 900 instead of 120, the quest reaction
+  chances 100 instead of 50, the party chat gaps, the memory chances and
+  the screenshot intervals). Every built-in value now matches
+  `mod_llm_chatter.conf.dist`, and template comments that named a different
+  default were corrected. Configured values are unaffected. A config
+  without `GuildChatter.Enable` no longer has the bridge skip the Guild
+  events the server queues.
+* **General's first reply cap is a setting**: the 5-second limit on the
+  first bot reply to a player's General message is now
+  `GeneralChat.FirstReplyMaxDelay` (default 5; `0` removes it, so
+  `ResponsiveDelayMin/Max` apply unchanged).
+* **Every setting is in both templates**: `GroupChatter.BotQuestionCooldown`
+  and `TalentInjectionChance` are now listed, and the quieter preset gained
+  the priority, group-setup retry and OpenAI-compatible settings it was
+  missing, so both files list the same keys.
+* **Removed**: `PrioritySystem.SafetyEnable`, which nothing used.
+* The server-side defaults need a worldserver rebuild; restart the chatter
+  bridge (and the screenshot agent, if used) for the rest.
+
+### 2026-10-28 - Architecture Guide and Priority Settings Brought Up to Date
+
+* **Architecture guide matches the code again**: the battleground node
+  settings carry their real `BGChatter.AB.*` names, the removed global
+  message caps and the old "2 second floor" reply delay are gone (replies
+  to players wait 4-8 seconds, `ResponsiveDelayMin`/`Max`), and every
+  source file, Python module, script registration and database table is
+  listed with its owner and current size. New short sections cover the
+  startup health check, the group setup retry and per-label model routing.
+* **Priority settings are in the config template**: `PrioritySystem.Enable`,
+  `.DeliveryOrderEnable`, `.BridgeYieldEnable` and the eight per-tier
+  reaction delays (`.ReactRange.*`) were read by the module but missing
+  from `mod_llm_chatter.conf.dist`. They are now listed with their current
+  defaults, so nothing changes until you edit them. `.SafetyEnable` is
+  described honestly: it is read and logged, but nothing uses it yet.
+* **Priority behavior described as it works**: the architecture guide and
+  the documentation no longer promise a bridge "yield mode" for ambient
+  and idle work, a provider-safety mode or pre-cache fairness under urgent
+  backlog. They now describe the per-group lock lanes, the claim and
+  delivery ordering, and the Guild profile scan that waits for urgent
+  events.
+* **Logic documentation matches the code again**: the full
+  `mod-llm-chatter-documentation.md` was checked against the source.
+  Defaults now show the shipped template values (General relay, raid
+  morale, `EmoteChance`, request logging, memory and proximity cooldowns),
+  and descriptions follow the code: Arathi Basin node lines are retried
+  and sent to the whole battleground, raid lines go to raid chat, each
+  channel's reply timing is described separately, Guild topic choice and
+  its deliberate silence on casual messages are explained, and the login
+  cleanup grace is 5 minutes. The file maps, script registrations and the
+  14 database tables are complete, and removed functions and old
+  "Session" wording are gone.
+
+### 2026-10-27 - Bots Explain Their Loot Rolls
+
+* **Bots explain their loot rolls**: when a party bot rolls Need or Greed
+  on an item, it may say in party chat why it wants it. The prompt gives
+  facts only: the item with its type and subtype (two-handed sword, plate
+  chest piece, ring, meta gem, tailoring pattern...), the vote, and
+  whether the bot can actually use the item (class, proficiency, skill or
+  level). Its personality decides the reason; possible uses are offered
+  only as ideas (#86, thanks Vladimir37).
+* **Kept rare**: each vote has a chance to be commented, and a group waits
+  out a cooldown between commented rolls, with separate values for Need
+  and Greed (`LootRollComment.NeedChance` 50 / `.GreedChance` 25,
+  `.NeedCooldown` 90 s / `.GreedCooldown` 180 s). Playerbots roll Greed on
+  most items, so Greed comments are rarer. At most two bots comment per
+  item (`.MaxPerItem`). Comments on Need and Greed rolls, and on equipment
+  and other items, can each be turned off (`.NeedEnable`, `.GreedEnable`,
+  `.EquipmentEnable`, `.OtherEnable`). The quieter preset uses 25% / 10%,
+  180 s / 360 s and one bot per item.
+* **Never late, never elsewhere**: a vote is commented only when it is
+  seen while the roll is open, and a comment whose roll has closed, or
+  whose bot has left the group, is cancelled or dropped at delivery
+  instead of arriving after the roll was decided or in another party.
+* Needs the `data/sql/characters/updates/20261022_loot_roll_comments.sql`
+  update and a worldserver rebuild.
+
+### 2026-10-26 - Guild Post Fixes and a Spoiler-Free Scarlet Enclave
+
+* **Guild posts about NPCs read naturally**: an NPC whose title lists
+  its wares ("Potions, Scrolls and Reagents") or names a group ("Argent
+  Dawn") is no longer called "this potions, scrolls and reagents"; person
+  titles such as "Innkeeper" still read "this innkeeper", and an NPC known
+  only as a "Quest Giver" is a local inhabitant.
+* **Guild meetings and NPC posts know the place**: the meeting greeting,
+  its Guild follow-up and the NPC post carry both the zone and the subzone
+  description in roleplay mode, and the Guild posts are no longer told not
+  to name the place they are about.
+* **The party talks about a General speaker, not to them**: party reactions
+  to a bot's General line no longer answer its author, who cannot hear
+  party chat (#84, thanks Vladimir37).
+
+### 2026-10-26 - Location Topics and Universal Topic Pools
+
+* **No more talk about things that are not there**: the random topics
+  for in-world speech used to assume weather, places and lives the game
+  never tracks, so a bot could greet the first snow in a jungle, worry
+  about its garden fence in a forest camp, or mention the market and the
+  ruins outside a town that has neither. The roleplay, proximity, Guild
+  roleplay and bot-question pools now hold only subjects that fit any
+  speaker anywhere, and player-side subjects ("bio break", leveling,
+  professions) no longer reach roleplay bots.
+* **Topics tied to the place**: every open-world zone, dungeon and raid
+  has its own topic list (about 5,350 topics). The prompt names the place,
+  says the subject belongs to it and carries its description. Roleplay
+  party chatter and bot questions, roleplay General chatter, roleplay raid
+  idle chatter and proximity scenes (NPCs in both modes) use them. Party
+  topics need the player and every speaking bot in the same zone or
+  instance. Guild chat, battlegrounds and arenas do not use them.
+* **New settings**: `LLMChatter.LocationTopics.Enable`,
+  `LLMChatter.LocationTopics.Chance` (default 40, threads off) and
+  `LLMChatter.Threads.LocationTopicWeight` (default 40, below the persona
+  weight of 60, so fresh subjects stay mostly persona-driven). Bridge restart
+  only; no worldserver rebuild. The module's built-in chance before the
+  config is read now matches the 40 default too.
+* **The Scarlet Enclave** (the death knight start area) now has a zone
+  name and description in all five languages (#84, thanks Vladimir37).
+
+### 2026-10-26 - Chatter Fixes
+
+* **Replies to a player addressing an NPC by name are no longer lost**:
+  a short proximity reply that began with an action (`*wipes the bar*`)
+  was measured with the action included, failed the length check twice
+  and was dropped. The action does not count any more, since it is sent
+  as a separate emote, and a reply that is still too long after its
+  repair is shortened instead of dropped.
+* **Actions start lowercase**: the game shows the bot's name before an
+  emote, so "Giggles" read as "Veliana Giggles". Actions now always begin
+  with a lowercase letter, with or without asterisks.
+* **Proximity scenes describe the subzone**: `/say` scenes and replies now
+  carry both the zone and the subzone description. With a worldserver that
+  does not send `area_id` yet, the subzone is found by its name.
+* **PvP reactions know the enemy**: in roleplay mode, Guild and General
+  kill and death reactions include the other fighter's people-and-calling
+  lore note, not only the speaker's.
+* **Varied NPC opinions**: the Guild NPC-encounter prompt no longer lists
+  ready-made verdicts ("helpful, odd, overpriced, worth a visit") that the
+  model kept repeating. Each prompt picks one angle to react from.
+* **Single-line zone descriptions**: `ZONE_FLAVOR` texts in English and the
+  four translations are now single lines, like the subzone descriptions
+  (#84, thanks Vladimir37).
+
+### 2026-10-26 - Rewritten Location Lore and Wider Place Context
+
+* **New zone and subzone descriptions**: all subzone texts were rewritten
+  from Wowpedia for the 3.3.5 timeline, in the world's voice and without
+  quest spoilers. The old texts were generated from the area name alone;
+  more than half were in the first person and many were simply wrong.
+  Unreachable and never-built areas now have no text, so their prompts
+  fall back to the zone description.
+* **Every real zone has a description**: `ZONE_FLAVOR` was rebuilt from the
+  new zone texts and grew from 64 to 98 zones, adding Alterac Mountains,
+  Dragonblight, Eversong Woods, Ghostlands, Stonetalon Mountains,
+  Wintergrasp, the seas and the small connecting zones. Arriving in a zone
+  and the Guild zone topic now use the full zone description.
+* **Higher prompt-token cost**: zone descriptions are about twice as long
+  as before (median about 270 to 590 characters), and more prompts now
+  carry a zone or subzone description, so prompts that include them cost
+  noticeably more input tokens. On a paid API, lowering
+  `LLMChatter.LocationContext.EventChance` reduces it for party reactions
+  and proximity scenes (0 leaves the descriptions out there, except in
+  proximity scenes with a location topic).
+* **Instance lore rewritten**: dungeon, raid and battleground descriptions
+  no longer carry game commentary ("the culmination of Wrath of the Lich
+  King", "loot-focused"). The five arenas, Strand of the Ancients and Isle
+  of Conquest now have lore, and party chatter in those battlegrounds is
+  treated as battleground chatter.
+* **Translations**: the new zone, instance and battleground texts are
+  translated into Russian, French, German and Spanish, with official
+  localized place names.
+* **More prompts know where they are**: proximity `/say` scenes, guild
+  meeting and NPC-encounter posts, boat and zeppelin arrivals, and
+  roleplay party reactions in the open world (kills, deaths, wipes, corpse
+  runs, quests, join greetings) now get the subzone or zone description.
+  The party reactions and outdoor proximity scenes roll
+  `LLMChatter.LocationContext.EventChance` so short lines do not always
+  carry long lore; a proximity scene whose topic is tied to the place
+  always gets both descriptions.
+* **Guild chat about the subzone**: an idle Guild line can now be the
+  speaker's opinion of the subzone it stands in, together with its zone
+  (`LLMChatter.GuildChatter.SubzoneTopicChance`).
+* **Fixes**: a normal-mode party reply no longer receives roleplay subzone
+  lore, a nearby-object comment falls back to the zone description when the
+  subzone has none, and normal-mode instance prompts name the instance
+  instead of calling every instance a dungeon.
+* **New settings**: `LLMChatter.LocationContext.EventChance` and
+  `LLMChatter.GuildChatter.SubzoneTopicChance`. The proximity, guild idle and
+  transport events carry new payload fields, so this needs a worldserver
+  rebuild as well as a bridge restart (#84, thanks Vladimir37).
+
+### 2026-10-25 - Correct Pronouns for Party Members
+
+* **Bots no longer call everyone "he"**: party prompts gave the speaking
+  bot its own gender but named the other party members, the real player
+  and battleground players by name only, so bots defaulted to he/him
+  when talking about someone else. Party prompts (event reactions,
+  replies, conversations, emote, screenshot and General relay lines) now
+  state the gender of each party member and the player. Battleground
+  prompts state it for the flag carriers and node takers they name, and
+  multi-bot conversations describe each speaker as female or male. No
+  new settings and no rebuild needed.
+* **General channel genders**: ambient General chatter, world-event,
+  loot and cached party lines never knew the speaker's gender, and bots
+  talking in General had no gender for each other or for the player they
+  answered. Speakers now carry their gender, every General conversation
+  states who is female or male, and replies to a player state the
+  player's gender and that of the others in the exchange. Gossip about
+  another bot, zone intrusion yells and the Guild Master in guild-praise
+  topics include gender too.
+* **Guild chat genders**: in roleplay mode Guild prompts described every
+  speaker without gender. They now include it, and Guild prompts state
+  the genders of the online guildmates, recent Guild chat speakers,
+  people named in the session memory, the officer behind a rank change,
+  the guildmates a newcomer answers and the player met in the world.
+* **Proximity, emote, duel and event genders**: the bot an emote is
+  aimed at, nearby fighters and duellists, the open-world PvP enemy, the
+  adventurer a boss addresses, Arathi Basin node takers and the player
+  in stored memories now come with their gender. NPC-voiced proximity
+  lines describe the player in plain in-world terms, prompts listing
+  unnamed bystanders ask for names instead of pronouns, and cached heal
+  lines never guess their target's gender.
+* **NPC genders (needs a worldserver rebuild)**: the server now sends
+  the gender of nearby NPCs and bots, NPCs answering in /say, creatures
+  the player emotes at, NPCs met by guild members and bosses, so prompts
+  state it when the model has one. NPCs no longer show "gender:
+  unknown", and nearby characters sharing a name get no gender rather
+  than a wrong one. NPCs gossiped about in General use their world model
+  gender when it is unambiguous (no rebuild needed for that part). Guild
+  trainer rumors still name trainers without gender.
+
 ### 2026-10-22 - Less Repetitive Boss Talk in Idle Chatter
 
 * **Boss names join only some idle party prompts**: in dungeons and

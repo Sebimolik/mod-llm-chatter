@@ -9,7 +9,9 @@ from chatter_shared import (
     get_bg_lore,
     get_language_rule,
     get_zone_name,
+    get_zone_lore,
     get_subzone_lore,
+    get_subzone_name,
     get_dungeon_flavor,
     instance_has_sky,
     get_dungeon_bosses,
@@ -27,6 +29,7 @@ from chatter_shared import (
     faction_war_line,
     get_class_name,
     get_race_name,
+    describe_item_type,
 )
 from chatter_prompts import (
     pick_personality_spices,
@@ -36,6 +39,7 @@ from chatter_prompts import (
     format_spices_line,
     generate_conversation_length_sequence,
     build_environmental_context_lines,
+    maybe_event_location_lines,
     TWIST_LABEL,
     TWIST_LABEL_CONVERSATION,
 )
@@ -59,6 +63,7 @@ from chatter_mode import (
     build_player_prompt_header_from_dict,
 )
 from chatter_player_context import character_lore_lines
+from chatter_member_gender import gender_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +252,7 @@ def _append_bots_with_rp(
         )
         parts.append(
             f"{bot['name']} is a level "
-            f"{bot['level']} {bot['race']} "
+            f"{bot['level']} {gender_prefix(bot)}{bot['race']} "
             f"{bot['class']}{guild_part}"
         )
         append_speaker_gear(parts, bot)
@@ -304,6 +309,7 @@ def build_bot_greeting_prompt(
     zone_id=0,
     bg_context=None,
     player_context="",
+    area_id=0,
 ):
     """Build the LLM prompt for a group greeting.
 
@@ -408,7 +414,8 @@ def build_bot_greeting_prompt(
             )
         elif dungeon_flav:
             location_context = (
-                "\nYour character is currently in a dungeon."
+                "\nYour character is currently in "
+                f"{dungeon_flav.split(':')[0].strip()}."
             )
         elif not dungeon_flav:
             zone_flav = get_zone_flavor(zone_id)
@@ -420,6 +427,11 @@ def build_bot_greeting_prompt(
                 zone_name = get_zone_name(zone_id)
                 if zone_name:
                     location_context = f"\nZone: {zone_name}"
+            for line in maybe_event_location_lines(
+                zone_id, area_id, map_id, mode,
+                include_zone=False,
+            ):
+                location_context += f"\n{line}"
 
     prompt = (
         f"{build_player_prompt_header_from_dict(bot, mode)}\n"
@@ -876,6 +888,8 @@ def build_kill_reaction_prompt(
     stored_tone=None,
     map_id=0,
     db=None,
+    zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to a kill.
 
@@ -918,6 +932,10 @@ def build_kill_reaction_prompt(
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, map_id, mode
+    ):
+        rp_context += f"\n{line}"
 
     # Raid context for kill prompts
     in_raid = (
@@ -1170,6 +1188,169 @@ def build_loot_reaction_prompt(
         f"already said in chat\n"
         f"- NEVER say the item will serve YOU "
         f"if someone else looted it"
+    )
+    return append_json_instruction(
+        prompt, allow_action
+    )
+
+
+# What the bot's item_use (LootRollUse() in C++) means, as a fact.
+_LOOT_ROLL_USE_FACTS = {
+    'yes': "You can use it yourself.",
+    'class': "You cannot use it yourself: it is not made for your "
+             "class, race or faction.",
+    'proficiency': "You are not trained to wear or wield this kind "
+                   "of item.",
+    'skill': "You lack the skill it requires, or your skill is too "
+             "low.",
+    'no': "You cannot use it yourself right now.",
+}
+
+
+def _loot_roll_use_fact(item_use, required_level) -> str:
+    if item_use == 'level':
+        try:
+            level = int(required_level or 0)
+        except (TypeError, ValueError):
+            level = 0
+        return (
+            f"It requires level {level}; you are below that."
+            if level else "You are too low in level to use it yet."
+        )
+    return _LOOT_ROLL_USE_FACTS.get(item_use, '')
+
+
+def build_loot_roll_prompt(
+    bot, traits, item_name, item_quality, mode,
+    roll_vote, item_type,
+    chat_history="", extra_data=None,
+    allow_action=True,
+    speaker_talent_context=None,
+    stored_tone=None,
+    map_id=0,
+    item_use=None,
+    required_level=0,
+    use_ideas=(),
+):
+    """Build prompt for a bot saying in party chat why it
+    rolled on an item.
+
+    Facts only; the bot's traits and tone decide the
+    reason and how it feels. The prompt gives the item,
+    its type (describe_item_type() output, such as
+    "weapon: two-handed sword"), the vote, and, where it
+    means something, whether the bot can use the item
+    (item_use from C++; None for older payloads states
+    nothing). use_ideas (loot_roll_use_ideas) are offered
+    as ideas only, never as the bot's motive.
+
+    The roll may already be decided when the line is
+    ready; C++ drops it then (loot_roll_closed), so the
+    prompt makes no claim either way.
+    """
+    is_rp = (mode == 'roleplay')
+    trait_str = ', '.join(traits)
+    tone = _speaker_tone(stored_tone, bot, mode)
+    twist = maybe_get_creative_twist(mode=mode)
+
+    state_ctx = ""
+    actual_role = None
+    if extra_data:
+        state_ctx = build_bot_state_context(
+            extra_data, mode
+        )
+        actual_role = (
+            extra_data.get('bot_state', {})
+            .get('role')
+        )
+
+    rp_context = ""
+    if is_rp:
+        ctx = build_race_class_context(
+            bot['race'], bot['class'],
+            actual_role=actual_role
+        )
+        if ctx:
+            rp_context = f"\n{ctx}"
+
+    if chat_history:
+        rp_context += f"{chat_history}\n"
+
+    dungeon_flav = get_dungeon_flavor(map_id)
+    if is_rp and dungeon_flav:
+        rp_context += (
+            f"\nDungeon context: {dungeon_flav}"
+        )
+
+    quality_names = {
+        2: 'uncommon (green)',
+        3: 'rare (blue)',
+        4: 'epic (purple)',
+        5: 'legendary (orange)',
+    }
+    quality_label = quality_names.get(
+        item_quality, 'common'
+    )
+    vote = 'Need' if roll_vote == 'need' else 'Greed'
+    use_fact = _loot_roll_use_fact(item_use, required_level)
+    ideas = list(use_ideas or ())
+    random.shuffle(ideas)
+    article = 'an' if quality_label[0] in 'aeiou' else 'a'
+    roll_context = (
+        f"An item dropped and the party is rolling on "
+        f"it: {item_name}, {article} {quality_label} item. Item "
+        f"type: {item_type}.\n"
+        f"You voted {vote} on it.\n"
+        + (f"{use_fact}\n" if use_fact else "")
+        + "You would like to have it. Say briefly in party "
+        "chat why, in your own words."
+    )
+    if ideas:
+        roll_context += (
+            "\nSome reasons people roll on such an item, only "
+            f"as ideas: {'; '.join(ideas)}. Your reason may be "
+            "one of them or your own."
+        )
+
+    if is_rp:
+        style = "Speak in-character, grounded in who you are."
+    else:
+        style = "Speak like a player in party chat. Casual and brief."
+
+    prompt = (
+        f"{build_player_prompt_header_from_dict(bot, mode)}\n"
+        f"Your personality: {trait_str}\n"
+    )
+    if speaker_talent_context:
+        prompt += f"{speaker_talent_context}\n"
+    prompt += f"Your tone: {tone}\n"
+    if twist:
+        prompt += f"{TWIST_LABEL}: {twist}\n"
+    if state_ctx:
+        prompt += f"{state_ctx}\n"
+    prompt += (
+        f"{rp_context}\n\n"
+        f"{roll_context}\n\n"
+        f"{style}\n\n"
+        f"Say it in party chat.\n"
+        f"{_pick_length_hint(mode)}\n"
+        f"Rules:\n"
+        f"- No quotes, no emojis\n"
+        f"- To refer to the item, write the token "
+        f"{{item}} exactly, braces included, instead "
+        f"of typing the item's name. It is replaced "
+        f"with a clickable link afterwards.\n"
+        f"- {{item}} already stands for the full item "
+        f"name, so do not add the name next to it, "
+        f"and do not inflect or translate the token "
+        f"itself. Phrase the sentence so the token "
+        f"reads naturally as-is.\n"
+        "- Let your personality show in how you say it, "
+        f"without naming your traits\n"
+        f"- Do not say who will get the item, and never "
+        f"claim you won it or already have it\n"
+        f"- Don't repeat jokes or themes "
+        f"already said in chat"
     )
     return append_json_instruction(
         prompt, allow_action
@@ -1497,6 +1678,8 @@ def build_death_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     map_id=0,
+    zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to a
     groupmate dying. The reactor is a DIFFERENT
@@ -1537,6 +1720,10 @@ def build_death_reaction_prompt(
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, map_id, mode
+    ):
+        rp_context += f"\n{line}"
 
     if is_player_death:
         who = f"Your party leader {dead_name}"
@@ -1753,6 +1940,7 @@ def build_quest_complete_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to a quest
     completion. Tone varies: relief, satisfaction,
@@ -1778,6 +1966,10 @@ def build_quest_complete_reaction_prompt(
         rp_context += (
             f"\nZone context: {zone_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ):
+        rp_context += f"\n{line}"
 
     if chat_history:
         rp_context += f"{chat_history}\n"
@@ -1860,6 +2052,7 @@ def build_quest_objectives_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to quest
     objectives being completed (before turn-in).
@@ -1889,6 +2082,10 @@ def build_quest_objectives_reaction_prompt(
         rp_context += (
             f"\nZone context: {zone_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ):
+        rp_context += f"\n{line}"
 
     if chat_history:
         rp_context += f"{chat_history}\n"
@@ -2609,10 +2806,14 @@ def build_player_response_prompt(
         subzone = get_subzone_lore(
             zone_id, area_id
         )
-        if subzone:
+        if is_rp and subzone:
             rp_context += (
                 f"\nCurrent subzone: {subzone}"
             )
+        elif not is_rp and not dungeon_flav:
+            subzone_name = get_subzone_name(zone_id, area_id)
+            if subzone_name:
+                rp_context += f"\nSubzone: {subzone_name}"
 
     if is_rp:
         style = (
@@ -2960,8 +3161,12 @@ def build_zone_transition_prompt(
     if chat_history:
         rp_context += f"{chat_history}\n"
 
-    # Try to get atmospheric zone/subzone context
-    zone_flavor = get_zone_flavor(zone_id)
+    # Try to get atmospheric zone/subzone context. Arriving in a
+    # zone makes the zone itself the subject, so it gets the full
+    # description; subzone changes keep the short zone flavor.
+    zone_flavor = (
+        None if is_subzone else get_zone_lore(zone_id)
+    ) or get_zone_flavor(zone_id)
     zone_desc = ""
     if zone_flavor:
         zone_desc = (
@@ -2984,7 +3189,6 @@ def build_zone_transition_prompt(
     # for, and for callers that pass no area_id.
     area_label = ""
     if is_subzone and area_id:
-        from chatter_shared import get_subzone_name
         sn = get_subzone_name(zone_id, area_id)
         area_label = sn or area_name or ""
 
@@ -3090,6 +3294,7 @@ def build_quest_accept_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to the group
     accepting a new quest. Tone varies: excited,
@@ -3116,6 +3321,10 @@ def build_quest_accept_reaction_prompt(
         rp_context += (
             f"\nZone context: {zone_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ):
+        rp_context += f"\n{line}"
 
     if chat_history:
         rp_context += f"{chat_history}\n"
@@ -3212,6 +3421,7 @@ def build_quest_accept_batch_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to the group
     picking up multiple quests at once. Produces a
@@ -3238,6 +3448,10 @@ def build_quest_accept_batch_prompt(
         rp_context += (
             f"\nZone context: {zone_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ):
+        rp_context += f"\n{line}"
 
     if chat_history:
         rp_context += f"{chat_history}\n"
@@ -3421,6 +3635,8 @@ def build_wipe_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     map_id=0,
+    zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot reacting to a total
     party wipe. Dramatic, frustrated, humorous,
@@ -3461,6 +3677,10 @@ def build_wipe_reaction_prompt(
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, map_id, mode
+    ):
+        rp_context += f"\n{line}"
 
     wipe_context = (
         "Everyone in your party just died"
@@ -3530,6 +3750,8 @@ def build_corpse_run_reaction_prompt(
     speaker_talent_context=None,
     stored_tone=None,
     map_id=0,
+    zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a bot commenting on a
     corpse run. Either the bot died (self), or
@@ -3558,6 +3780,10 @@ def build_corpse_run_reaction_prompt(
         rp_context += (
             f"\nDungeon context: {dungeon_flav}"
         )
+    for line in maybe_event_location_lines(
+        zone_id, area_id, map_id, mode
+    ):
+        rp_context += f"\n{line}"
 
     zone_ctx = ""
     if zone_name:
@@ -3914,6 +4140,7 @@ def build_precache_combat_pull_prompt(
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
     allow_action=False, mode='normal',
+    gender='',
 ):
     """Build prompt for a cached combat pull cry.
 
@@ -3936,7 +4163,7 @@ def build_precache_combat_pull_prompt(
     prompt = (
         build_player_prompt_header(
             bot_name, race, class_name, level,
-            mode=mode, channel='party',
+            gender=gender, mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -3975,6 +4202,7 @@ def build_precache_state_prompt(
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
     allow_action=False, mode='normal',
+    gender='',
 ):
     """Build prompt for a cached state callout.
 
@@ -3998,7 +4226,7 @@ def build_precache_state_prompt(
     prompt = (
         build_player_prompt_header(
             bot_name, race, class_name, level,
-            mode=mode, channel='party',
+            gender=gender, mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -4083,6 +4311,7 @@ def build_precache_spell_support_prompt(
     traits, mood, stored_tone=None,
     role=None, recent_cached=None,
     allow_action=False, mode='normal',
+    gender='',
 ):
     """Build prompt for a cached spell support
     reaction. Uses {target} and {spell} placeholders.
@@ -4108,7 +4337,7 @@ def build_precache_spell_support_prompt(
     prompt = (
         build_player_prompt_header(
             bot_name, race, class_name, level,
-            mode=mode, channel='party',
+            gender=gender, mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -4138,6 +4367,9 @@ def build_precache_spell_support_prompt(
         "(with curly braces)\n"
         "- Do NOT invent spell names — use {spell} "
         "for the spell name\n"
+        "- {target} is filled in later, so their gender is "
+        "unknown here: never use he/she/him/her for {target}; "
+        "use {target} or 'you'\n"
         "- Let your personality show in how you say it, "
         "without naming your traits\n"
         "- No quotes, no emojis\n"
@@ -4157,6 +4389,7 @@ def build_precache_spell_offensive_prompt(
     role=None, recent_cached=None,
     allow_action=False, combat_style='hybrid',
     mode='normal',
+    gender='',
 ):
     """Build prompt for a cached offensive ability
     reaction. Uses {target} and {spell} placeholders.
@@ -4185,7 +4418,7 @@ def build_precache_spell_offensive_prompt(
     prompt = (
         build_player_prompt_header(
             bot_name, race, class_name, level,
-            mode=mode, channel='party',
+            gender=gender, mode=mode, channel='party',
         )
         +
         f"\nPersonality: {trait_str}"
@@ -4338,6 +4571,7 @@ def build_nearby_object_reaction_prompt(
     subzone_lore=None,
     map_id=0,
     stored_tone=None,
+    zone_flavor=None,
 ):
     """Build prompt for a bot commenting on nearby
     GameObjects.
@@ -4396,6 +4630,8 @@ def build_nearby_object_reaction_prompt(
         prompt += (
             f"\nAbout this place: {subzone_lore}"
         )
+    elif is_rp and zone_flavor:
+        prompt += f"\nZone context: {zone_flavor}"
     elif not is_rp and subzone_name:
         prompt += f"\nSubzone: {subzone_name}"
     if is_rp:
@@ -4437,6 +4673,7 @@ def build_nearby_object_conversation_prompt(
     target_talent_context=None,
     subzone_lore=None,
     map_id=0,
+    zone_flavor=None,
 ):
     """Build prompt for a multi-bot conversation
     about nearby GameObjects.
@@ -4507,6 +4744,8 @@ def build_nearby_object_conversation_prompt(
         parts.append(
             f"About this place: {subzone_lore}"
         )
+    elif is_rp and zone_flavor:
+        parts.append(f"Zone context: {zone_flavor}")
     elif not is_rp and subzone_name:
         parts.append(f"Subzone: {subzone_name}")
     parts.append(
@@ -4891,7 +5130,9 @@ def build_player_msg_conversation_prompt(
 # BOT-INITIATED QUESTION TO PLAYER
 # ============================================================
 
-# Question topic suggestions — creative and specific
+# Question topic suggestions — creative and specific. None may
+# assume a feature of the current place: the zone and dungeon
+# context describe it, and location topics cover it.
 BOT_QUESTION_TOPICS = [
     # Class / role curiosity
     'their class abilities or fighting style',
@@ -4902,11 +5143,11 @@ BOT_QUESTION_TOPICS = [
     'their homeland or racial background',
     'what life is like for their race',
     'traditions or customs of their people',
-    # Zone / location
-    'the current area and its history',
-    'something they noticed about this place',
+    # Places (subjects tied to where the party is come from
+    # location_topics.json; see chatter_location_topics)
     'whether they have been here before',
-    'rumors about this region',
+    'the place they would most like to see',
+    'a city or land they never want to visit again',
     # Adventure / party
     'their most memorable battle or adventure',
     'what they hope to find or accomplish today',
@@ -5094,9 +5335,13 @@ def build_bot_question_prompt(
     memories=None,
     relationship_summary=None,
     player_context="",
+    location_topic=None,
 ):
     """Build prompt for a bot asking the player a
     creative, contextual question in party chat.
+
+    ``location_topic`` (roleplay, rolled by the caller) replaces
+    the pool topic with a subject tied to where they both are.
 
     Args:
         bot: dict with name, class, race, level, role
@@ -5264,7 +5509,14 @@ def build_bot_question_prompt(
     tone = _speaker_tone(stored_tone, bot, mode)
     twist = maybe_get_creative_twist(mode=mode)
     # Pick topic pool based on location context
-    if get_dungeon_flavor(map_id) is not None:
+    if location_topic is not None:
+        # The zone or dungeon context above describes
+        # the place.
+        topic = (
+            f"{location_topic.topic} (a subject tied to "
+            f"{location_topic.place}, where you both are now)"
+        )
+    elif get_dungeon_flavor(map_id) is not None:
         topic = random.choice(DUNGEON_QUESTION_TOPICS)
     elif map_id in BG_MAP_NAMES:
         topic = random.choice(BG_QUESTION_TOPICS)
@@ -5431,6 +5683,7 @@ def build_quest_complete_conversation_prompt(
     msg_count=3,
     speaker_talent_context=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a multi-bot conversation
     about a quest completion.
@@ -5509,6 +5762,9 @@ def build_quest_complete_conversation_prompt(
         parts.append(
             f"Zone context: {zone_flav}"
         )
+    parts.extend(maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ))
 
     # Speakers with traits and class/race
     parts.append(
@@ -5586,6 +5842,7 @@ def build_quest_objectives_conversation_prompt(
     msg_count=3,
     speaker_talent_context=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a multi-bot conversation
     about quest objectives being completed.
@@ -5655,6 +5912,9 @@ def build_quest_objectives_conversation_prompt(
         parts.append(
             f"Zone context: {zone_flav}"
         )
+    parts.extend(maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ))
 
     # Speakers with traits and class/race
     parts.append(
@@ -5734,6 +5994,7 @@ def build_quest_accept_conversation_prompt(
     msg_count=3,
     speaker_talent_context=None,
     zone_id=0,
+    area_id=0,
 ):
     """Build prompt for a multi-bot conversation
     about the group accepting a new quest.
@@ -5804,6 +6065,9 @@ def build_quest_accept_conversation_prompt(
         parts.append(
             f"Zone context: {zone_flav}"
         )
+    parts.extend(maybe_event_location_lines(
+        zone_id, area_id, 0, mode, include_zone=False
+    ))
 
     # Speakers with traits and class/race
     parts.append(

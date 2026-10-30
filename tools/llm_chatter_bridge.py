@@ -70,6 +70,7 @@ from chatter_shared import (
     stagger_if_needed,
 )
 from chatter_guild_profile import get_character_guild_name
+from chatter_member_gender import attach_bot_genders
 from chatter_events import (
     cleanup_expired_events,
     reset_stuck_processing_events,
@@ -386,7 +387,7 @@ def process_pending_requests(
         # an LLM call this poll cycle (avoids two
         # systems delivering in the same bucket).
         poll_iv = int(config.get(
-            'LLMChatter.Bridge.PollIntervalSeconds', 3
+            'LLMChatter.Bridge.PollIntervalSeconds', 1
         ))
         stagger_min = float(config.get(
             'LLMChatter.Bridge.InterSystemStaggerMin',
@@ -426,6 +427,8 @@ def process_pending_requests(
                     db, request['bot1_guid']
                 ),
             }
+            # The queue row has no gender column.
+            attach_bot_genders(db, [bot])
             success = process_statement(
                 db, cursor, client,
                 config, request, bot
@@ -495,6 +498,7 @@ def process_pending_requests(
                     'bot4', request['bot1_zone']
                 ))
 
+            attach_bot_genders(db, bots)
             success = process_conversation(
                 db, cursor, client,
                 config, request, bots
@@ -889,6 +893,14 @@ def _event_summary(event):
             ('item',
              ed.get('item_name', '')),
         ]
+    elif et == 'bot_group_loot_roll':
+        parts = [
+            ('roller', subj),
+            ('vote',
+             ed.get('roll_vote', '')),
+            ('item',
+             ed.get('item_name', '')),
+        ]
     elif et == 'bot_group_spell_cast':
         parts = [
             ('caster', subj),
@@ -1061,7 +1073,7 @@ def process_single_event(event, client, config):
                 event_type.startswith('guild_')
                 and str(config.get(
                     'LLMChatter.GuildChatter.Enable',
-                    '0',
+                    '1',
                 )).strip() != '1'
             ):
                 cursor.execute(
@@ -1243,21 +1255,6 @@ def _priority_bridge_yield_enabled(config):
     )
 
 
-def _priority_safety_enabled(config):
-    """Phase 4 gate for emergency provider-safety mode."""
-    return (
-        _config_enabled(
-            config,
-            'LLMChatter.PrioritySystem.Enable'
-        )
-        and _config_enabled(
-            config,
-            'LLMChatter.PrioritySystem.SafetyEnable',
-            '1'
-        )
-    )
-
-
 def _has_ready_event_backlog(db, priority_floor=None):
     """Check for any ready pending event, optionally by floor."""
     cursor = db.cursor()
@@ -1373,14 +1370,6 @@ def _evict_unused_group_locks(
         for gid in stale:
             del group_locks[gid]
         return len(stale)
-
-
-def _count_in_flight_jobs(*futures):
-    """Count active worker tasks for provider-safety heuristics."""
-    return sum(
-        1 for future in futures
-        if future is not None
-    )
 
 
 def _write_db_snapshot(db, snapshot_dir):
@@ -1541,7 +1530,7 @@ def main():
         'LLMChatter.ChatterMode', 'normal'
     ).lower())
     set_emote_chance(int(config.get(
-        'LLMChatter.EmoteChance', 50
+        'LLMChatter.EmoteChance', 20
     )))
     language_code = str(config.get(
         'LLMChatter.Language', 'GB'
@@ -1725,7 +1714,7 @@ def main():
 
     # Get poll interval
     poll_interval = int(config.get(
-        'LLMChatter.Bridge.PollIntervalSeconds', 3
+        'LLMChatter.Bridge.PollIntervalSeconds', 1
     ))
     # Cadence used while the server is busy. Direct player
     # chat is picked up on this interval, so it stays well
@@ -1748,7 +1737,7 @@ def main():
         max_concurrent = max(1, min(int(
             config.get(
                 'LLMChatter.Bridge.MaxConcurrent',
-                '3'
+                '5'
             )
         ), 10))
     except (ValueError, TypeError):
@@ -1836,7 +1825,7 @@ def main():
         f"Max concurrent: {max_concurrent}"
     )
     base_max = config.get(
-        'LLMChatter.MaxTokens', 200
+        'LLMChatter.MaxTokens', 350
     )
     convo_max = config.get(
         'LLMChatter.ConversationMaxTokens', base_max
@@ -1899,7 +1888,7 @@ def main():
         f"  TriggerChance: "
         f"{config.get('LLMChatter.TriggerChance', 15)}%"
         f"  EventReactionChance: "
-        f"{config.get('LLMChatter.EventReactionChance', 15)}%"
+        f"{config.get('LLMChatter.EventReactionChance', 25)}%"
     )
     logger.info(
         f"  WeatherAmbientChance: "
@@ -1924,7 +1913,7 @@ def main():
         f"  TransportCooldown: "
         f"{config.get('LLMChatter.TransportCooldownSeconds', 600)}s"
         f"  WeatherCooldown: "
-        f"{config.get('LLMChatter.WeatherCooldownSeconds', 1800)}s"
+        f"{config.get('LLMChatter.WeatherCooldownSeconds', 300)}s"
         f"  WeatherAmbientCooldown: "
         f"{config.get('LLMChatter.WeatherAmbientCooldownSeconds', 120)}s"
     )
@@ -1936,9 +1925,9 @@ def main():
     )
     logger.info(
         f"  HolidayCityChance: "
-        f"{config.get('LLMChatter.HolidayCityChance', 10)}%"
+        f"{config.get('LLMChatter.HolidayCityChance', 20)}%"
         f"  HolidayZoneChance: "
-        f"{config.get('LLMChatter.HolidayZoneChance', 5)}%"
+        f"{config.get('LLMChatter.HolidayZoneChance', 15)}%"
         f"  MinorEventChance: "
         f"{config.get('LLMChatter.Events.MinorEventChance', 20)}%"
     )
@@ -1968,13 +1957,13 @@ def main():
     )
     logger.info(
         f"  SpellCastChance: "
-        f"{config.get('LLMChatter.GroupChatter.SpellCastChance', 10)}%"
+        f"{config.get('LLMChatter.GroupChatter.SpellCastChance', 30)}%"
     )
     logger.info(
         f"  NearbyObjectEnable: "
         f"{config.get('LLMChatter.GroupChatter.NearbyObjectEnable', 1)}"
         f"  NearbyObjectChance: "
-        f"{config.get('LLMChatter.GroupChatter.NearbyObjectChance', 10)}%"
+        f"{config.get('LLMChatter.GroupChatter.NearbyObjectChance', 20)}%"
     )
     logger.info(
         f"  BotQuestionEnable: "
@@ -2077,16 +2066,16 @@ def main():
     guild_login_multi_chance = config.get(
         'LLMChatter.GuildChatter.'
         'LoginGreeting.MultiReplyChance',
-        20,
+        75,
     )
     guild_login_max_responders = config.get(
         'LLMChatter.GuildChatter.'
         'LoginGreeting.MaxResponders',
-        3,
+        4,
     )
     logger.info(
         f"  Enable: "
-        f"{config.get('LLMChatter.GuildChatter.Enable', 0)}"
+        f"{config.get('LLMChatter.GuildChatter.Enable', 1)}"
         f"  PlayerReplies: "
         f"{config.get('LLMChatter.GuildChatter.PlayerReplies.Enable', 1)}"
         f"  SessionMemory: "
@@ -2145,7 +2134,7 @@ def main():
         f"  ActionChance: "
         f"{config.get('LLMChatter.ActionChance', 10)}%"
         f"  EmoteChance: "
-        f"{config.get('LLMChatter.EmoteChance', 50)}%"
+        f"{config.get('LLMChatter.EmoteChance', 20)}%"
         f"  RaceLoreChance: "
         f"{config.get('LLMChatter.RaceLoreChance', 15)}%"
     )
@@ -2169,9 +2158,9 @@ def main():
     )
     logger.info(
         f"  Bridge.PollInterval: "
-        f"{config.get('LLMChatter.Bridge.PollIntervalSeconds', 3)}s"
+        f"{config.get('LLMChatter.Bridge.PollIntervalSeconds', 1)}s"
         f"  Bridge.MaxConcurrent: "
-        f"{config.get('LLMChatter.Bridge.MaxConcurrent', 3)}"
+        f"{config.get('LLMChatter.Bridge.MaxConcurrent', 5)}"
         f"  InterSystemStagger: "
         f"{inter_stagger_min}s\u2013{inter_stagger_max}s"
     )
@@ -2185,7 +2174,7 @@ def main():
         f"  DistanceUnit: "
         f"{config.get('LLMChatter.DistanceUnit', 'yards')}"
         f"  BotSpeakerCooldown: "
-        f"{config.get('LLMChatter.BotSpeakerCooldownSeconds', 900)}s"
+        f"{config.get('LLMChatter.BotSpeakerCooldownSeconds', 120)}s"
     )
     logger.info(
         f"  EventExpiration: "
@@ -2193,9 +2182,7 @@ def main():
     )
     logger.info(
         f"  BGChatter.MaxTokens: "
-        f"{config.get('LLMChatter.BGChatter.MaxTokens', 32)}"
-        f"  PrioritySystem.SafetyEnable: "
-        f"{config.get('LLMChatter.PrioritySystem.SafetyEnable', 1)}"
+        f"{config.get('LLMChatter.BGChatter.MaxTokens', 300)}"
     )
     logger.info("=" * 60)
 
@@ -2338,7 +2325,7 @@ def main():
     last_idle_check = 0
     idle_check_interval = int(config.get(
         'LLMChatter.GroupChatter.IdleCheckInterval',
-        60
+        30
     ))
     last_cache_refill = 0
     cache_refill_interval = 30  # every 30 seconds

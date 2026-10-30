@@ -63,6 +63,8 @@ TRAITS = ['gruff', 'loyal']
 # One sample value per required argument name. Names are shared across
 # builders, so this stays much smaller than the builder count.
 SAMPLE_ARGS = {
+    'roll_vote': 'need',
+    'item_type': 'weapon: two-handed sword',
     'db': _StubDb(),
     'bot': BOT,
     'reactor': BOT,

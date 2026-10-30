@@ -34,6 +34,8 @@ from chatter_constants import (
     ITEM_QUALITY_COLORS, ITEM_QUALITY_NAMES,
     ITEM_CLASS_NAMES, WEAPON_SUBCLASS_NAMES,
     ARMOR_SUBCLASS_NAMES, CLASS_BITMASK,
+    ARMOR_KIND_SUBCLASS_NAMES, ARMOR_PIECE_NAMES,
+    ITEM_SUBCLASS_NAMES, WEAPON_HAND_NAMES,
     EMOTE_KEYWORDS,
     EMOTE_LIST_STR,
 )
@@ -42,6 +44,7 @@ from chatter_text import (
     parse_single_response,
     _sanitize_action,
     cleanup_message,
+    split_action_prefix,
     shorten_chat_message,
     shorten_chat_question,
     extract_conversation_msg_count,
@@ -949,10 +952,13 @@ def build_pvp_enemy_context(extra_data, mode='roleplay'):
         faction = str(
             extra_data.get('enemy_faction') or ''
         ).strip() or 'opposing faction'
+        # Local import: chatter_member_gender imports chatter_shared.
+        from chatter_member_gender import gender_from_id
+        gender = gender_from_id(extra_data.get('enemy_gender'))
         desc = ' '.join(
             p for p in (
                 f"level {level}" if level else '',
-                race, cls,
+                gender, race, cls,
             ) if p
         )
         who = f"{name}, a {desc}" if desc else name
@@ -1412,8 +1418,8 @@ def get_zone_level_range(
 
 
 # Locale-keyed zone flavor text maps, mirroring
-# _ZONE_NAME_LOCALE_MAPS above. Only ruRU has a translated
-# ZONE_FLAVOR_RU dict so far; any other locale (or zone_id
+# _ZONE_NAME_LOCALE_MAPS above. ruRU, frFR, deDE and esES carry
+# translated ZONE_FLAVOR tables; any other locale (or zone_id
 # missing from the localized map) falls back to the English
 # ZONE_FLAVOR via get_zone_flavor() below.
 _ZONE_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = locale_dataset("ZONE_FLAVOR")
@@ -1454,7 +1460,7 @@ def get_zone_flavor(zone_id: int) -> Optional[str]:
     entry, mirroring get_zone_name()'s locale-fallback pattern.
 
     Returns None when the zone ID has no flavor text at all
-    (8 zones aren't covered even in English), exactly as before.
+    (unreachable and developer zones).
     """
     locale = get_language_locale_code()
     if locale:
@@ -1465,8 +1471,8 @@ def get_zone_flavor(zone_id: int) -> Optional[str]:
 
 
 # Locale-keyed dungeon/raid flavor text maps, mirroring
-# _ZONE_FLAVOR_LOCALE_MAPS above. Only ruRU has a translated
-# DUNGEON_FLAVOR_RU dict so far; any other locale (or map_id
+# _ZONE_FLAVOR_LOCALE_MAPS above. ruRU, frFR, deDE and esES carry
+# translated DUNGEON_FLAVOR tables; any other locale (or map_id
 # missing from the localized map) falls back to the static
 # English DUNGEON_FLAVOR via get_dungeon_flavor() below.
 _DUNGEON_FLAVOR_LOCALE_MAPS: Dict[str, Dict[int, str]] = locale_dataset("DUNGEON_FLAVOR")
@@ -1490,10 +1496,10 @@ def get_dungeon_flavor(map_id: int) -> Optional[str]:
 
 
 # Locale-keyed battleground lore maps, mirroring
-# _DUNGEON_FLAVOR_LOCALE_MAPS above. Only ruRU has a translated
-# BG_LORE_RU dict so far; any other locale (or bg_type_id missing
-# from the localized map) falls back to the static English BG_LORE
-# entry via get_bg_lore() below.
+# _DUNGEON_FLAVOR_LOCALE_MAPS above. ruRU, frFR, deDE and esES
+# carry translated BG_LORE tables; any other locale (or bg_type_id
+# missing from the localized map) falls back to the static English
+# BG_LORE entry via get_bg_lore() below.
 _BG_LORE_LOCALE_MAPS: Dict[str, Dict[int, Dict]] = locale_dataset("BG_LORE")
 
 
@@ -1605,6 +1611,44 @@ def get_subzone_lore(
     return None
 
 
+def get_zone_lore(zone_id: int) -> Optional[str]:
+    """Get the full zone description from subzone_lore.json.
+
+    Much longer than ZONE_FLAVOR, so it is only for prompts whose
+    subject is the zone itself; everything else uses
+    get_zone_flavor(). The text is English only, so it returns
+    None when LLMChatter.Language has a translated ZONE_FLAVOR
+    for the zone (callers then fall back to get_zone_flavor()),
+    and when the zone has no description.
+    """
+    if not zone_id:
+        return None
+    locale = get_language_locale_code()
+    if locale and zone_id in _ZONE_FLAVOR_LOCALE_MAPS.get(locale, {}):
+        return None
+    zdata = _load_subzone_lore().get("zones", {}).get(
+        str(zone_id), {}
+    )
+    return zdata.get("description") or None
+
+
+def location_lore_lines(
+    zone_id: int, area_id: int, include_zone: bool = True,
+) -> List[str]:
+    """Open-world lore lines for a prompt: the zone flavor
+    (unless include_zone is False) and the subzone lore,
+    each only when it exists."""
+    lines = []
+    if include_zone:
+        zone_flavor = get_zone_flavor(zone_id) if zone_id else None
+        if zone_flavor:
+            lines.append(f"Zone context: {zone_flavor}")
+    subzone_lore = get_subzone_lore(zone_id, area_id)
+    if subzone_lore:
+        lines.append(f"Current subzone: {subzone_lore}")
+    return lines
+
+
 def get_subzone_name(
     zone_id: int, area_id: int
 ) -> Optional[str]:
@@ -1629,6 +1673,31 @@ def get_subzone_name(
     if entry:
         return entry.get("name")
     return None
+
+
+def find_subzone_id(zone_id: int, subzone_name: str) -> int:
+    """Area ID of a named subzone of zone_id, or 0.
+
+    For payloads that carry the subzone name but no area_id (an older
+    worldserver). Names are matched case-insensitively against the
+    English entries and every localized subzone-name table, within
+    this zone only, since subzone names repeat across zones.
+    """
+    wanted = str(subzone_name or '').strip().casefold()
+    if not zone_id or not wanted:
+        return 0
+    subzones = _load_subzone_lore().get("zones", {}).get(
+        str(zone_id), {}
+    ).get("subzones", {})
+    for area_id, entry in subzones.items():
+        if str(entry.get("name") or '').casefold() == wanted:
+            return int(area_id)
+    for localized_map in _SUBZONE_NAME_LOCALE_MAPS.values():
+        for area_id, name in localized_map.items():
+            if (str(area_id) in subzones
+                    and str(name or '').casefold() == wanted):
+                return int(area_id)
+    return 0
 
 
 def build_zone_metadata(
@@ -1970,7 +2039,7 @@ _action_chance = 0.10
 _action_disabled = True
 
 # Module-level emote chance (set from config at startup)
-_emote_chance = 0.50
+_emote_chance = 0.20
 
 # Module-level response language (set from config at startup).
 # Empty string = English default (no extra instruction emitted).
@@ -2901,8 +2970,13 @@ def brief_casual_response_fits(
     emote: Optional[str] = None,
     tier: Optional[str] = None,
 ) -> bool:
-    """Validate the hard output contract for a brief casual turn."""
-    text = str(message or '').strip()
+    """Validate the hard output contract for a brief casual turn.
+
+    Only the spoken words count. A leading *action* is delivered as
+    a separate text emote, so it never makes a short reply too long.
+    """
+    text, _ = split_action_prefix(str(message or '').strip())
+    text = (text or '').strip()
     if not text:
         return bool(emote)
     _, hi, chars = _brief_casual_limits(tier)
@@ -3492,7 +3566,7 @@ def get_effective_speaker_cooldown(
     where 5 = reference full party size.
     """
     base = int(config.get(
-        'LLMChatter.BotSpeakerCooldownSeconds', 900
+        'LLMChatter.BotSpeakerCooldownSeconds', 120
     ))
     return max(60, min(base, base * num_bots // 5))
 
@@ -4788,6 +4862,125 @@ def format_name_list(names) -> str:
     if len(names) <= 1:
         return names[0] if names else ''
     return ', '.join(names[:-1]) + ' and ' + names[-1]
+
+
+def describe_item_type(item_class, subclass, inventory_type) -> str:
+    """Readable item type with its subtype, from item_template's
+    class, subclass and InventoryType.
+
+    "weapon: two-handed sword", "armor: plate chest piece",
+    "armor: ring", "gem: red gem", "recipe: tailoring pattern".
+    Falls back to the class name alone when the subtype is unknown.
+    """
+    try:
+        item_class = int(item_class)
+        subclass = int(subclass)
+        inventory_type = int(inventory_type)
+    except (TypeError, ValueError):
+        return 'item'
+    category = ITEM_CLASS_NAMES.get(item_class, 'Item').lower()
+    if item_class == 2:
+        kind = WEAPON_SUBCLASS_NAMES.get(subclass)
+        if not kind:
+            return category
+        hand = WEAPON_HAND_NAMES.get(inventory_type)
+        kind = kind.lower()
+        return f"{category}: {kind} ({hand})" if hand else (
+            f"{category}: {kind}")
+    if item_class == 4:
+        kind = ARMOR_KIND_SUBCLASS_NAMES.get(subclass)
+        piece = ARMOR_PIECE_NAMES.get(inventory_type)
+        if kind:
+            return f"{category}: {kind}"
+        if not piece:
+            return category
+        material = ARMOR_SUBCLASS_NAMES.get(subclass, '').lower()
+        # Cloaks are cloth by rule and jewelry has no material.
+        if material in ('cloth', 'leather', 'mail', 'plate') and (
+                inventory_type != 16):
+            return f"{category}: {material} {piece}"
+        return f"{category}: {piece}"
+    kind = ITEM_SUBCLASS_NAMES.get(item_class, {}).get(subclass)
+    if kind and kind != category:
+        return f"{category}: {kind}"
+    return category
+
+
+# Items whose usability means something to a player (equipment is
+# handled separately): consumables, recipes, glyphs, and companion
+# pets and mounts.
+_USABLE_ITEM_KINDS = {0: None, 9: None, 16: None, 15: {2, 5}}
+
+
+def loot_roll_states_use(item_class, item_subclass, is_equipment) -> bool:
+    """Whether a roll prompt should state if the bot can use the
+    item. Trade goods, reagents, gems, junk, keys and quest items
+    are left out: "you can use it" means nothing for them."""
+    if is_equipment:
+        return True
+    try:
+        item_class, item_subclass = int(item_class), int(item_subclass)
+    except (TypeError, ValueError):
+        return False
+    if item_class not in _USABLE_ITEM_KINDS:
+        return False
+    subclasses = _USABLE_ITEM_KINDS[item_class]
+    return subclasses is None or item_subclass in subclasses
+
+
+def loot_roll_use_ideas(
+    item_class, item_subclass, is_equipment,
+    item_use=None, required_level=0,
+) -> List[str]:
+    """Possible reasons to roll on an item, offered to the bot only
+    as ideas, never as its motive. Built from facts: the item kind
+    and whether this bot can use it (item_use from C++: yes, class,
+    proficiency, skill, level or no; None for older payloads)."""
+    try:
+        item_class, item_subclass = int(item_class), int(item_subclass)
+    except (TypeError, ValueError):
+        item_class, item_subclass = -1, 0
+    try:
+        level = int(required_level or 0)
+    except (TypeError, ValueError):
+        level = 0
+    sell = "to sell it"
+    friend = "to pass it to an ally or friend who can use it"
+    if is_equipment:
+        if item_use == 'level':
+            later = (
+                f"to use it once you reach level {level}"
+                if level else "to use it once you are higher level"
+            )
+            return [later, sell]
+        if item_use in ('class', 'proficiency', 'skill', 'no'):
+            return [sell, friend]
+        if item_class in (2, 4):
+            ideas = ["to wear or wield it yourself", sell]
+            if item_class == 4:
+                ideas.append("for how it looks")
+            return ideas
+        if item_class in (1, 11):
+            return ["to carry more in it", sell]
+        return ["to use it yourself", sell]
+    if item_class == 3:
+        return ["to set it into your gear", sell,
+                "to keep it for its looks"]
+    if item_class == 9:
+        if item_use == 'yes':
+            return ["to learn it", sell]
+        return ["to pass it to someone with the right profession", sell]
+    if item_class == 16:
+        if item_use == 'yes':
+            return ["to use it yourself", sell]
+        return [friend, sell]
+    if item_class == 0:
+        return ["to keep it for a hard fight", sell]
+    if item_class in (5, 7):
+        return ["for crafting", sell]
+    if item_class == 15 and item_subclass in (2, 3, 5):
+        return ["to keep it", sell]
+    return [sell, "to keep it"]
 
 
 def format_weapon_list(weapons) -> str:
